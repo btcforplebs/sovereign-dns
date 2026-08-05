@@ -34,6 +34,13 @@ services:
       RUST_LOG: ${RUST_LOG:-info}
       # Only used in printed instructions, so they show the real panel URL.
       WEB_UI_PORT: ${WEB_UI_PORT:-8082}
+      NVPN_ADVERTISED_ENDPOINT: ${NVPN_ADVERTISED_ENDPOINT:-}
+    # WireGuard underlay. Without this published, the container's only address
+    # is the Docker-internal 172.28.53.10, which no other device can reach and
+    # which STUN cannot map — peers then show as present (they announce over
+    # the relays) while no data path ever forms, so DNS reaches nobody.
+    ports:
+      - "${NVPN_LISTEN_PORT:-51820}:51820/udp"
     networks:
       dns-internal:
         ipv4_address: 172.28.53.10
@@ -252,6 +259,16 @@ if [[ "$FRESH_INIT" == "1" ]]; then
     echo "sovereign-dns: warning: could not enable the DNS override yet (will retry on next restart)"
 fi
 
+# Every start, not just the first: the endpoint the daemon advertises is what
+# other devices dial. Left alone it advertises this container's Docker-internal
+# address, which nothing outside the host can reach — peers then look "online"
+# (they announce themselves over the relays) while no data path ever forms.
+if [[ -n "${NVPN_ADVERTISED_ENDPOINT:-}" ]]; then
+  echo "sovereign-dns: advertising endpoint ${NVPN_ADVERTISED_ENDPOINT}"
+  nvpn set --endpoint "$NVPN_ADVERTISED_ENDPOINT" || \
+    echo "sovereign-dns: warning: could not set the advertised endpoint"
+fi
+
 NETWORK_ID=$(awk '
   /^\[\[networks\]\]/ { in_net = 1; next }
   /^\[/ { in_net = 0 }
@@ -298,6 +315,10 @@ WEB_UI_PORT=8082
 NVPN_REPO=https://github.com/btcforplebs/nostr-vpn.git
 NVPN_REF=network-dns-gui
 NVPN_TUN_IFACE=utun100
+NVPN_LISTEN_PORT=51820
+# Leave empty to let the daemon discover its own address via STUN. Set to
+# "<this-computer's-LAN-or-public-IP>:51820" if your devices can't connect.
+NVPN_ADVERTISED_ENDPOINT=
 RUST_LOG=info
 ENV
 fi

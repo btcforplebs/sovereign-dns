@@ -44,6 +44,18 @@ if [[ "$FRESH_INIT" == "1" ]]; then
     echo "sovereign-dns: warning: could not enable the DNS override yet (will retry on next restart)"
 fi
 
+# Every start, not just the first: the endpoint the daemon advertises is what
+# other devices dial. Left alone it advertises this container's Docker-internal
+# address, which nothing outside the host can reach — peers then look "online"
+# (they announce themselves over the relays) while no data path ever forms.
+# Set NVPN_ADVERTISED_ENDPOINT to the host's LAN or public address when the
+# host is behind a NAT that STUN can't map for you.
+if [[ -n "${NVPN_ADVERTISED_ENDPOINT:-}" ]]; then
+  echo "sovereign-dns: advertising endpoint ${NVPN_ADVERTISED_ENDPOINT}"
+  nvpn set --endpoint "$NVPN_ADVERTISED_ENDPOINT" || \
+    echo "sovereign-dns: warning: could not set the advertised endpoint"
+fi
+
 NETWORK_ID=$(awk '
   /^\[\[networks\]\]/ { in_net = 1; next }
   /^\[/ { in_net = 0 }

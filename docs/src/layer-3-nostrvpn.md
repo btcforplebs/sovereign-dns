@@ -42,3 +42,16 @@ per-device configuration. Any device can confirm with `nvpn status`.
 The override is trust-based on members: a device owner can hand-edit their
 local nvpn config to opt out. That's intentional — this is a sovereignty
 tool, and every device answers to its own owner, not a central authority.
+
+## Honest caveat: no iOS coverage yet
+
+iOS does not implement the network DNS override. Enforcement lives only in
+the CLI daemon; the crate the iOS app builds on can publish the policy but
+never consumes it. Don't treat an iOS device's presence on the roster as
+DNS coverage — check `nvpn status` on the device itself.
+
+The override toggle itself is CLI/macOS-GUI only — the web control panel
+(Layer 4) can approve devices and manage the roster, but has no
+network-DNS control (`nvpn set --network-dns-override ...` must be run
+from a shell, e.g. `docker exec sovereign-dns-nvpn nvpn set
+--network-dns-override false`).

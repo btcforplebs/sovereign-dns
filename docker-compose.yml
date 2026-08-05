@@ -23,6 +23,20 @@ services:
       RUST_LOG: ${RUST_LOG:-info}
       # Only used in printed instructions, so they show the real panel URL.
       WEB_UI_PORT: ${WEB_UI_PORT:-8082}
+      # Optional. Set to "<host-lan-or-public-ip>:51820" to advertise a
+      # specific address to other devices. Left empty, the daemon discovers
+      # its own mapping via STUN, which only works because the port below is
+      # published.
+      NVPN_ADVERTISED_ENDPOINT: ${NVPN_ADVERTISED_ENDPOINT:-}
+    # WireGuard underlay. Without this published, the container's only
+    # address is the Docker-internal 172.28.53.10, which no other device can
+    # reach and which STUN cannot map — peers then show as present (they
+    # announce over the relays) while no data path ever forms, so DNS reaches
+    # nobody. Published on all host interfaces on purpose: this is the port
+    # other devices connect *to*, and it is an authenticated WireGuard
+    # listener, not an admin surface.
+    ports:
+      - "${NVPN_LISTEN_PORT:-51820}:51820/udp"
     networks:
       dns-internal:
         ipv4_address: 172.28.53.10

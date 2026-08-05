@@ -36,10 +36,13 @@ enforcement mechanism against an uncooperative device owner.
 ## Single point of failure
 
 One DNS stack instance is one point of failure for the whole fleet's DNS
-(by design — see "fail closed" in the [Introduction](README.md)). For
-now, the simple recovery path is: turn the override off from the admin
-device to restore local DNS, then fix the instance. A second
-Pi-hole+Unbound instance as a fallback is a planned post-MVP improvement.
+(by design — see "fail closed" in the [Introduction](README.md)). The web
+control panel has no override switch (see [Layer 3](layer-3-nostrvpn.md)),
+so if the stack goes down, recovery is: restart it on the host
+(`docker compose up -d`); if the host itself is down, each device owner
+can opt out locally in their own nvpn config instead of waiting on the
+network setting. A second Pi-hole+Unbound instance as a fallback is a
+planned post-MVP improvement.
 
 ## `network-dns-gui` is a feature branch, not a release
 
