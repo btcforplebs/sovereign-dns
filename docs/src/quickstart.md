@@ -4,64 +4,40 @@ You'll need: a computer or small server (Linux is easiest) with
 [Docker](https://docs.docker.com/get-docker/) installed, kept on most of
 the time since it becomes your household's DNS.
 
-## 1. Get the code
+## 1. Run the installer
+
+Ask whoever gave you this stack for `scripts/install.sh` (a single file —
+paste it into a new file with that name), then run:
 
 ```bash
-git clone https://simplysovereign.btcforplebs.com/git/39d8aef61514a2fd1fa12c932690eeda8a3c93ed57efedeef63d52c1379de404/sovereign-dns
-cd sovereign-dns
+bash scripts/install.sh
 ```
 
-## 2. Set your password
-
-```bash
-cp .env.example .env
-```
-
-Edit `.env` and set `PIHOLE_PASSWORD` — your login for the Pi-hole
-dashboard. Everything else can stay default to start.
-
-## 3. Start it up
-
-```bash
-docker compose up -d --build
-```
-
+It asks you for one thing — a password for the Pi-hole dashboard — builds
+everything, starts it, and prints your device's ID when it's ready.
 First run takes ~10 minutes (compiling the NostrVPN piece from source).
-This also starts the docs site you're reading right now, self-hosted at
-`http://<this-server>:8081`.
+It also writes out `docker-compose.yml` and the `nvpn/` build files, so
+nothing else needs to be downloaded separately.
 
-## 4. Check it's healthy
+## 2. Join it to your device mesh
 
-```bash
-docker compose ps
-docker compose logs -f nvpn
-```
+The installer printed an "npub" — a public identifier, safe to share,
+that's this container's name on your mesh. Add it to your NostrVPN
+network the same way you'd add any other device (or approve its join
+request from your admin device).
 
-## 5. Join it to your device mesh
-
-Get this container's identity:
-
-```bash
-docker compose logs nvpn | grep npub:
-```
-
-That prints an "npub" — a public identifier, safe to share, that's this
-container's name on your mesh. Add it to your NostrVPN network the same
-way you'd add any other device (or approve its join request from your
-admin device).
-
-## 6. Turn on the auto-DNS for your whole fleet
+## 3. Turn on the auto-DNS for your whole fleet
 
 From your admin device (not the server):
 
 ```bash
-nvpn set --network-dns-node <the-npub-from-step-5> --network-dns-override
+nvpn set --network-dns-node <the-npub-from-step-2> --network-dns-override
 ```
 
 Every device on your mesh now sends DNS through this stack automatically —
 no per-device settings.
 
-## 7. Manage it
+## 4. Manage it
 
 Visit `http://<this-server's-mesh-ip>/admin` for the Pi-hole dashboard —
 blocklists, per-device stats, what's being blocked.
