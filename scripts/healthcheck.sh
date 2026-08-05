@@ -37,6 +37,18 @@ head_() { printf '\n\033[1m%s\033[0m\n' "$1"; }
 # real mesh client.
 dig_() { docker exec "$NVPN" dig "$@" 2>/dev/null; }
 
+# Recursing from the root on a cold cache can take longer than dig's default
+# timeout, so a freshly restarted Unbound will fail a single-shot query even
+# though it is perfectly healthy. Retry before calling it a failure.
+resolves_() {
+  local server=$1 name=$2
+  for _ in 1 2 3 4 5; do
+    dig_ +short +time=5 +tries=1 "@$server" "$name" A | grep -qE '^[0-9]+\.' && return 0
+    sleep 2
+  done
+  return 1
+}
+
 head_ "Containers"
 for c in "$NVPN" "$WEB" "$PIHOLE" "$UNBOUND"; do
   state=$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null)
@@ -78,7 +90,7 @@ if [[ -n "$egress" ]]; then
   printf '        (should be your own public IP — a Cloudflare/Google IP means forwarding)\n'
 fi
 
-if dig_ +short "@$UNBOUND_IP" example.com A | grep -qE '^[0-9]+\.'; then
+if resolves_ "$UNBOUND_IP" example.com; then
   ok "Unbound resolves from the root servers"
 else
   bad "Unbound did not resolve example.com"
@@ -112,7 +124,7 @@ else
 fi
 
 if [[ -n "$MESH_IP" ]]; then
-  if dig_ +short "@$MESH_IP" example.com A | grep -qE '^[0-9]+\.'; then
+  if resolves_ "$MESH_IP" example.com; then
     ok "Pi-hole answers on the mesh address"
   else
     bad "Pi-hole did not answer on $MESH_IP — mesh clients cannot resolve"
@@ -227,8 +239,10 @@ if [[ $DISRUPTIVE -eq 1 && -n "$MESH_IP" ]]; then
   docker stop "$UNBOUND" >/dev/null 2>&1
   sleep 2
   probe="leak-probe-$$.example.com"
-  leak=$(dig_ +short +time=3 +tries=1 "@$MESH_IP" "$probe" A | head -1)
-  fresh=$(dig_ +short +time=3 +tries=1 "@$MESH_IP" wikipedia.org A | head -1)
+  # `dig +short` prints its "communications error ... timed out" notice on
+  # stdout, so emptiness is not the test — an actual A record is.
+  leak=$(dig_ +short +time=3 +tries=1 "@$MESH_IP" "$probe" A | grep -E '^[0-9]+\.[0-9.]+$' | head -1)
+  fresh=$(dig_ +short +time=3 +tries=1 "@$MESH_IP" wikipedia.org A | grep -E '^[0-9]+\.[0-9.]+$' | head -1)
   docker start "$UNBOUND" >/dev/null 2>&1
 
   if [[ -z "$leak" && -z "$fresh" ]]; then
@@ -243,7 +257,7 @@ if [[ $DISRUPTIVE -eq 1 && -n "$MESH_IP" ]]; then
     dig_ +short "@$UNBOUND_IP" example.com A | grep -qE '^[0-9]+\.' && break
     sleep 2
   done
-  if dig_ +short "@$MESH_IP" example.com A | grep -qE '^[0-9]+\.'; then
+  if resolves_ "$MESH_IP" example.com; then
     ok "resolution recovered after Unbound restarted"
   else
     bad "resolution did NOT recover — run: docker compose up -d"
