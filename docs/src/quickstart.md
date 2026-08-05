@@ -19,28 +19,22 @@ First run takes ~10 minutes (compiling the NostrVPN piece from source).
 It also writes out `docker-compose.yml` and the `nvpn/` build files, so
 nothing else needs to be downloaded separately.
 
-## 2. Join it to your mesh and turn on the override
+## 2. That's it — the container is its own network's admin
 
-The installer tries to do this step for you automatically, on the spot:
-it gets an admin CLI with the new DNS-override flags (extracted straight
-out of the container on Linux; built once from source via `cargo` on
-macOS/other, since Docker runs the container as a Linux binary that
-can't execute directly there), then runs both:
+On a fresh install, this container founds a brand-new NostrVPN network
+with itself as the sole admin, then immediately turns on the DNS
+override for itself. No separate admin device, no pre-existing network
+required, no manual `add-device`/`set` commands to run — the installer's
+output already shows this working.
+
+To add another device (phone, laptop) to this network, run on that
+device the exact command the installer printed:
 
 ```bash
-nvpn add-device --device <this-container's-npub> --publish
-nvpn set --network-dns-node <this-container's-npub> --network-dns-override
+nvpn join-manual --admin-device-id <this-container's-npub> --network-id <this-network's-id>
 ```
 
-This only succeeds if the machine you ran the installer on is *already*
-an active admin on a NostrVPN network — that's a trust boundary (who's
-allowed to add devices to your mesh), not something the installer should
-skip. If it isn't yet, the installer tells you so and prints the exact
-two commands to run once it is. If it is, you're done — no further
-steps needed.
-
-Every device on your mesh now sends DNS through this stack automatically —
-no per-device settings.
+That device now resolves DNS through this stack automatically too.
 
 ## 3. Manage it
 

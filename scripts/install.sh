@@ -128,23 +128,61 @@ DOCKERFILE
 
 cat > nvpn/entrypoint.sh << 'ENTRYPOINT'
 #!/usr/bin/env bash
+# First run: create an identity. Every run: start the daemon and follow its
+# log so docker logs / restart policies see the real process.
 set -euo pipefail
 
 CONFIG_DIR="${HOME}/.config/nvpn"
 CONFIG_FILE="${CONFIG_DIR}/config.toml"
 DAEMON_LOG="${CONFIG_DIR}/daemon.log"
 
+FRESH_INIT=0
 if [[ ! -f "$CONFIG_FILE" ]]; then
   echo "sovereign-dns: no config found, creating a fresh NostrVPN identity"
   nvpn init
+  FRESH_INIT=1
 fi
 
-echo "sovereign-dns: this device's identity:"
-awk '
+DEVICE_NPUB=$(awk '
   /^\[nostr\]$/ { in_nostr = 1; next }
   /^\[/ { in_nostr = 0 }
-  in_nostr && /^public_key[[:space:]]*=/ { print "  npub: " $3 }
-' "$CONFIG_FILE" | tr -d '"'
+  in_nostr && /^public_key[[:space:]]*=/ { print $3 }
+' "$CONFIG_FILE" | tr -d '"')
+
+echo "sovereign-dns: this device's identity:"
+echo "  npub: ${DEVICE_NPUB}"
+
+# On a fresh install this container founds its own network (admin = itself)
+# rather than requiring some other already-established admin device — that
+# precondition is what made this a multi-step manual dance for existing
+# users. Founding here, then immediately setting itself as the network's
+# DNS node with the override on, means "docker compose up" alone produces a
+# fully working sovereign DNS network with zero devices pre-added.
+#
+# `nvpn init` alone leaves the network disabled (default_network_enabled()
+# is false) — only `set --device ...` flips it on (apply_devices_override,
+# command_dispatch.rs), and that has to happen in its own call because the
+# DNS-override block runs earlier in the same `set` dispatch than the
+# devices-override block, so a single combined call would still see no
+# active network yet.
+if [[ "$FRESH_INIT" == "1" ]]; then
+  echo "sovereign-dns: founding a new network on this device"
+  nvpn set --device "$DEVICE_NPUB"
+  echo "sovereign-dns: turning on the DNS override"
+  nvpn set --network-dns-node "$DEVICE_NPUB" --network-dns-override || \
+    echo "sovereign-dns: warning: could not enable the DNS override yet (will retry on next restart)"
+fi
+
+NETWORK_ID=$(awk '
+  /^\[\[networks\]\]/ { in_net = 1; next }
+  /^\[/ { in_net = 0 }
+  in_net && /^network_id[[:space:]]*=/ { print $3 }
+' "$CONFIG_FILE" | tr -d '"' | head -1)
+
+if [[ -n "$NETWORK_ID" ]]; then
+  echo "sovereign-dns: to add another device to this network, run on that device:"
+  echo "  nvpn join-manual --admin-device-id ${DEVICE_NPUB} --network-id ${NETWORK_ID}"
+fi
 
 nvpn start --daemon --connect || {
   echo "sovereign-dns: daemon start failed" >&2
@@ -179,10 +217,11 @@ echo "Building and starting (first run compiles from source, ~10 minutes)..."
 docker compose up -d --build
 
 echo
-echo "Waiting for the NostrVPN identity to be ready..."
+echo "Waiting for the NostrVPN identity and network to be ready..."
 for _ in $(seq 1 30); do
   NPUB_LINE=$(docker compose logs nvpn 2>/dev/null | grep "npub:" || true)
-  if [[ -n "$NPUB_LINE" ]]; then
+  INVITE_LINE=$(docker compose logs nvpn 2>/dev/null | grep "nvpn join-manual" || true)
+  if [[ -n "$NPUB_LINE" && -n "$INVITE_LINE" ]]; then
     break
   fi
   sleep 2
@@ -190,61 +229,20 @@ done
 
 echo
 echo "=========================================="
-echo "Done! Here's what to do next:"
+echo "Done! This container founded its own NostrVPN network and turned on"
+echo "the DNS override for itself — nothing else required."
 echo
 if [[ -n "${NPUB_LINE:-}" ]]; then
-  echo "1. This device's ID (safe to share): ${NPUB_LINE#*npub: }"
-else
-  echo "1. Run 'docker compose logs nvpn | grep npub:' in this folder to get this device's ID."
+  echo "This device's ID (safe to share): ${NPUB_LINE#*npub: }"
 fi
-echo "2. Add that ID to your NostrVPN network and turn on the DNS override —"
-echo "   trying this automatically now (only works if this machine is already"
-echo "   an active admin on a NostrVPN network)."
-
-DEVICE_NPUB="${NPUB_LINE#*npub: }"
-ADMIN_CLI=""
-
-if [[ "$(uname -s)" == "Linux" ]]; then
-  mkdir -p bin
-  if docker cp sovereign-dns-nvpn:/usr/local/bin/nvpn bin/nvpn 2>/dev/null; then
-    chmod +x bin/nvpn
-    ADMIN_CLI="./bin/nvpn"
-  fi
-else
-  # Docker runs this container's binary as Linux ELF, which won't execute on a
-  # non-Linux host — build a native one instead, from the same branch.
-  if [[ -x "../nostr-vpn/target/release/nvpn" ]]; then
-    ADMIN_CLI="../nostr-vpn/target/release/nvpn"
-  elif command -v cargo >/dev/null 2>&1; then
-    echo "Building a native admin CLI with the DNS-override flags (one-time, a couple minutes)..."
-    if [[ ! -d ../nostr-vpn ]]; then
-      git clone --depth 1 --branch network-dns-gui https://github.com/btcforplebs/nostr-vpn.git ../nostr-vpn
-    fi
-    if (cd ../nostr-vpn && cargo build --release -p nvpn); then
-      ADMIN_CLI="../nostr-vpn/target/release/nvpn"
-    fi
-  fi
-fi
-
 echo
-if [[ -n "$DEVICE_NPUB" && -n "$ADMIN_CLI" && -x "$ADMIN_CLI" ]]; then
-  if "$ADMIN_CLI" add-device --device "$DEVICE_NPUB" --publish \
-     && "$ADMIN_CLI" set --network-dns-node "$DEVICE_NPUB" --network-dns-override; then
-    echo "3. Done — this device is on your network and the DNS override is ON."
-  else
-    echo "3. Couldn't do it automatically (most likely: this machine isn't an active"
-    echo "   admin on a NostrVPN network yet — join/create one first). Once it is,"
-    echo "   run by hand from this folder:"
-    echo "     $ADMIN_CLI add-device --device $DEVICE_NPUB --publish"
-    echo "     $ADMIN_CLI set --network-dns-node $DEVICE_NPUB --network-dns-override"
-  fi
-elif [[ -z "$DEVICE_NPUB" ]]; then
-  echo "3. Couldn't read this device's ID yet — run 'docker compose logs nvpn | grep npub:'"
-  echo "   then the commands from step 2 by hand once you have it."
+if [[ -n "${INVITE_LINE:-}" ]]; then
+  echo "To add a phone/laptop to this network, run on that device:"
+  echo "  $(echo "$INVITE_LINE" | sed 's/^.*| *//')"
 else
-  echo "3. Couldn't get a working admin CLI automatically (no Rust toolchain found and"
-  echo "   this isn't Linux). Install one, then re-run this script:"
-  echo "     curl https://sh.rustup.rs -sSf | sh -s -- -y"
+  echo "To get the invite command for adding other devices, run:"
+  echo "  docker compose logs nvpn | grep 'join-manual'"
 fi
-echo "4. Manage ad-blocking at: http://<this-computer's-mesh-ip>/admin"
+echo
+echo "Manage ad-blocking at: http://<this-computer's-mesh-ip>/admin"
 echo "=========================================="
