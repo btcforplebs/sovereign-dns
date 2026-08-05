@@ -76,6 +76,18 @@ services:
       timeout: 10s
       retries: 5
 
+  # Self-hosted docs site (mdBook) — explains the whole stack in plain
+  # language plus the technical detail behind each layer. Runs standalone;
+  # no dependency on the other services, so it's up even before you've
+  # joined the mesh.
+  docs:
+    build:
+      context: ./docs
+    container_name: sovereign-dns-docs
+    restart: unless-stopped
+    ports:
+      - "${DOCS_PORT:-8081}:80"
+
 networks:
   dns-internal:
     driver: bridge

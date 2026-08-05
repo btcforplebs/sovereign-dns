@@ -4,6 +4,11 @@ Self-hosted, ad-filtered, DNSSEC-validated DNS for **every device on your
 NostrVPN mesh** — one `docker compose up`, one admin command, zero per-device
 configuration, zero third-party control plane.
 
+**New to this project?** `docker compose up -d` also stands up a
+self-hosted docs site at `http://localhost:8081` (plain-language overview,
+step-by-step quickstart, per-layer technical detail, and a
+troubleshooting/gotchas page) — see [`docs/`](docs/).
+
 ```
 ┌────────────────────────── docker compose ──────────────────────────┐
 │                                                                    │

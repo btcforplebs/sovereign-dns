@@ -1,0 +1,11 @@
+[book]
+title = "Sovereign DNS"
+description = "Self-hosted, ad-filtered, DNSSEC-validated DNS for your whole NostrVPN mesh."
+authors = ["Sovereign-DNS contributors"]
+src = "src"
+language = "en"
+
+[output.html]
+default-theme = "navy"
+preferred-dark-theme = "navy"
+git-repository-url = "https://simplysovereign.btcforplebs.com/git/39d8aef61514a2fd1fa12c932690eeda8a3c93ed57efedeef63d52c1379de404/sovereign-dns"
