@@ -32,6 +32,8 @@ services:
       - nvpn-config:/root/.config/nvpn
     environment:
       RUST_LOG: ${RUST_LOG:-info}
+      # Only used in printed instructions, so they show the real panel URL.
+      WEB_UI_PORT: ${WEB_UI_PORT:-8082}
     networks:
       dns-internal:
         ipv4_address: 172.28.53.10
@@ -41,6 +43,43 @@ services:
       timeout: 10s
       retries: 5
       start_period: 20s
+
+  # Browser control panel (nvpn-web) for approving join requests, adding
+  # devices, etc. without touching a terminal — the same image nvpn builds,
+  # just run with a different entrypoint/command. Reads the *same* config
+  # volume as nvpn's actual daemon rather than running its own, hence
+  # NVPN_EXTERNAL_DAEMON + state-file status mode. Binds 0.0.0.0 inside the
+  # container (required for Docker's port publish to reach it at all) but
+  # is only ever published to the host's loopback — this server has no
+  # login of its own, so exposing it beyond localhost would let anyone who
+  # can reach that port approve/remove devices on your mesh.
+  web:
+    build:
+      context: ./nvpn
+      args:
+        NVPN_REPO: ${NVPN_REPO:-https://github.com/btcforplebs/nostr-vpn.git}
+        NVPN_REF: ${NVPN_REF:-network-dns-gui}
+    container_name: sovereign-dns-web
+    restart: unless-stopped
+    entrypoint: ["/usr/local/bin/nvpn-web"]
+    command:
+      - --listen
+      - 0.0.0.0:8081
+      - --behind-trusted-proxy
+      - --config
+      - /root/.config/nvpn/config.toml
+    depends_on:
+      nvpn:
+        condition: service_healthy
+    volumes:
+      - nvpn-config:/root/.config/nvpn
+    environment:
+      NVPN_CLI_PATH: /usr/local/bin/nvpn
+      NVPN_EXTERNAL_DAEMON: "true"
+      NVPN_DAEMON_STATUS_MODE: state-file
+      RUST_LOG: ${RUST_LOG:-info}
+    ports:
+      - "127.0.0.1:${WEB_UI_PORT:-8082}:8081"
 
   pihole:
     image: pihole/pihole:latest
@@ -91,25 +130,41 @@ COMPOSE
 
 cat > nvpn/Dockerfile << 'DOCKERFILE'
 ARG BUILDER_IMAGE=rust:1.93-bookworm
+ARG WEB_BUILDER_IMAGE=node:24-bookworm
 ARG RUNTIME_IMAGE=debian:bookworm-slim
 
-FROM ${BUILDER_IMAGE} AS builder
+FROM alpine/git:latest AS source
 ARG NVPN_REPO=https://github.com/btcforplebs/nostr-vpn.git
 ARG NVPN_REF=network-dns-gui
+WORKDIR /src
+RUN git clone --depth 1 --branch "${NVPN_REF}" "${NVPN_REPO}" nostr-vpn
 
+# Builds the Svelte control panel (nvpn-web's static UI) — the browser-based
+# join-request approval flow, so admins never need docker exec/CLI.
+FROM ${WEB_BUILDER_IMAGE} AS web-builder
+WORKDIR /work
+COPY --from=source /src/nostr-vpn/web/control-panel ./
+RUN --mount=type=cache,target=/pnpm/store \
+    corepack enable \
+    && corepack prepare pnpm@10.28.2 --activate \
+    && pnpm install --frozen-lockfile --store-dir /pnpm/store \
+    && pnpm run build
+
+FROM ${BUILDER_IMAGE} AS builder
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git libclang-dev libdbus-1-dev pkg-config \
+    && apt-get install -y --no-install-recommends libclang-dev libdbus-1-dev pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-RUN git clone --depth 1 --branch "${NVPN_REF}" "${NVPN_REPO}" nostr-vpn
+COPY --from=source /src/nostr-vpn ./nostr-vpn
 
 WORKDIR /app/nostr-vpn
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/app/nostr-vpn/target \
-    cargo build --release -p nvpn \
-    && cp target/release/nvpn /tmp/nvpn
+    cargo build --release -p nvpn -p nostr-vpn-web \
+    && cp target/release/nvpn /tmp/nvpn \
+    && cp target/release/nostr-vpn-web /tmp/nvpn-web
 
 FROM ${RUNTIME_IMAGE} AS runtime
 RUN apt-get update \
@@ -119,6 +174,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /tmp/nvpn /usr/local/bin/nvpn
+COPY --from=builder /tmp/nvpn-web /usr/local/bin/nvpn-web
+COPY --from=web-builder /work/dist /usr/share/nostr-vpn/web
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
@@ -185,7 +242,9 @@ if [[ -n "$NETWORK_ID" ]]; then
   echo "       nvpn join-manual --admin-device-id ${DEVICE_NPUB} --network-id ${NETWORK_ID}"
   echo "     This only queues a join request — it does NOT add the device yet."
   echo "  2. Once you've confirmed you want that specific device on your network,"
-  echo "     approve it from here (replace <joiner-npub> with its printed npub):"
+  echo "     approve it in the browser control panel on this machine:"
+  echo "       http://localhost:${WEB_UI_PORT:-8082}"
+  echo "     or from the terminal (replace <joiner-npub> with its printed npub):"
   echo "       docker exec sovereign-dns-nvpn nvpn add-device --device <joiner-npub> --publish"
   echo "     Deliberately not automatic: the network ID + this device's ID are"
   echo "     shared as plain text, so auto-approving anyone who has them would"
@@ -213,6 +272,7 @@ if [[ ! -f .env ]]; then
 PIHOLE_PASSWORD=${PIHOLE_PASSWORD}
 TZ=UTC
 PIHOLE_WEB_PORT=80
+WEB_UI_PORT=8082
 NVPN_REPO=https://github.com/btcforplebs/nostr-vpn.git
 NVPN_REF=network-dns-gui
 NVPN_TUN_IFACE=utun100
@@ -220,8 +280,11 @@ RUST_LOG=info
 ENV
 fi
 
+WEB_UI_PORT=$(grep '^WEB_UI_PORT=' .env | cut -d= -f2 || true)
+WEB_UI_PORT=${WEB_UI_PORT:-8082}
+
 echo
-echo "Building and starting (first run compiles from source, ~10 minutes)..."
+echo "Building and starting (first run compiles from source, ~10-15 minutes)..."
 docker compose up -d --build
 
 echo
@@ -244,17 +307,21 @@ if [[ -n "${NPUB_LINE:-}" ]]; then
   echo "This device's ID (safe to share): ${NPUB_LINE#*npub: }"
 fi
 echo
+echo "Your VPN control panel (manage devices, approve join requests):"
+echo "  http://localhost:${WEB_UI_PORT}"
+echo "It's only reachable from this computer — it has no login of its own,"
+echo "so it is deliberately never exposed to the network."
+echo
 if [[ -n "${INVITE_LINE:-}" ]]; then
   echo "To add a phone/laptop to this network:"
   echo "  1. On that device, run:"
   echo "       $(echo "$INVITE_LINE" | sed 's/^.*| *//')"
   echo "     (this only queues a join request — it does not add the device yet)"
-  echo "  2. Once you've confirmed it's a device you want on your network, approve it"
-  echo "     from here (replace <joiner-npub> with its printed npub):"
+  echo "  2. Approve the request in the control panel above, or from the terminal:"
   echo "       docker exec sovereign-dns-nvpn nvpn add-device --device <joiner-npub> --publish"
 else
   echo "To get the invite + approval commands for adding other devices, run:"
-  echo "  docker compose logs nvpn | grep -A6 'to add another device'"
+  echo "  docker compose logs nvpn | grep -A8 'to add another device'"
 fi
 echo
 echo "Manage ad-blocking at: http://<this-computer's-mesh-ip>/admin"

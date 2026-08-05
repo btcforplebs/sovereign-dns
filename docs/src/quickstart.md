@@ -38,17 +38,22 @@ remove the only access control this network has:
    ```
    This only queues a join request — the device isn't on the network yet.
 2. Once you've confirmed it's a device you actually want on your network,
-   approve it from the host running the container:
-   ```bash
-   docker exec sovereign-dns-nvpn nvpn add-device --device <joiner-npub> --publish
-   ```
+   approve it in the **control panel** on the machine running the container —
+   open `http://localhost:8082` in a browser and accept the pending join
+   request. (Terminal fallback, replacing `<joiner-npub>` with the printed
+   npub: `docker exec sovereign-dns-nvpn nvpn add-device --device <joiner-npub> --publish`)
 
 That device now resolves DNS through this stack automatically too.
 
 ## 3. Manage it
 
-Visit `http://<this-server's-mesh-ip>/admin` for the Pi-hole dashboard —
-blocklists, per-device stats, what's being blocked.
+- `http://localhost:8082` (only on the machine running the container) —
+  the **NostrVPN control panel**: approve or reject join requests, add and
+  remove devices, rename the network, QR codes for pairing. It has no
+  login of its own, which is exactly why it's only ever reachable from
+  localhost — never from the network.
+- `http://<this-server's-mesh-ip>/admin` — the Pi-hole dashboard:
+  blocklists, per-device stats, what's being blocked.
 
 ## If something breaks
 

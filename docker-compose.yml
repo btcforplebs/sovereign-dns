@@ -21,6 +21,8 @@ services:
       - nvpn-config:/root/.config/nvpn
     environment:
       RUST_LOG: ${RUST_LOG:-info}
+      # Only used in printed instructions, so they show the real panel URL.
+      WEB_UI_PORT: ${WEB_UI_PORT:-8082}
     networks:
       dns-internal:
         ipv4_address: 172.28.53.10
@@ -30,6 +32,43 @@ services:
       timeout: 10s
       retries: 5
       start_period: 20s
+
+  # Browser control panel (nvpn-web) for approving join requests, adding
+  # devices, etc. without touching a terminal — the same image nvpn builds,
+  # just run with a different entrypoint/command. Reads the *same* config
+  # volume as nvpn's actual daemon rather than running its own, hence
+  # NVPN_EXTERNAL_DAEMON + state-file status mode. Binds 0.0.0.0 inside the
+  # container (required for Docker's port publish to reach it at all) but
+  # is only ever published to the host's loopback — this server has no
+  # login of its own, so exposing it beyond localhost would let anyone who
+  # can reach that port approve/remove devices on your mesh.
+  web:
+    build:
+      context: ./nvpn
+      args:
+        NVPN_REPO: ${NVPN_REPO:-https://github.com/btcforplebs/nostr-vpn.git}
+        NVPN_REF: ${NVPN_REF:-network-dns-gui}
+    container_name: sovereign-dns-web
+    restart: unless-stopped
+    entrypoint: ["/usr/local/bin/nvpn-web"]
+    command:
+      - --listen
+      - 0.0.0.0:8081
+      - --behind-trusted-proxy
+      - --config
+      - /root/.config/nvpn/config.toml
+    depends_on:
+      nvpn:
+        condition: service_healthy
+    volumes:
+      - nvpn-config:/root/.config/nvpn
+    environment:
+      NVPN_CLI_PATH: /usr/local/bin/nvpn
+      NVPN_EXTERNAL_DAEMON: "true"
+      NVPN_DAEMON_STATUS_MODE: state-file
+      RUST_LOG: ${RUST_LOG:-info}
+    ports:
+      - "127.0.0.1:${WEB_UI_PORT:-8082}:8081"
 
   # Pi-hole shares the nvpn container's network namespace so it can bind the
   # mesh tunnel interface (utun100) directly: DNS queries arriving at this

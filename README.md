@@ -37,52 +37,44 @@ Google, no Cloudflare, no Tailscale coordination server.
 
 ## Quickstart
 
-Prereqs: Docker with the compose plugin, a Linux host (or anything with
-`/dev/net/tun`), and an existing NostrVPN network you administer.
+Prereqs: Docker with the compose plugin and a Linux host (or anything with
+`/dev/net/tun`). No pre-existing NostrVPN network needed — on first start
+the container founds its own network with itself as admin and DNS node,
+override already on.
 
 ```bash
 git clone <this-repo> sovereign-dns && cd sovereign-dns
 cp .env.example .env          # set PIHOLE_PASSWORD at minimum
-docker compose up -d --build  # first build compiles nvpn from source (~10 min)
+docker compose up -d --build  # first build compiles nvpn + web panel (~10-15 min)
 ```
 
-### 1. Join this container to your mesh
+(Or, without git: run [`scripts/install.sh`](scripts/install.sh), which
+writes the same stack and walks you through it.)
 
-The container prints its npub on first start:
+### 1. Add your devices
+
+The container prints its npub and a ready-made invite on first start:
 
 ```bash
-docker compose logs nvpn | grep npub:
+docker compose logs nvpn | grep -A8 'to add another device'
 ```
 
-Configure its network membership exactly as you would any other NostrVPN
-device (network id, participants, endpoints — or approve its join request
-from your admin device):
+On each phone/laptop, run the printed `nvpn join-manual ...` command —
+that queues a join request. Then approve it in the **control panel** at
+`http://localhost:8082` on the docker host (or via
+`docker exec sovereign-dns-nvpn nvpn add-device --device <joiner-npub> --publish`).
+Approval is deliberately manual: the invite is plain text, so auto-accepting
+anyone holding it would remove the only access control the network has.
 
-```bash
-docker compose exec nvpn nvpn set --network-id <your-network> ...
-docker compose exec nvpn nvpn reload
-```
+### 2. Manage the mesh — browser, not terminal
 
-Confirm it is meshed:
-
-```bash
-docker compose exec nvpn nvpn status
-docker compose exec nvpn nvpn ip        # its mesh tunnel IP
-```
-
-### 2. Point the network at it (from your admin device)
-
-```bash
-nvpn set --network-dns-node <container-npub> --network-dns-override
-nvpn reload
-```
-
-That's the whole rollout. The setting rides the signed roster to every
-member. Check any device with `nvpn status` — you'll see:
-
-```
-network_dns: <name> (<mesh-ip>) override=on reachable
-```
+The `web` service runs NostrVPN's own control panel (`nvpn-web`, the same
+one the upstream Umbrel package ships) against the same config volume as
+the daemon: approve/reject join requests, add or remove devices and
+admins, rename networks, QR pairing codes. It has **no login of its own**,
+so compose publishes it only to the host's loopback
+(`127.0.0.1:${WEB_UI_PORT:-8082}`) — do not re-publish it to the LAN or
+the mesh.
 
 ### 3. Manage Pi-hole
 

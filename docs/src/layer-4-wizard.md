@@ -1,9 +1,18 @@
-# Layer 4: Setup Wizard (Planned)
+# Layer 4: Setup Wizard (Partially Delivered)
 
-**Status: not yet built.** This is the "layman-proof" onboarding layer,
-deliberately sequenced *after* the Layer 1–3 gate (the Docker e2e passing
-and the override verified live on a second physical device) — the wizard
-wraps a proven stack rather than polishing UX on top of an unverified core.
+**Status: the day-to-day management half now ships in the stack.** The
+`web` service runs NostrVPN's own browser control panel (`nvpn-web` +
+its Svelte UI, the same one the upstream Umbrel package uses) at
+`http://localhost:8082` on the machine running the containers: approve or
+reject join requests by click, add/remove devices and admins, rename
+networks, QR codes for pairing. It reads the same config volume as the
+`nvpn` daemon, so there is nothing extra to set up. It has no
+authentication of its own — the compose file publishes it **only to the
+host's loopback**, and it must never be exposed beyond that.
+
+What remains of the original wizard idea is the *first-run onboarding*
+described below — guided `.env` creation, blocklist selection, and
+graceful port-53 conflict detection.
 
 ## Goal
 
