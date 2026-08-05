@@ -198,7 +198,20 @@ else
   echo "1. Run 'docker compose logs nvpn | grep npub:' in this folder to get this device's ID."
 fi
 echo "2. Add that ID to your NostrVPN network like any other device."
-echo "3. From your admin device, run:"
-echo "     nvpn set --network-dns-node <the-id-from-step-1> --network-dns-override"
+
+echo
+echo "Grabbing a matching admin CLI (no separate install needed)..."
+mkdir -p bin
+if docker cp sovereign-dns-nvpn:/usr/local/bin/nvpn bin/nvpn 2>/dev/null; then
+  chmod +x bin/nvpn
+  echo "3. From an admin device already joined to your network, run:"
+  echo "     ./bin/nvpn set --network-dns-node <the-id-from-step-1> --network-dns-override"
+  echo "   (run this from inside the sovereign-dns folder; it uses your existing"
+  echo "   NostrVPN config, no reinstall needed — this is just the same binary"
+  echo "   the container built, copied out so it has the DNS-override flags.)"
+else
+  echo "3. Couldn't auto-copy the CLI out of the container — run this manually:"
+  echo "     docker cp sovereign-dns-nvpn:/usr/local/bin/nvpn ./bin/nvpn && chmod +x ./bin/nvpn"
+fi
 echo "4. Manage ad-blocking at: http://<this-computer's-mesh-ip>/admin"
 echo "=========================================="

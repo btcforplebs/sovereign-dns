@@ -28,12 +28,18 @@ request from your admin device).
 
 ## 3. Turn on the auto-DNS for your whole fleet
 
-From your admin device (not the server):
+The DNS-override flags below are new — newer than whatever `nvpn` you
+already have installed, most likely. The installer already extracted a
+matching CLI for you at `sovereign-dns/bin/nvpn`, so you don't need to
+build or install anything separately. From an admin device already
+joined to your network, run (from inside the `sovereign-dns` folder):
 
 ```bash
-nvpn set --network-dns-node <the-npub-from-step-2> --network-dns-override
+./bin/nvpn set --network-dns-node <the-npub-from-step-2> --network-dns-override
 ```
 
+It reads your existing NostrVPN config, so this only works if this
+device already has an active network — join one first if you haven't.
 Every device on your mesh now sends DNS through this stack automatically —
 no per-device settings.
 
