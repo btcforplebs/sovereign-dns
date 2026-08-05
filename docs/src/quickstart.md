@@ -27,12 +27,21 @@ override for itself. No separate admin device, no pre-existing network
 required, no manual `add-device`/`set` commands to run — the installer's
 output already shows this working.
 
-To add another device (phone, laptop) to this network, run on that
-device the exact command the installer printed:
+To add another device (phone, laptop) to this network, it's two steps —
+deliberately not automatic, since the network ID and this container's ID
+are shared as plain text and auto-approving anyone who has them would
+remove the only access control this network has:
 
-```bash
-nvpn join-manual --admin-device-id <this-container's-npub> --network-id <this-network's-id>
-```
+1. On that device, run the command the installer printed:
+   ```bash
+   nvpn join-manual --admin-device-id <this-container's-npub> --network-id <this-network's-id>
+   ```
+   This only queues a join request — the device isn't on the network yet.
+2. Once you've confirmed it's a device you actually want on your network,
+   approve it from the host running the container:
+   ```bash
+   docker exec sovereign-dns-nvpn nvpn add-device --device <joiner-npub> --publish
+   ```
 
 That device now resolves DNS through this stack automatically too.
 

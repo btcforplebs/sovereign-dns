@@ -180,8 +180,16 @@ NETWORK_ID=$(awk '
 ' "$CONFIG_FILE" | tr -d '"' | head -1)
 
 if [[ -n "$NETWORK_ID" ]]; then
-  echo "sovereign-dns: to add another device to this network, run on that device:"
-  echo "  nvpn join-manual --admin-device-id ${DEVICE_NPUB} --network-id ${NETWORK_ID}"
+  echo "sovereign-dns: to add another device to this network:"
+  echo "  1. On that device, run:"
+  echo "       nvpn join-manual --admin-device-id ${DEVICE_NPUB} --network-id ${NETWORK_ID}"
+  echo "     This only queues a join request — it does NOT add the device yet."
+  echo "  2. Once you've confirmed you want that specific device on your network,"
+  echo "     approve it from here (replace <joiner-npub> with its printed npub):"
+  echo "       docker exec sovereign-dns-nvpn nvpn add-device --device <joiner-npub> --publish"
+  echo "     Deliberately not automatic: the network ID + this device's ID are"
+  echo "     shared as plain text, so auto-approving anyone who has them would"
+  echo "     remove the only access control this network has."
 fi
 
 nvpn start --daemon --connect || {
@@ -237,11 +245,16 @@ if [[ -n "${NPUB_LINE:-}" ]]; then
 fi
 echo
 if [[ -n "${INVITE_LINE:-}" ]]; then
-  echo "To add a phone/laptop to this network, run on that device:"
-  echo "  $(echo "$INVITE_LINE" | sed 's/^.*| *//')"
+  echo "To add a phone/laptop to this network:"
+  echo "  1. On that device, run:"
+  echo "       $(echo "$INVITE_LINE" | sed 's/^.*| *//')"
+  echo "     (this only queues a join request — it does not add the device yet)"
+  echo "  2. Once you've confirmed it's a device you want on your network, approve it"
+  echo "     from here (replace <joiner-npub> with its printed npub):"
+  echo "       docker exec sovereign-dns-nvpn nvpn add-device --device <joiner-npub> --publish"
 else
-  echo "To get the invite command for adding other devices, run:"
-  echo "  docker compose logs nvpn | grep 'join-manual'"
+  echo "To get the invite + approval commands for adding other devices, run:"
+  echo "  docker compose logs nvpn | grep -A6 'to add another device'"
 fi
 echo
 echo "Manage ad-blocking at: http://<this-computer's-mesh-ip>/admin"
