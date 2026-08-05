@@ -19,41 +19,30 @@ First run takes ~10 minutes (compiling the NostrVPN piece from source).
 It also writes out `docker-compose.yml` and the `nvpn/` build files, so
 nothing else needs to be downloaded separately.
 
-## 2. Join it to your device mesh
+## 2. Join it to your mesh and turn on the override
 
-The installer printed an "npub" — a public identifier, safe to share,
-that's this container's name on your mesh. Add it to your NostrVPN
-network the same way you'd add any other device (or approve its join
-request from your admin device).
-
-## 3. Turn on the auto-DNS for your whole fleet
-
-The DNS-override flags below are new — newer than whatever `nvpn` you
-already have installed, most likely. The installer already built you an
-admin CLI with those flags; where it lives depends on your OS (it told
-you at the end of the install):
-
-- **Linux server:** it's `sovereign-dns/bin/nvpn` — extracted straight
-  out of the container, nothing else to install.
-- **macOS (or anything else):** Docker runs the container in a Linux VM,
-  so that extracted binary won't execute directly on your machine. The
-  installer instead prints a one-time `cargo build` command; run that
-  once and use `target/release/nvpn` from the `nostr-vpn` checkout it
-  creates.
-
-Either way, from an admin device already joined to your network, run
-(paths shown for the Linux case):
+The installer tries to do this step for you automatically, on the spot:
+it gets an admin CLI with the new DNS-override flags (extracted straight
+out of the container on Linux; built once from source via `cargo` on
+macOS/other, since Docker runs the container as a Linux binary that
+can't execute directly there), then runs both:
 
 ```bash
-./bin/nvpn set --network-dns-node <the-npub-from-step-2> --network-dns-override
+nvpn add-device --device <this-container's-npub> --publish
+nvpn set --network-dns-node <this-container's-npub> --network-dns-override
 ```
 
-It reads your existing NostrVPN config, so this only works if this
-device already has an active network — join one first if you haven't.
+This only succeeds if the machine you ran the installer on is *already*
+an active admin on a NostrVPN network — that's a trust boundary (who's
+allowed to add devices to your mesh), not something the installer should
+skip. If it isn't yet, the installer tells you so and prints the exact
+two commands to run once it is. If it is, you're done — no further
+steps needed.
+
 Every device on your mesh now sends DNS through this stack automatically —
 no per-device settings.
 
-## 4. Manage it
+## 3. Manage it
 
 Visit `http://<this-server's-mesh-ip>/admin` for the Pi-hole dashboard —
 blocklists, per-device stats, what's being blocked.
