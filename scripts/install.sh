@@ -9,7 +9,7 @@ if ! command -v docker >/dev/null 2>&1; then
 fi
 
 DIR="sovereign-dns"
-mkdir -p "$DIR/nvpn"
+mkdir -p "$DIR/nvpn" "$DIR/unbound"
 cd "$DIR"
 
 cat > docker-compose.yml << 'COMPOSE'
@@ -106,6 +106,11 @@ services:
     image: mvance/unbound:latest
     container_name: sovereign-dns-unbound
     restart: unless-stopped
+    volumes:
+      # The stock image forwards everything to Cloudflare over DoT. Overriding
+      # that file with an empty one makes Unbound actually recurse from the
+      # root servers instead of being a Cloudflare client. See the file itself.
+      - ./unbound/forward-records.conf:/opt/unbound/etc/unbound/forward-records.conf:ro
     networks:
       dns-internal:
         ipv4_address: 172.28.53.11
@@ -127,6 +132,23 @@ volumes:
   nvpn-config:
   pihole-config:
 COMPOSE
+
+cat > unbound/forward-records.conf << 'FORWARDRECORDS'
+# Deliberately empty: this stack recurses, it does not forward.
+#
+# The stock mvance/unbound image ships this file with an active
+#
+#     forward-zone:
+#       name: "."
+#       forward-tls-upstream: yes
+#       forward-addr: 1.1.1.1@853#cloudflare-dns.com
+#
+# which sends every single query to Cloudflare. That is encrypted, but it
+# hands a complete record of everything the network looks up to a third
+# party -- the exact thing this stack exists to avoid. Mounting this file
+# over the image's copy removes the forward zone, so Unbound resolves from
+# the root servers itself using its built-in root hints.
+FORWARDRECORDS
 
 cat > nvpn/Dockerfile << 'DOCKERFILE'
 ARG BUILDER_IMAGE=rust:1.93-bookworm

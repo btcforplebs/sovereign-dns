@@ -106,6 +106,12 @@ services:
     image: mvance/unbound:latest
     container_name: sovereign-dns-unbound
     restart: unless-stopped
+    volumes:
+      # The stock image ships an active `forward-zone: "."` sending every
+      # query to Cloudflare over DoT, which would make this stack a Cloudflare
+      # client rather than a resolver. Overriding that file with an empty one
+      # restores real recursion from the root servers. See the file itself.
+      - ./unbound/forward-records.conf:/opt/unbound/etc/unbound/forward-records.conf:ro
     networks:
       dns-internal:
         ipv4_address: 172.28.53.11
