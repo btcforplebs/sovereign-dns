@@ -29,10 +29,20 @@ request from your admin device).
 ## 3. Turn on the auto-DNS for your whole fleet
 
 The DNS-override flags below are new — newer than whatever `nvpn` you
-already have installed, most likely. The installer already extracted a
-matching CLI for you at `sovereign-dns/bin/nvpn`, so you don't need to
-build or install anything separately. From an admin device already
-joined to your network, run (from inside the `sovereign-dns` folder):
+already have installed, most likely. The installer already built you an
+admin CLI with those flags; where it lives depends on your OS (it told
+you at the end of the install):
+
+- **Linux server:** it's `sovereign-dns/bin/nvpn` — extracted straight
+  out of the container, nothing else to install.
+- **macOS (or anything else):** Docker runs the container in a Linux VM,
+  so that extracted binary won't execute directly on your machine. The
+  installer instead prints a one-time `cargo build` command; run that
+  once and use `target/release/nvpn` from the `nostr-vpn` checkout it
+  creates.
+
+Either way, from an admin device already joined to your network, run
+(paths shown for the Linux case):
 
 ```bash
 ./bin/nvpn set --network-dns-node <the-npub-from-step-2> --network-dns-override

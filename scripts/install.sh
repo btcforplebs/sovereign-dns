@@ -200,18 +200,29 @@ fi
 echo "2. Add that ID to your NostrVPN network like any other device."
 
 echo
-echo "Grabbing a matching admin CLI (no separate install needed)..."
-mkdir -p bin
-if docker cp sovereign-dns-nvpn:/usr/local/bin/nvpn bin/nvpn 2>/dev/null; then
-  chmod +x bin/nvpn
-  echo "3. From an admin device already joined to your network, run:"
-  echo "     ./bin/nvpn set --network-dns-node <the-id-from-step-1> --network-dns-override"
-  echo "   (run this from inside the sovereign-dns folder; it uses your existing"
-  echo "   NostrVPN config, no reinstall needed — this is just the same binary"
-  echo "   the container built, copied out so it has the DNS-override flags.)"
+if [[ "$(uname -s)" == "Linux" ]]; then
+  echo "Grabbing a matching admin CLI (no separate install needed)..."
+  mkdir -p bin
+  if docker cp sovereign-dns-nvpn:/usr/local/bin/nvpn bin/nvpn 2>/dev/null; then
+    chmod +x bin/nvpn
+    echo "3. From an admin device already joined to your network, run:"
+    echo "     ./bin/nvpn set --network-dns-node <the-id-from-step-1> --network-dns-override"
+    echo "   (run this from inside the sovereign-dns folder; it uses your existing"
+    echo "   NostrVPN config, no reinstall needed — this is just the same binary"
+    echo "   the container built, copied out so it has the DNS-override flags.)"
+  else
+    echo "3. Couldn't auto-copy the CLI out of the container — run this manually:"
+    echo "     docker cp sovereign-dns-nvpn:/usr/local/bin/nvpn ./bin/nvpn && chmod +x ./bin/nvpn"
+  fi
 else
-  echo "3. Couldn't auto-copy the CLI out of the container — run this manually:"
-  echo "     docker cp sovereign-dns-nvpn:/usr/local/bin/nvpn ./bin/nvpn && chmod +x ./bin/nvpn"
+  echo "3. This machine isn't Linux (Docker's running the nvpn container in a Linux"
+  echo "   VM under the hood), so the container's nvpn binary won't run here directly."
+  echo "   The DNS-override flags are new — build a native CLI once on this machine:"
+  echo "     curl https://sh.rustup.rs -sSf | sh -s -- -y && source \"\$HOME/.cargo/env\""
+  echo "     git clone --depth 1 --branch network-dns-gui https://github.com/btcforplebs/nostr-vpn.git"
+  echo "     cd nostr-vpn && cargo build --release -p nvpn"
+  echo "   Then, from an admin device already joined to your network:"
+  echo "     ./target/release/nvpn set --network-dns-node <the-id-from-step-1> --network-dns-override"
 fi
 echo "4. Manage ad-blocking at: http://<this-computer's-mesh-ip>/admin"
 echo "=========================================="
