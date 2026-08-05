@@ -1,0 +1,89 @@
+name: sovereign-dns
+
+services:
+  # NostrVPN node. This container is the "DNS device" the network admin
+  # selects with `nvpn set --network-dns-node <this device's npub>
+  # --network-dns-override`. Every other device on the mesh then resolves
+  # through Pi-hole below — no per-device configuration.
+  nvpn:
+    build:
+      context: ./nvpn
+      args:
+        NVPN_REPO: ${NVPN_REPO:-https://github.com/btcforplebs/nostr-vpn.git}
+        NVPN_REF: ${NVPN_REF:-network-dns-gui}
+    container_name: sovereign-dns-nvpn
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    volumes:
+      - nvpn-config:/root/.config/nvpn
+    environment:
+      RUST_LOG: ${RUST_LOG:-info}
+    networks:
+      dns-internal:
+        ipv4_address: 172.28.53.10
+    healthcheck:
+      test: ["CMD-SHELL", "nvpn status >/dev/null 2>&1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
+  # Pi-hole shares the nvpn container's network namespace so it can bind the
+  # mesh tunnel interface (utun100) directly: DNS queries arriving at this
+  # device's mesh IP hit Pi-hole, while nvpn's own stubs keep 127.0.0.1.
+  # listeningMode=BIND is what keeps the two from colliding — same pattern the
+  # nostr-vpn repo's own network-DNS e2e uses (dnsmasq --bind-interfaces).
+  pihole:
+    image: pihole/pihole:latest
+    container_name: sovereign-dns-pihole
+    restart: unless-stopped
+    network_mode: service:nvpn
+    depends_on:
+      nvpn:
+        condition: service_healthy
+    environment:
+      TZ: ${TZ:-UTC}
+      FTLCONF_webserver_api_password: ${PIHOLE_PASSWORD:?set PIHOLE_PASSWORD in .env}
+      # Upstream is Unbound only — fully recursive, no Google/Cloudflare.
+      FTLCONF_dns_upstreams: 172.28.53.11#53
+      # Bind only the mesh tunnel interface; 127.0.0.1:53 stays free for nvpn.
+      FTLCONF_dns_interface: ${NVPN_TUN_IFACE:-utun100}
+      FTLCONF_dns_listeningMode: BIND
+      FTLCONF_dns_dnssec: "true"
+      # The web UI is reachable over the mesh at http://<mesh-ip>/admin
+      FTLCONF_webserver_port: ${PIHOLE_WEB_PORT:-80}
+    volumes:
+      - pihole-config:/etc/pihole
+    cap_add:
+      - NET_BIND_SERVICE
+
+  # Unbound: recursive resolver walking down from the root servers, DNSSEC
+  # validating. Internal-only — nothing is published to the host or the mesh;
+  # only Pi-hole talks to it.
+  unbound:
+    image: mvance/unbound:latest
+    container_name: sovereign-dns-unbound
+    restart: unless-stopped
+    networks:
+      dns-internal:
+        ipv4_address: 172.28.53.11
+    healthcheck:
+      test: ["CMD-SHELL", "drill @127.0.0.1 cloudflare.com >/dev/null 2>&1 || dig @127.0.0.1 cloudflare.com >/dev/null 2>&1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+networks:
+  dns-internal:
+    driver: bridge
+    internal: false   # nvpn needs outbound reach (relay + WireGuard underlay); unbound needs the root servers
+    ipam:
+      config:
+        - subnet: 172.28.53.0/24
+
+volumes:
+  nvpn-config:
+  pihole-config:
