@@ -114,6 +114,20 @@ fi
 
 head_ "Layer 2 — Pi-hole: filtering and upstream chain"
 
+# Pi-hole runs inside nvpn's network namespace, and that binding does not
+# survive nvpn being restarted or recreated. When it breaks, Pi-hole is left in
+# a namespace with nothing but loopback: it still reports healthy, still
+# answers on 127.0.0.1, and DNS is dead for every real client. Comparing the
+# namespaces catches it directly rather than inferring it from symptoms.
+nvpn_ns=$(docker exec "$NVPN" sh -lc 'readlink /proc/self/ns/net' 2>/dev/null)
+pihole_ns=$(docker exec "$PIHOLE" sh -lc 'readlink /proc/self/ns/net' 2>/dev/null)
+if [[ -n "$nvpn_ns" && "$nvpn_ns" == "$pihole_ns" ]]; then
+  ok "Pi-hole shares nvpn's network namespace"
+else
+  bad "Pi-hole is orphaned from nvpn's network namespace — DNS is down for every client" \
+      "recreate it: docker compose up -d --force-recreate pihole"
+fi
+
 MESH_IP=$(docker exec "$NVPN" sh -lc \
   "ip -4 -o addr show utun100 2>/dev/null | awk '{print \$4}' | cut -d/ -f1" 2>/dev/null)
 if [[ -z "$MESH_IP" ]]; then

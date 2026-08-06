@@ -108,6 +108,19 @@ services:
       - pihole-config:/etc/pihole
     cap_add:
       - NET_BIND_SERVICE
+    # Pi-hole lives inside nvpn's network namespace, and that binding does not
+    # survive nvpn being recreated or restarted: Docker leaves this container
+    # attached to a namespace that no longer has the mesh interface, so it
+    # keeps reporting healthy and answering on its own loopback while DNS is
+    # dead for every real client. Checking for the tunnel interface itself is
+    # what makes that state visible instead of silent. Recreate this service
+    # after anything that restarts nvpn.
+    healthcheck:
+      test: ["CMD-SHELL", "grep -q '${NVPN_TUN_IFACE:-utun100}' /proc/net/dev"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
 
   unbound:
     image: mvance/unbound:latest
