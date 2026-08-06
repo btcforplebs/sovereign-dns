@@ -1,319 +1,43 @@
 #!/usr/bin/env bash
-# One-shot installer: writes the whole sovereign-dns stack into ./sovereign-dns,
-# asks for a Pi-hole password, and brings it up. No git required.
+# Sovereign-DNS one-shot installer.
+#
+# GENERATED FILE — do not edit by hand. The payload below IS the repo tree;
+# change repo files and run scripts/make-installer.sh to regenerate.
+#
+# What it does: checks Docker, unpacks the whole stack into ./sovereign-dns,
+# asks for one password, builds, starts, and hands you a dashboard URL.
 set -euo pipefail
 
-if ! command -v docker >/dev/null 2>&1; then
-  echo "Docker isn't installed. Get it first: https://docs.docker.com/get-docker/"
-  exit 1
+die() { printf '\n%s\n' "$*" >&2; exit 1; }
+
+command -v docker >/dev/null 2>&1 || die "Docker isn't installed. Get it first: https://docs.docker.com/get-docker/"
+docker info >/dev/null 2>&1 || die "Docker is installed but not running.
+Open Docker Desktop (or start the docker service), wait until it says it's running, then run this script again."
+docker compose version >/dev/null 2>&1 || die "This Docker is missing the 'compose' plugin.
+Update Docker Desktop (or install docker-compose-plugin), then run this script again."
+
+# The stack publishes these localhost ports. If another program already holds
+# one, say so now in plain language instead of failing mid-build. A previous
+# sovereign-dns install holding them is fine — compose reuses its containers.
+if command -v nc >/dev/null 2>&1 && ! docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^sovereign-dns-'; then
+  for port in 8080 8081 8082; do
+    if nc -z 127.0.0.1 "$port" >/dev/null 2>&1; then
+      die "Port $port is already in use by another program on this computer.
+Close whatever is using it (or run this script once, then edit the *_PORT values in sovereign-dns/.env) and try again."
+    fi
+  done
 fi
 
-DIR="sovereign-dns"
-mkdir -p "$DIR/nvpn" "$DIR/unbound"
-cd "$DIR"
-
-cat > docker-compose.yml << 'COMPOSE'
-name: sovereign-dns
-
-services:
-  nvpn:
-    build:
-      context: ./nvpn
-      args:
-        NVPN_REPO: ${NVPN_REPO:-https://github.com/btcforplebs/nostr-vpn.git}
-        NVPN_REF: ${NVPN_REF:-network-dns-gui}
-    container_name: sovereign-dns-nvpn
-    restart: unless-stopped
-    cap_add:
-      - NET_ADMIN
-    devices:
-      - /dev/net/tun:/dev/net/tun
-    volumes:
-      - nvpn-config:/root/.config/nvpn
-    environment:
-      RUST_LOG: ${RUST_LOG:-info}
-      # Only used in printed instructions, so they show the real panel URL.
-      WEB_UI_PORT: ${WEB_UI_PORT:-8082}
-      NVPN_ADVERTISED_ENDPOINT: ${NVPN_ADVERTISED_ENDPOINT:-}
-    # WireGuard underlay. Without this published, the container's only address
-    # is the Docker-internal 172.28.53.10, which no other device can reach and
-    # which STUN cannot map — peers then show as present (they announce over
-    # the relays) while no data path ever forms, so DNS reaches nobody.
-    ports:
-      - "${NVPN_LISTEN_PORT:-51820}:51820/udp"
-    networks:
-      dns-internal:
-        ipv4_address: 172.28.53.10
-    healthcheck:
-      test: ["CMD-SHELL", "nvpn status >/dev/null 2>&1"]
-      interval: 15s
-      timeout: 10s
-      retries: 5
-      start_period: 20s
-
-  # Browser control panel (nvpn-web) for approving join requests, adding
-  # devices, etc. without touching a terminal — the same image nvpn builds,
-  # just run with a different entrypoint/command. Reads the *same* config
-  # volume as nvpn's actual daemon rather than running its own, hence
-  # NVPN_EXTERNAL_DAEMON + state-file status mode. Binds 0.0.0.0 inside the
-  # container (required for Docker's port publish to reach it at all) but
-  # is only ever published to the host's loopback — this server has no
-  # login of its own, so exposing it beyond localhost would let anyone who
-  # can reach that port approve/remove devices on your mesh.
-  web:
-    build:
-      context: ./nvpn
-      args:
-        NVPN_REPO: ${NVPN_REPO:-https://github.com/btcforplebs/nostr-vpn.git}
-        NVPN_REF: ${NVPN_REF:-network-dns-gui}
-    container_name: sovereign-dns-web
-    restart: unless-stopped
-    entrypoint: ["/usr/local/bin/nvpn-web"]
-    command:
-      - --listen
-      - 0.0.0.0:8081
-      - --behind-trusted-proxy
-      - --config
-      - /root/.config/nvpn/config.toml
-    depends_on:
-      nvpn:
-        condition: service_healthy
-    volumes:
-      - nvpn-config:/root/.config/nvpn
-    environment:
-      NVPN_CLI_PATH: /usr/local/bin/nvpn
-      NVPN_EXTERNAL_DAEMON: "true"
-      NVPN_DAEMON_STATUS_MODE: state-file
-      RUST_LOG: ${RUST_LOG:-info}
-    ports:
-      - "127.0.0.1:${WEB_UI_PORT:-8082}:8081"
-
-  pihole:
-    image: pihole/pihole:latest
-    container_name: sovereign-dns-pihole
-    restart: unless-stopped
-    network_mode: service:nvpn
-    depends_on:
-      nvpn:
-        condition: service_healthy
-    environment:
-      TZ: ${TZ:-UTC}
-      FTLCONF_webserver_api_password: ${PIHOLE_PASSWORD:?set PIHOLE_PASSWORD in .env}
-      FTLCONF_dns_upstreams: 172.28.53.11#53
-      FTLCONF_dns_interface: ${NVPN_TUN_IFACE:-utun100}
-      FTLCONF_dns_listeningMode: BIND
-      FTLCONF_dns_dnssec: "true"
-      FTLCONF_webserver_port: ${PIHOLE_WEB_PORT:-80}
-    volumes:
-      - pihole-config:/etc/pihole
-    cap_add:
-      - NET_BIND_SERVICE
-    # Pi-hole lives inside nvpn's network namespace, and that binding does not
-    # survive nvpn being recreated or restarted: Docker leaves this container
-    # attached to a namespace that no longer has the mesh interface, so it
-    # keeps reporting healthy and answering on its own loopback while DNS is
-    # dead for every real client. Checking for the tunnel interface itself is
-    # what makes that state visible instead of silent. Recreate this service
-    # after anything that restarts nvpn.
-    healthcheck:
-      test: ["CMD-SHELL", "grep -q '${NVPN_TUN_IFACE:-utun100}' /proc/net/dev"]
-      interval: 20s
-      timeout: 5s
-      retries: 3
-      start_period: 30s
-
-  unbound:
-    image: mvance/unbound:latest
-    container_name: sovereign-dns-unbound
-    restart: unless-stopped
-    volumes:
-      # The stock image forwards everything to Cloudflare over DoT. Overriding
-      # that file with an empty one makes Unbound actually recurse from the
-      # root servers instead of being a Cloudflare client. See the file itself.
-      - ./unbound/forward-records.conf:/opt/unbound/etc/unbound/forward-records.conf:ro
-    networks:
-      dns-internal:
-        ipv4_address: 172.28.53.11
-    healthcheck:
-      test: ["CMD-SHELL", "drill @127.0.0.1 cloudflare.com >/dev/null 2>&1 || dig @127.0.0.1 cloudflare.com >/dev/null 2>&1"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-
-networks:
-  dns-internal:
-    driver: bridge
-    internal: false
-    ipam:
-      config:
-        - subnet: 172.28.53.0/24
-
-volumes:
-  nvpn-config:
-  pihole-config:
-COMPOSE
-
-cat > unbound/forward-records.conf << 'FORWARDRECORDS'
-# Deliberately empty: this stack recurses, it does not forward.
-#
-# The stock mvance/unbound image ships this file with an active
-#
-#     forward-zone:
-#       name: "."
-#       forward-tls-upstream: yes
-#       forward-addr: 1.1.1.1@853#cloudflare-dns.com
-#
-# which sends every single query to Cloudflare. That is encrypted, but it
-# hands a complete record of everything the network looks up to a third
-# party -- the exact thing this stack exists to avoid. Mounting this file
-# over the image's copy removes the forward zone, so Unbound resolves from
-# the root servers itself using its built-in root hints.
-FORWARDRECORDS
-
-cat > nvpn/Dockerfile << 'DOCKERFILE'
-ARG BUILDER_IMAGE=rust:1.93-bookworm
-ARG WEB_BUILDER_IMAGE=node:24-bookworm
-ARG RUNTIME_IMAGE=debian:bookworm-slim
-
-FROM alpine/git:latest AS source
-ARG NVPN_REPO=https://github.com/btcforplebs/nostr-vpn.git
-ARG NVPN_REF=network-dns-gui
-WORKDIR /src
-RUN git clone --depth 1 --branch "${NVPN_REF}" "${NVPN_REPO}" nostr-vpn
-
-# Builds the Svelte control panel (nvpn-web's static UI) — the browser-based
-# join-request approval flow, so admins never need docker exec/CLI.
-FROM ${WEB_BUILDER_IMAGE} AS web-builder
-WORKDIR /work
-COPY --from=source /src/nostr-vpn/web/control-panel ./
-RUN --mount=type=cache,target=/pnpm/store \
-    corepack enable \
-    && corepack prepare pnpm@10.28.2 --activate \
-    && pnpm install --frozen-lockfile --store-dir /pnpm/store \
-    && pnpm run build
-
-FROM ${BUILDER_IMAGE} AS builder
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends libclang-dev libdbus-1-dev pkg-config \
-    && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /app
-COPY --from=source /src/nostr-vpn ./nostr-vpn
-
-WORKDIR /app/nostr-vpn
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/app/nostr-vpn/target \
-    cargo build --release -p nvpn -p nostr-vpn-web \
-    && cp target/release/nvpn /tmp/nvpn \
-    && cp target/release/nostr-vpn-web /tmp/nvpn-web
-
-FROM ${RUNTIME_IMAGE} AS runtime
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        ca-certificates curl dnsutils iproute2 iptables iputils-ping \
-        libdbus-1-3 procps \
-    && rm -rf /var/lib/apt/lists/*
-
-COPY --from=builder /tmp/nvpn /usr/local/bin/nvpn
-COPY --from=builder /tmp/nvpn-web /usr/local/bin/nvpn-web
-COPY --from=web-builder /work/dist /usr/share/nostr-vpn/web
-COPY entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN chmod +x /usr/local/bin/entrypoint.sh
-
-ENV RUST_LOG=info
-ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
-DOCKERFILE
-
-cat > nvpn/entrypoint.sh << 'ENTRYPOINT'
-#!/usr/bin/env bash
-# First run: create an identity. Every run: start the daemon and follow its
-# log so docker logs / restart policies see the real process.
-set -euo pipefail
-
-CONFIG_DIR="${HOME}/.config/nvpn"
-CONFIG_FILE="${CONFIG_DIR}/config.toml"
-DAEMON_LOG="${CONFIG_DIR}/daemon.log"
-
-FRESH_INIT=0
-if [[ ! -f "$CONFIG_FILE" ]]; then
-  echo "sovereign-dns: no config found, creating a fresh NostrVPN identity"
-  nvpn init
-  FRESH_INIT=1
+if [[ -d sovereign-dns ]]; then
+  echo "Existing ./sovereign-dns found — refreshing its stack files. Your .env, password, and data are kept."
 fi
+mkdir -p sovereign-dns
 
-DEVICE_NPUB=$(awk '
-  /^\[nostr\]$/ { in_nostr = 1; next }
-  /^\[/ { in_nostr = 0 }
-  in_nostr && /^public_key[[:space:]]*=/ { print $3 }
-' "$CONFIG_FILE" | tr -d '"')
-
-echo "sovereign-dns: this device's identity:"
-echo "  npub: ${DEVICE_NPUB}"
-
-# On a fresh install this container founds its own network (admin = itself)
-# rather than requiring some other already-established admin device — that
-# precondition is what made this a multi-step manual dance for existing
-# users. Founding here, then immediately setting itself as the network's
-# DNS node with the override on, means "docker compose up" alone produces a
-# fully working sovereign DNS network with zero devices pre-added.
-#
-# `nvpn init` alone leaves the network disabled (default_network_enabled()
-# is false) — only `set --device ...` flips it on (apply_devices_override,
-# command_dispatch.rs), and that has to happen in its own call because the
-# DNS-override block runs earlier in the same `set` dispatch than the
-# devices-override block, so a single combined call would still see no
-# active network yet.
-if [[ "$FRESH_INIT" == "1" ]]; then
-  echo "sovereign-dns: founding a new network on this device"
-  nvpn set --device "$DEVICE_NPUB"
-  echo "sovereign-dns: turning on the DNS override"
-  nvpn set --network-dns-node "$DEVICE_NPUB" --network-dns-override || \
-    echo "sovereign-dns: warning: could not enable the DNS override yet (will retry on next restart)"
-fi
-
-# Every start, not just the first: the endpoint the daemon advertises is what
-# other devices dial. Left alone it advertises this container's Docker-internal
-# address, which nothing outside the host can reach — peers then look "online"
-# (they announce themselves over the relays) while no data path ever forms.
-if [[ -n "${NVPN_ADVERTISED_ENDPOINT:-}" ]]; then
-  echo "sovereign-dns: advertising endpoint ${NVPN_ADVERTISED_ENDPOINT}"
-  nvpn set --endpoint "$NVPN_ADVERTISED_ENDPOINT" || \
-    echo "sovereign-dns: warning: could not set the advertised endpoint"
-fi
-
-NETWORK_ID=$(awk '
-  /^\[\[networks\]\]/ { in_net = 1; next }
-  /^\[/ { in_net = 0 }
-  in_net && /^network_id[[:space:]]*=/ { print $3 }
-' "$CONFIG_FILE" | tr -d '"' | head -1)
-
-if [[ -n "$NETWORK_ID" ]]; then
-  echo "sovereign-dns: to add another device to this network:"
-  echo "  1. On that device, run:"
-  echo "       nvpn join-manual --admin-device-id ${DEVICE_NPUB} --network-id ${NETWORK_ID}"
-  echo "     This only queues a join request — it does NOT add the device yet."
-  echo "  2. Once you've confirmed you want that specific device on your network,"
-  echo "     approve it in the browser control panel on this machine:"
-  echo "       http://localhost:${WEB_UI_PORT:-8082}"
-  echo "     or from the terminal (replace <joiner-npub> with its printed npub):"
-  echo "       docker exec sovereign-dns-nvpn nvpn add-device --device <joiner-npub> --publish"
-  echo "     Deliberately not automatic: the network ID + this device's ID are"
-  echo "     shared as plain text, so auto-approving anyone who has them would"
-  echo "     remove the only access control this network has."
-fi
-
-nvpn start --daemon --connect || {
-  echo "sovereign-dns: daemon start failed" >&2
-  exit 1
-}
-
-echo "sovereign-dns: daemon started; following ${DAEMON_LOG}"
-touch "$DAEMON_LOG"
-exec tail -F "$DAEMON_LOG"
-ENTRYPOINT
-
-chmod +x nvpn/entrypoint.sh
+if printf 'QQo=' | base64 -d >/dev/null 2>&1; then dec() { base64 -d; }; else dec() { base64 -D; }; fi
+payload_line=$(awk '/^__PAYLOAD_BELOW__$/ { print NR + 1; exit }' "$0")
+[[ -n "$payload_line" ]] || die "This installer file is truncated — re-download it and run again."
+tail -n +"$payload_line" "$0" | dec | tar -xzf - -C sovereign-dns
+cd sovereign-dns
 
 if [[ ! -f .env ]]; then
   echo
@@ -324,61 +48,57 @@ if [[ ! -f .env ]]; then
 PIHOLE_PASSWORD=${PIHOLE_PASSWORD}
 TZ=UTC
 PIHOLE_WEB_PORT=80
+HUB_PORT=8080
+DOCS_PORT=8081
 WEB_UI_PORT=8082
 NVPN_REPO=https://github.com/btcforplebs/nostr-vpn.git
 NVPN_REF=network-dns-gui
 NVPN_TUN_IFACE=utun100
-NVPN_LISTEN_PORT=51820
-# Leave empty to let the daemon discover its own address via STUN. Set to
-# "<this-computer's-LAN-or-public-IP>:51820" if your devices can't connect.
-NVPN_ADVERTISED_ENDPOINT=
 RUST_LOG=info
 ENV
 fi
 
-WEB_UI_PORT=$(grep '^WEB_UI_PORT=' .env | cut -d= -f2 || true)
-WEB_UI_PORT=${WEB_UI_PORT:-8082}
+HUB_PORT=$(grep '^HUB_PORT=' .env | cut -d= -f2 || true)
+HUB_PORT=${HUB_PORT:-8080}
+
+if [[ "${SOVEREIGN_DNS_EXTRACT_ONLY:-0}" == "1" ]]; then
+  echo "Extract-only mode: files written to ./sovereign-dns, nothing started."
+  exit 0
+fi
 
 echo
-echo "Building and starting (first run compiles from source, ~10-15 minutes)..."
+echo "Building and starting (the first run compiles from source and can take 10-15 minutes; later runs are fast)..."
 docker compose up -d --build
 
 echo
-echo "Waiting for the NostrVPN identity and network to be ready..."
-for _ in $(seq 1 30); do
-  NPUB_LINE=$(docker compose logs nvpn 2>/dev/null | grep "npub:" || true)
-  INVITE_LINE=$(docker compose logs nvpn 2>/dev/null | grep "nvpn join-manual" || true)
-  if [[ -n "$NPUB_LINE" && -n "$INVITE_LINE" ]]; then
-    break
-  fi
-  sleep 2
-done
+echo "Waiting for your dashboard to come up..."
+hub_up=0
+if command -v curl >/dev/null 2>&1; then
+  for _ in $(seq 1 45); do
+    if curl -fsS "http://127.0.0.1:${HUB_PORT}/" >/dev/null 2>&1; then
+      hub_up=1
+      break
+    fi
+    sleep 2
+  done
+fi
 
 echo
 echo "=========================================="
-echo "Done! This container founded its own NostrVPN network and turned on"
-echo "the DNS override for itself — nothing else required."
-echo
-if [[ -n "${NPUB_LINE:-}" ]]; then
-  echo "This device's ID (safe to share): ${NPUB_LINE#*npub: }"
-fi
-echo
-echo "Your VPN control panel (manage devices, approve join requests):"
-echo "  http://localhost:${WEB_UI_PORT}"
-echo "It's only reachable from this computer — it has no login of its own,"
-echo "so it is deliberately never exposed to the network."
-echo
-if [[ -n "${INVITE_LINE:-}" ]]; then
-  echo "To add a phone/laptop to this network:"
-  echo "  1. On that device, run:"
-  echo "       $(echo "$INVITE_LINE" | sed 's/^.*| *//')"
-  echo "     (this only queues a join request — it does not add the device yet)"
-  echo "  2. Approve the request in the control panel above, or from the terminal:"
-  echo "       docker exec sovereign-dns-nvpn nvpn add-device --device <joiner-npub> --publish"
+if [[ "$hub_up" == "1" ]]; then
+  echo "Done! Open your dashboard:"
 else
-  echo "To get the invite + approval commands for adding other devices, run:"
-  echo "  docker compose logs nvpn | grep -A8 'to add another device'"
+  echo "Started. The dashboard may need another minute — open:"
 fi
 echo
-echo "Manage ad-blocking at: http://<this-computer's-mesh-ip>/admin"
+echo "    http://localhost:${HUB_PORT}"
+echo
+echo "Everything lives there: what's running, this device's ID, the invite"
+echo "command for adding your phone or laptop, the VPN control panel, the"
+echo "Pi-hole ad-block dashboard, and the docs."
+echo
+echo "If something shows as down, run:  bash sovereign-dns/scripts/healthcheck.sh"
 echo "=========================================="
+exit 0
+__PAYLOAD_BELOW__
+H4sIAAAAAAAAA+y93W8bWbYvNvcCQeDKc/K8h/a0KTVZ/NKXacszakvu1hlb0khy95nT0yOWyKJUI7KKXVWUzHH74iAILhAgDwe5B7nn4eYpTwHyGCBAkKf8KfOafyLrt9beu6pIypLnWpp72qyZtqSq/b3XWnt97bXcE9cPL13/rTccDfxf3MlTr9fXVlYUfq6vrfLPelP+rsvvLdVYbbZW1tZWm+urqt5Yra82fqHqdzOc4jNOUi+moQyiMy/s+Wk6mV+OivX7H2hHpqLsz38tz3/13/3Xv/i3v/jFa6+r9o/U3yv94N0vHtB/TfrvR/oPf/9vt2ty6/j4UP+KGv9C//03U0X+Tfb+v+1GQ9cbEfS5ozi69EMv7Pq/+Df/9hfus/+vfPU//u//6yeY5OK57jnw3n7jez0/rt0dHbgR/xv1KfxfW11f/4V6+2mHMf/5zPG/VVfDNBj6m431jdUnKxsbaw23QU9rtVlfcVbX1avdr7YOX3yz++2O+9ZL09idh66bW7/b3Xr1pz/Hv/3G/7sf/6HurDxRR1Tp1e8/VCmH487feh0+1+fuT/8b8b+xtt6cwv+VtZXW4vy/j+ehehGNJiqNFCBB0RIovxek6tTvR7GvOr2oe+HHivB3FCW+Go9Utaeq1dNxMOh1XMd5qA6C6nk08JXXGwaherOrRl6SXEVxT5Vj/8dxEPu9Jdc52P1m/9XOycHW0dF3+4fbm91zLzzzq0MfTRwTAfpzFPqK+rTt0YYktaR77vfGAz9xneN/2Hxz/CLf45V/yv1FcarKiR9f+j0VhSo999XQT87V7gHPB393ozD1gtCPHyfqNA56Zz59zYb13c5XJwf7h8ebG3V0sBclafztwZ5KonHc9bE6PGGXug7VHn05Odx5ideeiv2B79HKpN4ZdY7C5z41EfoprcFFtRcmqu976TjGoOIzzEQ3cLC/eZ6mo6Rdq50F6fn4FFSydpp2aRUIG0+TWohxVC9HoUsFTLWXm7m2q2fjID9imt6rIBy/Vek4DP2BCsLUj/seDSv0hr4q9/y+Nx6kakzfG/X6kqv2w8FEyW7Q0IOEGgv6ahKNlTdIIvOFICKQlQ1pOFjOfnCmZ3L8Zu9k9+XWi51N3SoGtO35Q9oL2kR16cenURKkE9c5fHN0fPJq/+vNIOxHvJXYOzSb+IM+7WqS0h4SzCWKKlC39NPuaxmrRYs1iLreAEXbz7D1z2kbt/dfHJkN3GgUGj6No6uEIThM42hA0Il1KdNhhINI/SmieQFO/SRNKmrohR5Nt+dfBl0/WVK8HnYIFZpPNDr1uhfVCMt27YjUX/7xnwkEaObKfwvE6RFCTaKwR61hkamf7jmBY4WmqWFGD+zcS1QYYd1oXFGfFj5R0VXoOgDRN7t2ks1PdGK6J4Ct4CwkbP80Lc4+t5f/WvXW6grT//rKgv7fy7OQ/z7rJyf/3RkduL38Z/B/rdVqLuS/+3iK8l9rpb5Wd9eeNFdWVlurawv572f/3P3pfzP+1+ur0+d/a20h/93LA6lvgXyf7+OSRLm1/XrHHfburI9b8//rzfUV4gUI/+vrC/y/n2fB/3/WT8b/3x0duDX/b/F/da3ZWPD/9/EU+f+1tdbKigszUItkgCcL/v9n/9z96X8T/jdI6Fydwv/W2lpzcf7fx/NQHRE+xj7JgGp778hxjjJFfEV5vWo/GKT0nf6gz0c7L6qX3iDoedDT0wu22CwvQ9M90VpzqOon0Th2rBUFxpjlZdaJw8gza1PqVPiDWJDo9ZB2oqL+7MeRGvlxVdp1xOgwjr00gCqeP6fnQdyrjrw4nWQa/oEX+q7jLC/v+Vcw0rDGnejOn/xu+msayFyjVkfsHbTNYS/BK8+Zb5PwUtWZ0fvD7NBRZeo6CKvU/9kYZgSs7GXgX1UcamNUPZ1U8VP9OA66FwC7tMLzG3gTGk3qd8/DgBqkdUy9YFBh45Xn0JzGpwNawihKg/CsdhalXVgJRtSDGBoS31ffY1JJrfNDmX8u0fw7nY7zl3/+n/7yz//4Cf+vptbu07b+l3/+Jxryf68+wUPNSFMfvwT/pFRy7sV+AitemNzcxD9lnd5cMDcw+ofNaT0xluHNX/7j//ARQ/1f/m80YuyhqP6BYm/C02hMIFUs9v/YMiomCMuGVmYb6tAfnvpxRQZrzIbt1ZZMRAl1kN8b6023uYFfY787jpPg0pda8i9b0eIkN3fQD8HtJVNoegvVl8DINOHf3dWW22jwr0KLTK3ckv7zNWv1f1zz/l9mO72uiakKtykoA/twudwe/Ov4/784U3v0XRD7X4+9uCdm97Ih/EvOB1Hi/7y+i+t26wP//ydHDbxRGo1ygxud41ixT5SeE6yGUY8wWwb/7/+JqP5AEapHg0uYYYnWnp0bhKrkJ3rrxw/pTOzC4jsRyzYdrfRXjHMkZqJMJ9M30RVs6nQoERmnwzRp07mUM+JrEz+jCE6ROOj5qnwaE9987nSmHAA6S6rrURGaFjrkYxRteLQdjHSqex7pkzkbkSMjctWxqaNGURCm0ogZgJfK8Zl3oNDnPPuKhB7OJgdVzDifKmEHhHSgtdCscGKXmCYv/AA1MzG9VRz644o2yeeP6GB5uU9nIfU/gBWdFino8/h0gzFcBMZh7Ht0JtJIFHEH59ypFzoD37ugE5POW18WJ+KqfGqbLplPsCxQyq4QQYjd0LP8y7//n3MArt0q8NJQ3bLQQOpoCe8dQ2bLlgpWiIbFXnB2nqp+HA1l/ERrDUmcZa2WXAIG5+soOiMohD/Ai0E07vUHdCjxn8dYE5oFHFuiuBeEzBPp9uCV81D9zjIZjnMQ0/R+TNpqWw7vqyA9124xcoqPBmP4GzDDoR1IwNaoMnF3tCUEAbSMqOV0arQuNVq8Gi1Fh8dJUOxX/bdBAvYk850xEBT6fo/gX+92P4ipXRlXwTGHOMkxOC/t8GCr81jpJfFiirgeAVQMFKgBXK44FkG8AQFCb0L9CPtz6iXnzhmBGkEPEYJngORq7I+i5yoxW84eOl98obq94junO1J55zjxj7IPvEJSNeXVBGyh4QXD8dD5kOMUqstCyJ8oFAzAb4Ab+JIdm7Sfyr9r1KuNVbS6JLSjvE+nMRYlGqeK5tZW8Tgk9i/pxsEoTWpBSIs7GLjJOfGCsy+XqPJ5QETkKiZmVnA9gWsQFehe8MJeeYOLhD2AMmR1lwBUD1XDVVu9HvP3xknGcY4L+ziKmYhgH8PR+FQDFW9MdejRLgXhJfjoIjC0sw2bWjn4gcnC/KTOaPNUdWtDPYbvFQ3EC4Woy1geyxLthwr0QMh/TU6FCi8T+9lgfASQHW4T/j80rHBMJMF13Y4RPwCvBKC0oUQ9xrRQXsFViKkmwaH2Isrco5aXC45GREe81JkrLzQ7hh7rCVuMuww8x8go/lu/WwTMKo+b/6EV0MIRQZb+5RmGSUIF1v45vaYfg4CAgSSCLR4tTTQADR8ERJ2J2AwmSubf5sHo3YHEBGGGxJK3JKaQZOSN06jqdbv+CHgOSg2cIhLYA9rTClxFY4LlmFjZS/FoYh8p1EgSK5zlzxaSYlwBq6arXovnlXXeA73QvlsgeXQM+TFhgTcQeOsQjnSY4GHStLdJ/vgEAZly+OLtrqJWxQK9gxngj/GIqvreUL0ZnsY+6nQvMJrkPBglS4qOaGBQhiwiiqrLaDCmvzw5/4SLbxugqMU+BM5pDzNALe2xXiaNQ0ASh0kblYh99tXTq0QvfndIAwpwwlDHxLy4ajdlR7Hl5TmuYsvLJG5GGWmX/feBkbIj+hgEuNFSGY82p9xpNNfdOv2v0X70Ludu1q4CWt93RNjsRbwbRPJ1y2hXN/lqa4/m5pg91Jvbspurj0zZQesvWnDys/ufE7OfWeJSxadqMHpe49odp2ydTflk7YBI41T6ilDtgkaHFYeI3R0EfkijhiupCNZgCiZauCDS6Ai3Q8xEAlKAmUK1wYSOahIDYBiC/sD3Uzljt32wUlgPkMEq7YdhCrT8mHeYtOyTPRjBnxGk+SASNKLTAOffMvZomThPuxIzrpzlzsvjVy/2916eEDk4wSz9kIDjNcHG5le7e9tMWDpaVgPii5ip8QLnZpKOT2nriTdBUbvvjOfolwao3Re70WCAoxULYtGGOGsvpdFg6tpD9XHh1K6iE79JiJXA4RUrgy3PBD7QteFIjgk62WkFLGeUsbsiG0e8jgQkQUgdd6PYX9LjzLOl6sL3Rxn3YNlDLCwhCe3llRczpQLAw6+TJhElSUBMowzQ8G3cEybnDdjL02XOXFggUEWNT708Hj1lzKImzf53PYwBhxCdncwjwR+VxGZqwXiE6vrSGTETBPEQRnDw0DwZYAk0aS0uZVEyNlQG/JKYwKrwxWjWM37GGPBuX9ZHTvUzrGGP1qVimHJNdx5TT7QeF0T/FPjsPPtMYsKAhkAEo0/DwuxBJsyou1G/7/vV5JwWk7YVMCYHKjBqnHQMZ6/7o3JXieq82Tvc2XrxzdZXr3Yqoj7MMfcdDX2YvUeAg0ldBrxDvDbqbACzAR294zgsggoNJgMgISxaaagwYIKGFN7swvmjX2aIMDlB5G/oICD63vUuaQkZlY/zzQcgtaNoEHQnchZpsBvS+iwvE8U3/AcDH7CGlg9u9ILGQWxkjsx3GsOKRkSRxynI+WPsX5ITQ9IoEiqUV61Sc16YXJHIgOoG1rlLgMR+6OuJdXnMON1YpMPpgJWGEzqoGlbpiuGUiRl1jjUp9zOAop5O0SvoG5HTQ+Kd+PigMQ59wQU6JwOIXE8xcp9m1cs6/xL+3HT4CWeAYQstBCQxFGk2vstiS6DZ0ID5bBKbIp4z0RgiflHPm2ByM0JvAeaViMbioN8xnvIdcdFPvbMzSODiqU+jYT99mo9xyP9bK+H/ho97IoxmVfML7mQ4+NR93N7/Y7XeXG3C/7O5uP97T8/C/+OzfjL/j7ujA7f3/zD4v76+uP97P0/R/2N95cnqittqNjbWVtdWNhb+Hz/75+5P/xv9P9ZXVmfO//rK+uL8v48HSoj2lObb0Wq1pO1AU51p9KMepK+i3K2Z91Im25eKBiRw+o4ozCESJKLR18Iiib3Vap6zRx+iqM9kKlZlchPFskY+67hqhyWGvC64oEwq2KC4pSlTnzr1B9GVXNvMO52ogtOJ0aS02TDIuvu2thFiQfy3aVu5NZTQb734LGlbK6K999tWj95lf1Q/5hbw++nWXuYae9muTklJUtzu1smc7a7a8UJMhipejcOBnyRVEppHI5YFIZGPTryenW5V7e0cn2xtv97d4zdan5B9zpuJ2vk/uIQoTnPFWTkra92uwTZWc+WvbDX98DKII5a5TT1znRhLYH+v4m6xWaaHcr95zDqS0Or+IajGY5Y+E6P0mrCSQhsXPaM3fnP4ytVt5VWiap6GNOtzhJa9gauOfFaOlp5BSwTHoGoUi+K0CzVme7Wx0ayXWEzt0Z6kQeIrz7aTjPxu0A+6UBrH0KJDaZCD8cRVr/x+qqBKm4haW7uS9IKEpejEtmW0BUM6hiGWXwaeOjp+s6ftQaIaZoUz4YLoX9haAr2VIEeQNWaVYGZtGAC3tr/dOTzePdrZPtnZ2z7Y3907tsA571tVVuxhzr46JhIcD0jip3di4hLnLdNfZeY2v1a8oRmzSpokibGzapR52j+FnUjqZtZhcUGhuNGNifaO7WFcEmuFz1D/0BoyqRj5rIoBcWHYgVcWjQCa5jIgyoyLKo2hcmAtngAYzTFZQtNEe2gQPS/1ROHBWlfC/aEAJsgqD8VPdGthdBr1aIEOrCISqrbBQOxHVkuMlaF1i3Gst7UCNbFbqtsqABOWNYTFYjmNlkVJDrsWjBMw/pxDDd5lxz+7X7oZUUEbQw2Ks3onGfNIBEbQaw7hSxouXu0eHe/saSxibHgvSFEb90YlLm4MIaYyaJbZ1Iy4BqPLlRMNAe3CXnORc0Lp9JyWsXth6qRE7trq+9KL19vVo292Xr0qVVQpp8NUz4VujWltm8+/aJR+0BW580sYzBqrBifAQxO40qu6eRX7KdwO2mpVv2DqekKHSxD12qpJBfko+mp+hAJjr1pilZ0YlYC4s/YkmOPQkN7HivLTrmttxGk07rLCzrMmtII2XwVD2GZ44nykJRVu7U/EGbHRlM9rj0hKv0+nBsE2/RdPWLFY09ZSVx2SECngtYxGl/XByS1ZM5kxQ3jdFEYWTavyOmfqLxSlIVOrCu1byHrPh0Jidv7+eOdwb+vVyfbWzuv9Pe0e5sNL1TfbNmQ25Su2ptTZsFEHwYciV7TLD3Psi41RwqssJINGyGTPGLhYgyy6fK2kX6KVSrmlQCiQoO1c20DOxqbX3Ri8Yh3tgRuaNuMx9rOpQJtXJYCEsjZkbW8dwHIgttirc2kqMz6wAZvnkhklC3ZH7aurzXUKngc/L+aGJnQjb5PBM8hBbZzEYqmvnQZhzaChxn4N8Bkhq1aF+tkXGuTYJThX6tQnJOxVie2AP3GVduPtJPfZoou8mOWBajrmShoNB5rlGvkE4idRaAaTsaZ6XXoB+JC2MZOfCBGcfEoWjDfnxSvig7aOv2mrOYuXLziFvm1VovXwS/ki8uXk6Hjr+M3Ryev97Z12DsdvyfhNHzYftmzzVpWEGP9VBlygKryMCO9gxLVk5hrzrQm+QyQ1pvN2MGnzMW/c1NjkxwRbuJ8cbafOTWSjc+rQ+CkaPiKzw4qBFzbRzLrrOtlZnTcXg4ZdgVCICdXYf9meJuZfDIYdzXFcGNOvmaTFYAXPqg/YgVWZEHLoJT8CG4ALGa/CNupRgMnIrvGZ1NavavrLAI6S6S2QXsrfiPd6kCc4MCyStC3M/mci2BxkOf4HACz9W31z/MIQO2PLJxojp8KJNwpOjF8DKkx5mbV/Pc/1jA4POD9kQsgb49NC22ts23xUsW8DMTUTlfNQJB5U3A1rmauhOzVCeBsYT5kij9V4uNqyHePk1Z4m17kwPM2gEr7ktEWThADOF/Mklnle37a6PRVs6Kl2VSPV9KrOeEi0FWB+Tin6L/G7UyTpIRuCdaAxWsjM0dTy8sZbxTirFF1Urt1kkKjc5poIZCBJ7+cTaIFqS6KJyavlAH2ugI6pnhztHH67+2JH8+o2vFoAd1zNF2nKMUPYKjqAGk0PGAs6wP4YxObr5ojHv4SDgrCPvhiGu7RMkBPYz4nxz+9Z59OB710alw6LxkZSSlOIOj2x22b0lUfAvk7hmWab7NJbqKgIGdZNCTEDSYrZDK1RU9wR2YiOt7A+a8HYMmlCTNlLwMhcPeJuGTTFGs/6AfHQcNULyBRoy1jWZwi+9l61rTGxHXoXvApeKsebdXWAbgLdESsoHhhgrmVFM95RnAF4yfqpn3PS5Qb1oic5TLqt/CMelj+qx9dj2GNVI+6lywodOpbmiEXN+oxYtDojFRmCUZSKWkYq0iSrnRGpzKkHHqoCi7RvH3SpFvlD3Kqphqt28649Wt/3Yd8eFWV4/pTb46oGj1L2lmV3DKz0WA87f4oNL2HuqJlPtz7GdIUbz7EpSiE0iwoQLItsx26MLJd3UyxkR7tDVRF0kSieW4IrpeA3Q7htSbzk0rwDulC+7ejY6FBEDgE8532OvFwV25xxw8tJfJ7dVlfti0LXwjFLdSJ+hqLkgk+LbU279SSCjxpOomsgAro4UWlxq4KTrqWWrtmemlkb+KHEvYSZ4HYtGqW2BCjvB0vH0adQXDQ+CnF7cTAYqN/YcxVOVeYcJ6FlWpmhfvqJ2M+z21eYg+atWTSfq/1gpHnlCXyNGCVAAunA0eJ+JdO6vjl8lWT3EwyzS1s2YLWtqCZMVE/tq2xcthlmWKV1BT2qyOW4l4BzbubWJ/zKO8ITQ3khBME6PTFpIBZ74I1DKN/E34zB9s1uUoDg3ng0gGLMqGHoy7DCjtEcypFIdw+qM2+gPU/P/JQ/yHjcBHha9sBkVOm4MK1kKgq7Gijps0aOAVsbOECjllz1d3D7ZsKVBzOqI2oKkU6Ibp/6WcRWGowmswaXCxEzRdnJLI+s00GePtrzEgvXRg+Ed+yyOKX/kwkYT2W0dD6+QctABW5BH02pD8v2t+PCb6vct5FGUSr7A2Uapsw0S/chLu8/U8ggbjvC4mpKM6XzNUFFsdHmArO9dKAjwdqrV9LcHNgQRIJRIQdY7lwKVzXNZn/n6twomn/zJlseWiDI5XUtlx/NvYtdHva+iqIL8Uz33/KNhSTn3ihHEQw/+CLyr7mcPRqMtbA7dfFaiapG7pDw3Wx2gEzkbriHq0RPteSrt88PuxOzrkIjjAVV86SP+UY5Ha2hCaw8icaPL0WA/pPGXOs1r3iGH8YQlLgFithiH8KRWdX8NGC3eR/yuz17lvXgqBy3dXhlxx4VKADHz8RnAJPbK75PxJFODAEwUVaW2SqivpxjDlp6ahgrXXX6dJfuRt4wt1SQkiweVYkandIE8idsvdZccZwc95RXgVmFhH3xtzbV38nD0QLcE5HNwBndQR+39v9ca622mg3E/1ltrS78P+7lWfh/ftYP43/mBHondOBG/K+vT+H/enN9Ef/rXp7mk0L83zX6z11/stFcX19tLNw/f/4P4/+dnv434/9Kcxr/6cci/v+9PCRAss+HiB8sTeVjXRHDzRw23x72WARKgy6r0BLXeXm4/1rBoN1uVJNBMFRbRyKwOIfsLBWfRUqHHqC2T9F2tYqbuT5CIYBvh7ruj3V3xflu//C327uHqoZSzov9g98r/MbmbuXKiyTukuRD/3LzukHpT4YSngXh27Y3GJE8JFWqVSgDNyXMArfN/4idmm28Na5UO0+HA2fn7w/2j3bURv3zoUea/7drfRd9fAz/36w3Gf/X6wv8v5dnwf9/1s8U/38ndODW978s/q83GmsL/v8+nqn8H2urjRWXtmJtY22lsYj/+/N/GP/v9PS/Gf/Xcvy/Pv8ba4v73/fyfI+9/8FJg3Tgq01VKkQDLjk9X0KIgU/H148PDszuxWKNKQQEdksOLhVEcUINf5/1yy6D7AofnI5T+lz6wQHjT73Tj5Jj7Tf0wg9LjvN9NE5H49QFB/+Do+1PVRhhuUzoXU5Kzij2+35MI632vPhi+utZkHJYOJJ5onhSHccDfDOeyxyXYmLtKm7OfZndmal2rfWkt+H5/TWC3BWv2e81+l6j2X3Saq49qft+z9vwWvSX31tdp3H0fCrZ6q02u43W+pOev1JfqRXMNqX7I4eM/7SwtTtMBPJR/H9jneP/Nxb6//t5Fvz/Z/1Y/L/DRCAfxf8z/q+3kP95wf/f/TPD/zfX3ZX1lUZrdbXVXPD/P/vH4v8dJgK5Af9b661p/F9dWeT/vZ/nv/D8H851oRhukf/joThCw+dx4A+1b7JEgHAkXgQInw3ex4EQJfMHfDFh/6iIS6lESFTlkvZalSCD7LDr8KUAiRANIvfr0pIKo3jo4XoNh11MIxGBdo8OKuxKPueijQr6jjiEcUQMT3UJKqMhB1ZU351HvkSy1JH/ckNKfOpBFp/tNdSIg3sEElzdE1dOvv0QwFWaS6UmljcuBGP5FC8fLVgBEnL9ibesRInEXOA5XdGpH9iLi1YjqaWxh22FDyJHgL3yJhXteajNRyTODWE+4sXJblPo5UfAafjzY+Tn0RBuo/2g4nT9wYCvx1Nj9D715fbyzO1mdiGzt+RoGTHPBA6957igrMM8XlEjeu1ovJf+IJE8KbmA1hzc3cJuWW5zLM0L+S4vbbx3WTAdpvsn9YqzuvykXgDMQ7i9/6QOUfsn56dqtWr/o6IN+mQDkBKm/IQbH9OXHnhHk4ukEDT0cVJwg7M3Cis6fOvsnS71rcbfRCO0iwGpJg9BT5CH8NKEtVdfyt2UYBAQmEhoXQRiNztOGzxkv0vt2ojIB49jARmiEuORm91F2yw4lUrXLe7arDj3fRzTYvK95S9tjgTEX2GEzt8o0yEL+DKIuf3Ojp1eMe+CAQjBHgKiQVKEvhLuPzDcI/1AqQisMs4VHueRnxLwXAV/9mLZqq/HAeLbZ/eyI5qhjjXLt9misJq5mI4TbFN5hHAgSPwgIRMmvoSChyP3T8hI8N35hIZk8LGErEVCskaBT6PlFAlMzkw0zmWC4GW+rg+U06TQJRqcx3Ggf2IilXMc3J7flfsWjAA0/Qpoin2hsR6EyzGRvj11gZsGCWEgwoaYa3Ci4uHBcE6FEsLT6siuJU39de6GmaC0JhrtvFi0zodj0YIkM6TLfS3lXVJVXNBz1e+JotJAaX1xWyoYDv1eIPHOZ65Y0buBXLQnaEt9DgzzVPUHwWgmzqzDt0t4dfKBZm8OM4vrJ99nWRl+KGdpoIjrWkIDZ36aXYngy3Ne3g35sSR9cuxFs2scl3ET6bbnf07/c/Tm9eutw99/ehbw4+y/qxz/q7HI/3Y/z0L/81k/c/Q/n5wOfJz9F/i/TgLgQv9zH8+s/XfdXVtbb7U2WusrC/3Pz/6x+H9np/8t/D/XGlP4v7q6voj/eS/PQ3U0Hg69eOI43+9CaOhJWMQfylYhuIR8CB/gXPFVhN1G24h3P5SZY602zCX2YsFm28jSpmBTB20plmu1rSRuCraqHHAGgQ0KRVfaSkSz71g0M8VXqiKqmcJf6+ypX5CMWcir+kNZJ1a1JUkiSGhh6IP+jb/8rTfsEz85/j83zU/bx8fw/63GGvh/+muB//fyLPj/z/qZw/9/cjrwMfw/43+zzvk/Fvz/3T8z/P+Tuttc3WitNjbW1hb8/8/+sfh/Z6f/zfbf5np9+vxvNRb+n/fyPFSGz4XSntOAbbM5R+0h2OPRJEn94ZLW33NEESRV5TtUUb9ginoKi1qYcHQr5Tmcw3IQXPiqk7OPdlBcYmuF46Ef52Kbe2wQHsNYo2M8RI6JSK3Da9EIZw1jemyeJDaUuLo6elSo77WJZc7EYTudOF5yIcagay1plUKIn1z6QNTh2MtwiaUhwgQD47U/SMTwyCmYVS6bYMTWaF7co50XdrjdeDJKo7PYG53TKsBaJZnMEl5yCUecmWElBatjrYGI5kM/g/6E4+3IBEl6CR8jUrBPQ6M1h91eJ1AOZXf0Khp7XG5f9crJMnatzVLPXJJsc9+9XD5t19FiHAc4MfEmw3wcsCz6pFiDOZiMfsNjeZ15B+j0vJcIdWdiERKUTcUnpxEgeH2W7tWZzs+dCKiw5S8/RbEIIhxkvlm55KjtxRxr27ZtQp6I4bGQjN0YFPFHIsFfODCTWBujYnZ3AErB3Fg0L2K0SHJhYUMyBKiAA0f1A8Sp5iGZDxf+pKLOx0MvrMJGxAEpETN+SVIWJ14fZi6On5j5N9DMpMF0Ys3nNsC0DSCo15/HtG9TceannqcGJs7rVX5Jpm2sDltsc3Yy6llW02Th8JChPvFDTjGSN89xFmn2pxCrmsO5Jh1Jfpklhbc7DJB7DEv0uXcZRHA898XaabKFT+WLbzsFkyMNLOY87fMshNOmR08hko5ZMCcjPwIt0Ygdyv2KKknbIz+slGzUbu/C4pHZDEK00JhP2Q3Hf9sdjHFHNjdFMxEdaFfyqBai3mVpK4moSS4X2BMFJuGMARqRSlg/jd42CGaG2jZCHg3ma5qfhc0h7v6mkjkZcSwRJh7RanPmfwKLt/SSyBFMppxVQsI8EmKaKHxGbaNN6fP0NWzttGE1ie5z9Pkzhs6/9bn5c3ny+h+r//rEfdxa/7O+stogXpD5v8X93/t5Fvqfz/qZp//51HTg1vofg/9NEgoX93/v5ZnK/9hqrW249ScbKxv15sZC//PzfzL9z12d/jfi/8p6c3X6/G8s/P/v53morrWIapfpRGcQWm2xBz6Jn2niOPvIJBdO1KsgHL/lGMRJRXVEd4Fo2KIq6Kjkx7GXSlxa3QiHWOZLupJL0tHxwi+jQKtrjMc+lTRZB4zntaSViKYzSzi57CodHae+syS+tbk8TEastoU5qQm3FpNA5VjPfRMTHhJS8NZVu30O2ErSjUlQZfPE2JiwEB51kimalLncwMHGoWFAvhZP0sOQeBbFFeUHkn0tSFh+n147KJPS8aljkqtBfpfqbxFvOkinVsLOSnzdzQA5wwsynOQip85kKEgjCZRNw42T1MlpdTrXJtLg3DEd7KxdcaWTacklBWe2/UKywXM6EPwQsNEVkZBzgnZMWjDAJCaGJIMEbTwyxISiRmhMBH0TjjE+qenQtrS6ff+K73RAxE9J5Lb6PQzCQXceAsFDOs+FVVdfqs414XE7yOsHeT2WjWVthcOanuJtBu3dnIOKCQZhkk5Ahh2KcMwh74eENSk0Mk56FVWUDGNegHIlS0Lrx7df4iFfpOD0adSrWR7styBiN/aSc9xl9wJOzYrZh5KMksonFwEH/XVovsg2eYLQXP6JQB52uGP1A/Akh1IAiWKUbo/zE9LOSFeceMKh6YzD7sCHj/b5OBV/7kICydiv8qh4kQmyOUR+R516iT8ICG10j47JJOLJJGTOwxGux3hnuF+g6QV7eauLkHvyul1/BI3gmU7JeEVU5tzBV2BpEgC2ZLzmioSndRRDUDYoqAGK+F0UDUZx6RKEdfePHODud4R20VVSXN0yL152P4Njoqma2js8OKbloz+WuC9cPxmYXTou6GeQZ45QeSKESkdyRqhyx9myWrurUKt70VDV7wVM0oJYu5lrpJHLUZwgdJTynRxRzxsNZkF5iYXkm0zFcPepXV178yAFjYkGrLqd0mCa60GRVR7xUF21HTEA+YMsJraZsQdtq+OHtNRdHxMlEKbDJwySodlkJRAVRSMfN71srjrdOq/iEe3tAIksCbwxT+jXxrGPU0kUZCbuN6hz19dK+JnyVrUkdxf6A5/NALgGVy6uTOL7WounLzSYSxTX+kwtuSZzkFPM6ygp/3J6ZLlHUUYXxutpvq/TUsWBDu+aOxRIQMH7EyRtE+1bBYUsAU559uqdqvY6S09Nq5JC1KSr0S3nblbJJjiARgNmDIV8p0KDJaf/0inTAJI5VeqVF6Q6604eNLXe2FVb9CsC3hs6+qW1opidBACxIvZU2xY8B9f9oNbnKzWvvz1QwZBlDICXgEtnKm9gR4C874vB5TSmps917lLArU+kiWgk0ml1cASaBIQdo4Mc4B6ODjRvllI2RA5kZ7ZH6QSL0LEJ0zqu2g9NdiNdYOjHZ3yJKQidXMesbk69szPcaJIR5hfWM9Wh8v8o5WhO/zfrsfeJeMyP8f9qtvj+/9qC/7+nZ6H/+6yfOfq/T04HPsb/i/G/2Wi1mgv93308M/5fKy13Y6PRfNKqL/R/n8Fj8f/OTv8b8b+x3pg5/1vri/uf9/I8VNNXNxwn57skedlmYhF4olY7jVKEqYjyIon148FFdXFHsfqKGY8sYmvnBNXIJHGJLPDrkosrKC9sRjT6srwc5DM5Li9zCtssgSO0jWCvc5kas7To8IKqqrwzGRRky8ttziyZTOWVvC7WgshJSJx1nauYCfUB1V0+BMPUrXy+v45QHtQUL7h3pW/CyzDFccymsSTpCR4hFRnNeYCca6feBefHEx8NLZpD+8CqJcluT60Xfc4QfxHaoW6QahXEn+DMYXUq8KGD9o46HvsYyq7ks+wUE1p2xI3LuIW0l5dVh1MLPtMFkA1XVUdqtdVaVQVnwLLx7ciyazs2dZ2GhiWo+cZxCJEtiz2jAYid2zgSjF535IIygWKM0mVbBHmaIEK/VNUrVmMmNq8Z6x7zCa06JletkVDLnXxexo4WdpEGS2dRy6t7JRuZxN9g/6rr84liUb/JaSI5TXaHUzl2aljEjlWLdGyitI7J2ltYub/SJWZG/stdxPpUNOaj5L8Vpv8rjYX8dz/PQv77rJ9r5b9PSAduxP9c/ifG/2ajsbq4/38vz0z+p9WG22xuNDY26usL8e/n/0zJf3dw+t+I/4TtjenznyTAxfl/H4+R/7Ib+db6b6OFcV5nSHlGMDQyXt+GiIOVNAsSp7PmOiy9zMZ+e5yoaSZfwsGR5LA3Jzwi8dnG5CMC0YFxJcnSE8/6hGSWf2o28wrB9R/Lty+ZOHkssYp3iNjACi4iLGAYVp6z5RpDj7LSIUbGofEGnHAcC4LYlSbjPezBCiSQhzodL9MMnaUwapTlMAnSBhuvuYVCXWxJzDEvOecgcywq5xaeb1dpifqU47idSr6tCkaje5yV1zxZODNYEfMTez1DA0SlGOcRO2NbNynZcYEAwdTO4DlxZe/+wHDHlmDslbkpNF86s9CH7FxJ3jEkJyVayYzvuIzg3qFok/XbE4jzNmF2m2sv6QsQ0AKwG8214ALw0GEU3Y/0fwkSXnx14fsjKAgAuVAjdKPBQOLsSS50GpC+vyHW6vEpu0jlZTx7pYUmiFzEdI4SnMntCmNAhGNGpBsyFkc06DcRHI5ACPJkBjVvdjl3vLn7Avm+gyQH7VrtGVYCcnqNg9p1Knylgxrkq1G4b0Vj6Ogs5gdbR0ff7R9usxwsZtLFhYx/pc+M/F/wOfg0fdxa/of/51qD/b8X8T/u6VnI/5/1c638/wnpwK3tvxb/G6uL+B/388ze/yD5/8nKk2Z9pbmI//fzf6bk/zs4/W/Ef8L8ZhH/G+tri/gf9/MY+T8Xac/JMjdoC3Bqw7GzWJsFZBdB38oq+RsZucjseWlXh2eX0sb197qg7CTLkgQj/vbWrbcyEzyhyjms08xim3OxZBGpYtwjZ/0yrSpDnEHZAutBSoz5Hjy89SEQiVtwlSMIdM+jnNi+vKzDSvDkYx1zgqVRdIIaMOXRr8bltwNHzmSpknfghLe09oz18kktYLPNp7WQiCrHXjBIaPa4oGGSZoQJ1Ha0FjviXd2TL2wdV1wixuUYkuZOjJQMh/8lDgwgq67F//KLV7uwarP/u/r6zW5F+WnXXUJ48sTKpPrSAps6I3U64RAAWTyHAcIoEEG58vELpsGNi/6mGNwACggT2UBvfOaCzKUQX38mvAGGKCK9kbZFEM6cFAhWwyhvkOeQ9+x1nyTBqSyXhJKoil83hpIFew/Vl6JfkNAoubARnPghHzliygmAwzsQ9NpI8K7oMDh/+jgRqIxTGPw7pr9N6u/N3uHO1otvtr56tVOR9CrYae10zuI2QQGMz/5bvZQv+K6Ecf7G+NnzezwylzZwNyPmOw00bNnSqSsLcO1X9o5Ddn1BbnioOTc8XFWee91Eq8NmLpxYH3oTfrMQbNNdEqDACKs6gMr55IzAReumcnsQ+8PoMg8Nujx8RWK+sgOw4GtfyEvv956yS7dUMnlkPNxPANAoHRwjH8pEMH2eikxXx/TkckO/X321tafKSFEyHnhxRecnQeKSJatFcwxSWAppQni46reBhBQRrQ7BnOw3h+DhPVdlgmBA09JT5xSaVpQmkGf3d9DBqtzkSbIEJ/oGnSXR1vsGs5N0J6e0a85DNT+TQSW7kGWDpuDSwp+iAGTOzMIRePZTVa3mqSqXf2ZVdVXEtXk+VcaAvLRBixl5PUmbcnw+HVknF7hH77XVnw794SkAdOYmVnh93iBXbYWTHCTYe1WsmCsgqVnSEJq0rndJJ0T7+gs70zd7GP6quOUEDbUea9LOheO57mKPo5W+uTsU2bUee3Unh2jXX95x7OUddavLO+YSRJeajqGd5wytAWcHml0LAs1gH8GiqGlEapn4tA54wxl/0BIyp8o9nxyGTV1F2sndBhoEl772ywkkixCdRfpC4FPxd4kRHIrdsqgjEik4b0qP1adYS+0BJljAe0UFUke0/Dglx0PORmSuKUERzXeOeNwmfdCIkNcPs0NeQ56XOBIdS08Y667v7hWou65VOMzcKRBJozN4hmUnHc20xvS5SkeurIFhTq78U1W4ReSUdfScJZ40LQOkqkJEq6EXYojZ6CtYCH39yMlri03L5c41KG3H7LpuRwL+nPJNWMmFQhB3ThSQuAT3zLW3GP23flcVstpWuXnTh3NNH31vkPidpYVC+X6eGf1vLgDTp+rj9vrf5nprTfy/Vhb63/t5Fvrfz/q5Vv/7CenA7fW/Gv+bjcb6Qv97L09R/7u21mquu+sb9fXmCv210P/+7J8p/e8dnP43x/9p1uvT539zYf+9n8fof6fSp6jygRenAUvU2z7EsthHIhhW05CM0xYBx5tU06hKP7S4wULcuUcCTRhdkVgQjGy6SQmqsbyMsAhOhySajvHPgSSR5ML5sjjKmWtFZMsFTxARpcq1v3Qguh5d+gMSCKGktJpJiU3qZxGJ3wxPYx9tdC8gE8ErZkl5qWO8X2zuzvZGfaNp5TeSxs4RocTE/Cnct4Aor8WuKHZi/0+IUw0dCQfB8eEDdsoqVdZY93o10UIVZDRWuyDUtA8VlxHK6MXvDqkjaD/g3gXlGodH2E05I2ReByvqgctoMB762sfKKYTRqdj4RpAxTVwj/y2J95D+IewhQeuulQztpSB906hvNQRGGi2ENjI3rjjD7/JyzhfP0UGXoHSFugo3ljzOTikipIjkJEgax7pTfxKxX5aHuA3fQQ1Pa8aZZfUNsygOzgIoPIRIIZyxZ2wUyxwgqIq4NVkC1mWHFrEbB6fc/IBgEpM4k4yt4rmkutAAcEbpU+O+R8sykCSgEvjkLPa6fn88YN+/ai4QFhJvSkFRkHwdeQPEbpnN+SpADsiMCQD8K9Yi21TXWHLRmrCaRm/SgG0fVqNuE8y+2TVqd6o9NjFgsJcd02TC1+GgU0JLMlOnkAv5QIfN6NOqwISyn2WtlehFy8udM/jLcWyrL75Qc0OH6KjA4rXYHceD6igY+SAK0DFyRI+pUDJa/SrxSWhEOhS75MVNI2qGACrsERhBg4AoSaLApV+wk6P0qQzpSzMQ6LwGwItJfmlFqR3kcAUTRTfiM8lUL1GNv/zjf2hBk67JHu8S/OIykvAMm/68o7XhHZm3gLLcFmRSQ8Nn2xHvVlvlI14TbtMMa0AsxPXo2tDzRr2agzzYNAqwV4yfI0ojvjXGUYV0vDSBytp0BLEMTA0As16tquFHYBdKe09HFWNcoz3PmzLYFRVqaSZBJgCTaGU5Co9o8jmcEjWlAyqBBNBmSTb1IjZgUZ9+wBoAF1CMpEoAejYGve5Gowk2he9u0hRHqsxeljpYE/0N1EFssQnHvOb457ADcKli3J6h74VE/NlegB0lIkzQdGbv0xnKInc7CXrHsKUZP059KbWbSLp1Iq2GovbioA+STyTc1yHHiZhrqgCVpY6OzXDPwfUaruoIRCc1v+kXtGGCa25y3mE/THRQvta6SUvWdIvB6TkzQMCx7i99MSoShgxMeJ3R+STReYO1P/BXEfLBx34uwg3ilVvDjRyHdLh9LyGO8qGODJg6fHjBF1d1Dl5t7R3Vjva/3Tnc2f167wQmlWGvw6jHYxJV6ULL97d+cvq/Qla/T9nHR+n/Vpn/r68t/D/u51no/z7rZ47+75PTgY/S/wH/m/W1+vpC/3cfz4z+r/HEXXuysf5ktb7aWOj/fvaPxf87O/1v9v9cncb/xtraytri/L+P56HKEjs7zu+j8ePBgCNFt/MJ2YhrTxAZ22QJ0+5f8M/zksBP0iX2n3G+l7gpP5ShWEvatRrAy9XSDLVWO/NTLdzUliSq52CA64MX/ohDlXJQ3qjPrh8gSzqCLzyeSHSB6wb7K51HJHCfR4Oe9dYiMYsEqsNxqEP2SMux42wlF4jvysqmM48kD2ogF+aXJRIrh+l6LHiVPSPhsqKLJCGHZLGUB8PXLEmw9a/kIzsPseMoFHlLWqETj8N25m+Ff9RsR+L3tJtCEcKz4xGJChNyn04IZm7jmZC15pZkdhMUBcUXxsmUSBWdd4kGXdHOuxwviFfRurvsbkuiLBaeWZXiOi853jbUaal3Qev+7whJJWx1osoAjMB6rll3YY75JJKyCM4kmmJmAxKUr+IAVREyVruIVLUGx50MBx2r62BdVq0jUxEPRYjhjlVdDhIbyjyC+hAOiXAg83FVceTBP2ig/ZWambdUmlNf5sJIGd1m5vzHOlmOb+/RTCSwOu9VRaAmq97HxdZEx17tVQEMdiV0e44k3xMfH30FFn660osGk2A49HsBD1tJoKPI5ixzMr+YyCQw5PhRZqpTrnuIgRX7VQ62jtUy49CB2XuVvNbQ6/W0j1yn1iloDzlL2zhT+Vp8epw4tINEFKzOTa758tKgJ8lfdhxB5U17GkmIe1GElTl3ZEUNvFEajZZETxzYu7wVgT/6nZU6CaNczx8Ep75sqjinGW+/iqYNec8yAmSBo/xGMYA7UG7wlWK+i5y50YoiHp6Uos7XyfCAgEQ2WCtOPQwlb5ujlfj2KjNiZSWJtVLkp4OqbVbz7IdCG8wmxZpK6dUurrBgKNFfh6QwQzvoV1bxwr5Q1dtXrYqDt7RaDXrqGbqv5uY943xpC1l4p1fPdU/4wfo9ntmPY3/M2QPzNg0LEMa1jWPFa3A1857gMnxTxzZG2oRL33hZIkYZ9tg6QYLeZQ6qXsiNMXEyQIFRGUMLU17tdV8wDMFt+xY2G4Yoao9VW9cZf4KQUVrMTwwcHA9NNK2+pKPAmqAhvSyuKh/78ZBNEyZSAaw6BGVd1r8/Y+dZ7QzbMceFb/aa95c+tW/nPZfhLW2t/qXQA73WdpnOEtwOLeyxWc5e789nYMydiEV/2jTSWsyWq16LT2GQwmBw3fqV82HVPrgdS3o/ZEMt7Zza2bydTc2zs1U0rcEyFo1sxrKWB88PGNe0BUwhfEGQN32ZtBV8H8FDYIBM18yz9cU33dwOwAnIzRiLTRYQzmpxczEd7CV8Rk1hsQgzp67kW9ybOfrbbDQxoSc40oMBC6hZWTM+GxFCdnW3r5DBVs7WU5rCReKYoIMKWTAsWc85vocWgW1iSm6/n92koGNZXNVhX/hTdCreu5p9LObgdNWLufkvRpknrdQDLQD7M46n0gpE/f41zuw4Y4jnzC5isOc831NARHmEeKDZHuWMEbN5cArmCQYaTj7Bp8lI+b0z/1+xHvt8fFpzT4RtB7N1F33cXv+7sr5ab5H8t9paX+h/7+dZ6H8/6wf4n6l+74YO3F7/a/B/vdFY6H/v5Zm6/7+y+mTVba2urDcbG4v475/BA/y/29P/Zvxfb65Pn/+NtYX/5708W4dfq6/e7L7a3jk82X299fXO5lkEx5t2w222qt5gRIKa47w83H+tHr0rFHyvto5ES+fHznf7h7/d3j1UMCU4L/YPfq/OIncY9ZRbkz+X3bMIfzxUcCANulq/J86JEA9Z2xsM2d8HIdrY3csjvrs9o3dDOEJOJPaQxIicv6K5866SMQdyMznvxQ81jMw9NSjJtCuouK2ynE+t4a5tcNplHt8LtRteKo6IJKyIkyMC7EHNASHedQ7f7KkXX++f7Ozh0vb2Zp0mrudWTeNgyDnzqgMEMjxLNkvVRFWvSqoaqRphnnL10uqpYkX1UsiqVasQazb1Kksd/OPs/P3B/tGOIom77uzsHR/+/mB/d+9YfV/C19IPtyenwv/LZt0VjH0c/4/8ryur9UX+h/t5Fvz/Z/0U+f+7oQMfx/9z/udmaxH/+16eWf6/6ZLwRfuztuD/P4MH+H+3p//N+F9faU6f/821xfl/Lw9t/BjBlvOmJuYwHeJjIQMsMPNn/Qj/D9d+EtDuqI/b8/+E/a014P/ayuoC/+/lWfD/n/VT5P/vhg7cnv83+L/WQv6PBf9/9880/7/RWHHrjdbGaquxiP/wGTzA/7s9/W/C/+bqWn11+vxfWVnY/+/lqdXUC+2GCOUyO9oYP9WcSKAGnni+jTgDqPYn0l5diHt5hbvb1JhJsCrexvJe/LOMR45xY2LteiLqdXYTvQoSX2lHVd0UdzntF0Q7lYi/MPxwOKkKe2dlFgJEiIQDHdy0XWoKre2mfOk3706KDjg+rqt2JKDkOGX/LROBkp0NM7848XhFY/AT8nTMRPHm83Arv2yCOwSh9XSznmy5W95cwCTVQXuSZpfzDinc1V8yYRt4UwbeOGTrQ3qO+edvZ8d+1cZYxK1iaWuoTr0epgWntgjREcMIcQ56KOUNJPiETnwUjXXTvkl6muBH2kZbcktXiec9e1gR+T41jnw6fkfujv2VN6GV4HgH7C9rFv8opR7hpE6rH3vxhL3mEGhUjcYx+4CL5ymgK7PvTFt30NI1Bh50xkEJaYd4C/2Qk67ix+nEXgAwcTn1UiEPcGYJgts3LSbCXJedByVsnv82LdGvftiNAIq1PyVRyC/iOIoT/NYfconzdDiopT5tBQ0ULwhI8SP0U/2jBic//B5xvSSF26H8Ogm7+IljuOQsOQidTaCAlfaP6R1c5jfVilrmGxHuEd/hdpx0MrIBQKi1cTdV75wHkqJIM/HSifOA4e/N4avcS2Vw1Tos8i4av9cyuy2a0B1Luomtg92bmihY6soGZbWzI9rh9HJbvV5caIf9R3npCSbyqXidB7hCostfWyMflsS4vD/Q2Yel7q26ksF9559irbIaOthAtjoa3uBGXMEVhYHfy3x6OfTD7oEM3Cz6LVtzHhDyHwn1SZT6/gdNiZz3er8NZco2fA94V9jtb5GuufDmBZGKM7+3G5o31BwoRUBUzQRzGJ8iFowOtFIgXI+ZAKYIQwp/WpITgK2+/UhUEK1JdqleHBB7B5wTyonRjbwJLmhYbOXwIsBihG6w6ybxatASXgHoxyAIMUc/EDh302g4cGUlePDZMmxz7UPtZnyKQCNKdYCv7VIv/63UcR7sX4V7IyKsha3RhSP5hmJ7Akm723OKaSjb7aHgMYe83z2Y156Ew98dodxr7yzowgl1TrkhfwuTo3G/H7zNdZ9IaYIFO9ncpmfP1PioBBqZmsTcovmpPKDh7Ru/WvNMLWeYmBJc4xV8a3cTqrgXmUrFGgNdIkxQgivtCnL+XRSEhyZeUmGKD3iHpkaqN+bBe/MmmG2GC3D0qm5AIDrT7tYg8JI5y+DhPVd+kAHHNf3ndvz63X7w4NBSx+J6WKopxY4Yu2a7Y6yTIoQVBzYmsUlYGPsDxqRER23ueSluiqUcdycX4vrU102U6NglwlxSHA8KTAAdhYMB3y4Di5DGxOPyzZrIxpMGudLVzZ0jSYvAsbfTwJB+T53FiHwShb6L8tucQu8Ah9iBvjVRXIR+MEpmC+nlNQknjoHqc5YGlQuFspUcJ8e41jMf1hNboAhHoxy84Mv7KeTAS0ODec4zBNjQWr2ZGb0vjUeliirhmhp+XnkxWIhtP0VYmowec9PWa980boHVNG9B07ywkGiJvRfHE7PctiM13RWzWllHx5wKwDzf/4BJOg/0pgC9Eo7tT6/yvITt9IBPziKLQX3nT0D7dh71nU9s7dupNd4NL4PUN3KL7U0z32YKsphEdelAPhpTWeI7szb47RTi0e7Zs1fTXH3+PjAUT6qY4jvgA6dAzXnwtR+yiNHbSgvr3ic2nvnM8hKWvNs/U+1NhaPxBR9vZeKPUmIh8dbwku5rYlfL9q89/6pcwtaVllyicYlfxh/fHL9+tUSM44Ph+C0qg9VE0SNIc6/Hb9EwfXIlaNRLGka5VPNGQU3QgcASQytfScVDn7AqTPzvcGMzrqhYLev3TGB57A+Y1lBXNAmX3ZMOaBzl2H0hXHOZhvPgwZUresXyEnGtabnEH8O0yghLuACNkA40J6w1KgV9RUuNtvEK09gB+02tXC258msZvS895XK/3FQhwTeTdmK63QNcqeqXS+e4TmUYdy3ItNWvLqlfqoaO3hOaz1uYv2Y5aNCxS6BOm0LsDI2JmpExyV5E6UucU+Urqo++H8Q+rrHIKD7NYqJkDXLIU0WHC4FGujlO+9WNqUUFgLk7EloNw7ntUgrnl6kAZlfSma1kE6aC1/4VAA1TlLdUUV8HolF9wcvE8BqjfzDt7SJ/k9WsUAHZsUIZ2kh8oUO3Jyulhae2atSLwhMVey+jfUmzH5RlHO4rbn0r7PE4sOoGafM4amQuGuaVf8qpiGkCxLeXS9/tfHXyZvfkYP/wGDuC+3BYfQgChXLb+y+O8qUaJSsZFcrpfKtoNiuNsgI9eiRYL1kYvRpc95s3X5282j063tlDNdzNo5pYHyMMcmESX92jkdmy6Qt9vGN6klldkgLbtpuDrb2dVyf0Cr3oBor3Fql+W+bILVj5r60Kk9za3j5EG431ptvccFdbbqPeLn2ZrQpXz8l0ban+Zu+r/Td72/PqN9qrLenVyJDZuHkLTJ3igFG4bVZLC3GysrdYLbPXXDknzLWzw4Tx613JXOMzV/t5ICSC9cax6J74QjDeQiNUel+RagDqPxOTBezDRI7/AUXeHL+g8U4VfVGInQpOKdvO6bI4qk0RM4fpMmbESEehi2bbM134kChMjPROGF6WhsmPcSszilJ9p08uUKLMKefwCkJp4T3jqME/zPTCn1Ts7Vp9qi4ZPovWlEjcJTBHa1bc4zgYHiEaXTlK3K/9VLexRMTukim0EGiNSpdMEvQfphfbf7mrcW1JZfS5m75VWklkKPWSsFU43NO3FTDfXZ+Pc1PuOxJtNVkqc5G8lufLHIkC2fD7kiCG2iiDvF56MTRTD67O1LUPlEnud16Qfh1H4xEVTiyPM/tAhqYi+EGczNwirOmyePtmJNCBnxoV34w0o6kJy2huM1IEk7g6cwkTy6s0wbNIDlo6QpVMlj5uE2yXaY943BVlxkZL6Pb9tEur173A0i2p9+Wb2jAj2pRl/ub4+EBWvesaSvalMELnvjdIz0u3alSvxGyrhiSUvqT2LZ1DD1Ba1vhW8a26kCX+cAeGpFHzt2oz2y7dLMnrZjFyVFU3RRUBRAx2IwAw4PodC9a500MvI/0JlM1IHX/KET98zTHFbTmL96Ir4mVeRvHQI3amsdqur7Trq0x23zM6m73P8SUjV1huQt8XHEdW7A2QhmeujrMYaxMe9Wx8gh5LRJy/HhrmS/oDsnhbldSXpk/pBitBJOCBKJCYeyKx6B2kESqNDuULkS+WC9pWzBOpi/7O3XMuyawYsN2ivko4au7kFn2wQGl70EYYtE7/H7kiyW3i1jyxbGX9omJ7wG9AR7wuF88IEHRBmUpBbF0q1tHngCX/XLxP1Jv5Q9TKz3qq8huBtVKOgFAFiUnAtqTCWXFDYzi1ShlJmh4zQ69r5M1NvfT6b3zKhE7z0b7hvRr4YbnwPllSz1Wd94vASY6b/Ofv6z8wlObl1k1Anotf+VNBpt7kLvB9jkJsicsXJU8C/KjfLwlLj3p5fR1zFvNqQOPAkoaulM07OwinlqNQjGvTP12jW6CJ1+lvXJQ5AdBY7Qm+xNA2cwMFNRx3QgPIlXb1EGkQzEfpkTwAHgfhmPVW77X2yaq0dOAVHTSEk1JaBo6v+HMfsGElmTnSqLC0YiuNqUCS0zvrsPN/+U//ofaX//QfizY2Tp+lG9B53M6DEcLwQCkOdf60ZXE5jNJlY8vkUFo91nTpRpj+uuoQ+ju/xyq7hFOOTowKTvURNUO0G97EqO+M8U0aKxGzRGQ+CAP0ydROeuQQNroQN876Pt0I2+V0/kkqZYI7sNXCS2CUuPBD1uAFyYvcdud3LdNrfvHFNdupNY16y3NN6Q3Wf375pd1iIcvTXWUaPd2ULraZwa2pOVsxgx+q+MuZQeh6X1JTJoq55Hbze9aAYXJllmxTI9comnI0dtsEHBEYlfZZecenYX5g/JbhkZV5IlnkC+CtfDe6vbZlao9GgyDdK+eLm0IVxaqL5hLRIKluptvOrb98MYeH0svJb99rUf5BGpHkwaopok12bkKN8sq0zaJA9Kte7Ve9zCIIYd90qrhJtJBcBbjo9o6JSeLLB+xmvS2LW+wAkkM+hlSC6EKlXElD4rRaVRq1ZIra5Q7ac2qMYY0Fk+2NB+m8AqbJ9zzxa47Vwmn9Oov6nmTnda7Z7NguTJSVJ0wa7WEldBnodR2xLipBi3vBm1y6RcioXyXF6FAsw9pRVPK9G0UPDZXIyH4oGVB9xPMOL7QfR0aVIw4rcwXCA/InLgzYGAlh5xnnAW4sNTQUJFgCiQE0QHzhuECVKoj/540T30bbV6cDpIVld4fE50SraMrEx+shsTKYVpcPcs1RCwtp1NKQKbR8b1hOkMHdg7wYqTFOjvl5uPbUVMq2zEgI0l2mG9+cq0H4VSICAjUoLS3lZdGRFUIt28MhjWR8FRVd8Adip1g2uwqtaMx2ChGMqVBO1s2BLJq6hrEcj97nx3FtpSmOF3++nyc4F6S3WcG5nHKmFJY3WacKaVeEVxFT6WyrGCWmUXBrTglStdGVskjD31/76XnUO6DTe47AhzZp1CRXLDlGO5qTM/SktRBKH3kpdIJsq698wX+/s3rGvDDPK5eM7JB1/uvtqEwT+Yg+RZBDU+5XUW9CfUaJX5YG+K2ckC9gev2lXhl5tf/bOc0CAFm2Ifgr5taRcr6mAbmmC+ComzGq+W1fVPN2fEuuvCp/wSUzFWpBlJ3efoLeeGABl+2E7/7qHf/al/Zu3F1ONfqhjaWic/cWxyVzpMQpCJfF4UAlbJg2rLFdFb6uSd5XCtRNJ50Gj8WBrw51I22R3gvWhYr6/ocpcwNjiBwCeh78nTb1TeK/8pLUGCysFu2vBMRsea6FQV1yGg6fqdV6XTuZGF1DFnZOEnrbyHNaIJxNOgKHGGFlcx5pxLEi4lYvS2IuSy1B+tj5KJT0KYm4IJaY0V1tYeXRYknby43bHY1vGPC5Yh39hgh46ubAVqtKZqHWg2/RLNjqkQGcIAUd6hesP4mxll9HbTii+QCk7YD4E9n6uX2QfHVi+2BRkT6FeUpJXAy1IR2ySMh/XUuW7AZLLS5ewKXSuIeDAJNbyoDor9FozmoxH6DVxAKjWSv3VRRdjEffELHWY/DfenBshOd4aS6U4nzohQkURMtaEN7RykqNm3obhDPRGa/BUCZjYkWgsmdYEPixCgjXWsuICXG3kjL9VlFfSE9LnAiJf3V3E2PVKyAjtlUzjTN4pF+AreZlYGUC4cnf0P9X7n8xo/Rf1P2v1uL+1/08i/tfn/VTvP91N3Tgr7n/tba4/3Uvz9z7X62NJxv1J63Vxf2vn/0D/L/b0/8m/G+sthqz97+ai/wf9/IUr7/wbbDRRPWjwQBh/SWNH7sSbe1t7+59fbK7dYLIZO6wp8rfRKE/sen/VNIl+UoF7MI/W/GIqu1wta/Gw9OBv9RWSfAWGQm1sMZJK0RpxXcCTjklIbeGLJIhXyET/RZfRoiDFL5gNgMj7kFN5K4AtYQ52bTDnB8yfJzK1a1LnzMo6AB0uIPA1mHcGZOLIMpLEhiPYBNAHgBERqyIvwqSB1QDEg71HR3tfKk2VefZL3tRl11r4YT33HmGH7g3d7ZZIrETL+iQpR9DP/Wsi15JfPTMa0jGmyVkMWUHG5GyQip2FfTS802tuOU/KgqWH5LdqkmX5LjNBhpJg3TgPz+y/kwkFD2ryUvnWZJO8FOpNjvgvEPYeVWtnp611cN6v9ForD5F5Hhog+hNY73hNRt4A0sOvWiuNU9ba3gRhBf0t7/mP/H7T3UrvWBI75543srpBsqMR/Tnylq3vu7hT+wc6qyubKz08ALadbzY8FqtnmkEUnxIEuvDNd/b6Pt4/Z7+W1bvCBzeVpPgz2zOOI1gHK7Sq6f8/TTqTfR0hl58FlDD9acc6fsshoDWViQsljHTpae0pIMoNm9oJkvSeT9Cx43V0dtaw11dVeOgmpDQiHDsQb+iqnx6VSXFKomnR/5ZhLTTJCcfRgSqEQGILW7GzRkz39GPt7JlbfWkXh/RoO0oOdg+HFV6PZ7ZCn1WzRX6Z7050rM7b1AbGB7mTxvRmmqirtbwYkC0ixYFCTi5qWrdrTf9oW6jWWyj0UIVCPDVFG70/SgeQuU78mNYUGZbo8aeUGOOFg8Ki0hbv5QNiKdADN0KeuAurwgUz2lx1+p1GY078GGt/lArmNaKWQH3LA56cGoJktHAm7QV/n6qzjyCsQavE15UjZd0tYt82GECp9WR76VlTu/Rx6XUYRDSbpSb2OeKavRjuINxF2yaeDcHaBgfqJQAHXVI00uiAQ1IvgM7luzCsK8TQ2fs9QK4HDd4u+wOY11UY81OTbT02dT6A58+eQNgb0AzohZOaUfQi57xE1u3ByxWBrTw+lwvNf8xNZDV+q+ecvNtZOT1dRtEW3U7s1Mfj7A6+E5k99pS+GpWEVh9fUl8XcrP22VN4LvrwETKaDPtXHCZAWnU88xm2kXlm7ca3nt+N4rZ59ysg243CM8JedN8G+1zvmzzzixlYQRCrJYKfZoJzS94zTRPvd5ZAQYCNp5X9aivXUfdycOG12jWV/MgOL31T548KQBhCzDYmI+gc5e0y2mqR7HdrL43DAY0VCKTwyiMOO1vRR29fE1/VA/9s/HAiyvqtR8OiDLaEte0Lu3m5/mwflrvNRo3Yd30PDeoRbsMGco1MV2mJthOJAKvEhII6TUEZ4Oplt4SuQZuUatRB+pkMDDwRglNwPxWnJWlWsS+vBOQY2xuE03tp0+vheJrN6GZm9THUew1kH+7DHUmRTJRPUIgif2OD/kSer5pNLp2+Wk1OU+MmSGVNS27cjl+LtZqgntJtDnDLayOQGa+Iw3qdpBN3ia7oXmY/9BxwvMy+AZF8g3dapqWgVDdglABTBu9xkpjLTeMKYCs82LqBZXBENuSphHtXbOeEXL/cvYMgBEk6E+qmgckfhkoVNUpxgvHX2EP67PD+dAezoVdjKjdRwq4avccfPK7QlP13LhdZlxvT537xHteBxjTYG+WjDtd0aN7VtOM7LOa5qjB/4GDJnYL7O2z88Y0C0xv8GGkugNi7jdLYEBKz3+PdDE426gMX+RO2fdH58m7FDssxBL2Y8gnzUsQ3/pZbTSv1T32MYt7VXjpTKwdoiIixoiz44C7TyqcMCfRuenhtsZGKGJrqXVf3CGkE+rl3Tv6Lqbb9++f9YJL0ylBc+n5u3f2U42+0d9+2Hv/3uHVaD4X2xwtQ5MHnKsNxqnEGcCoB3HcE8+W9+/5Zb4sn3DCr7wT/6r373VdKkjQGZqSxACUntM+0avC9+eFUnxHGUOHWwFGLkVO42IxOf+5oDgZZEVzPci89URk8rmXsnp510v5PlIMS5ulHKABC/S0nnnqPPb7myXq23g+05zNyPjg5oEVW9ZAUk6W1JUX8IX9NJKkVZzOUfJZPat5vBsCRVM7tj/ywxv2iwaX25jS3JHO3R1Zd+P5y6Vzaz93P/UW6ARgNr2WycyFqSHxlBfocCi/O3SLm+OZreF9MB4xBsiunUlW8ENT0Q7Jt5zEV/NTZcVj9uf6cQw1BOfNum4KBrrMdLQ/0U2TscU+NBUUuuU8vkFwncxqzf7HSK44gXPURH65aQoaQTTQfSWuo8WsjVGYRjawxTyQ5Gnmt7fgmaZXpVjFTEHytQZJlkLwSnfbzuEz8DT2gWZTLRPqxH5WZqr1Imq3G8I61O3qK4THYWdik0nOYKmrtqYzDto615EE3ZkcagW+fwbVvOeuGbPgPu/IIPE/uFbfaUpiPdzkvsCpTy/gKkwDxeKY7Aln5r6F+yHKaEmjdvKUb7THxsc1CgtJLW/cf32E5Jubns5lEf6fywDYLfb9e1pV+5ssSXkcAjV6S3rwRWQA88EU2LjmzT0c1DWVps6TWxwk10JZfuOZmcl4GfA+es4arnomaIONnOQlxvW4nYXK0sCp/WbyqRq5McH7SCdI5phU1p+b3b7TiEMcXXfGvBjHMdyexEPvhq19xjKRXc6UDun0/Lm+4fOsRr/jb449Y//ScWcIMuVVLY3zDWQ4lfaeaz9TduA3if2oQu85PtJWFS41YMfSXqEBM2QWO0rPU5OPEwfuM4ivz2+TWhMXMDOHWHyzSQbh2PET+3I8q3F7+SFMTw2Dzs4ZOw9JN9LLhf8yn6aGX/iaa9simLlalZEM3WuOncoWj7clezXVGRWwEYJMoUKf2YFH7w0YFI+O74ihPTcB2SwojTJAgrCnQSk4QB5giUIWHHg9cLq4y4VEjTrvcZbbceJL+szYH/ge2GTJcc24wa3pTKfizEXiTXfCeZUnulHobZGq01UvrF0g6nkTubORXBDHp3OHKvXi1S5n3TQMTg51rpnKbj9/BFuuvcJzKHD3efe2hHho5J7ki6YcqkOSUipgLEsZu0cHuB/CybuB3IYM24zszGUV4NrEvxqPVLWnQdTNBulndXU+6sCMle/I2GTgIrfjFImQk32sk2diEUMZ47kfiNiUT9mK8ExmufBTxLzn7OEImSqF0JC7BEiE/P/9v2RS7DGpHSOpKFM9kxvaDJpOMd0iiX0i6D2rabmvJgaXzsKI/PEPZ1u/4wSgt/b/WltbbdKHemN1dX2R/+t+noX/12f9MP7fcQLQW/t/WfxfbzUbC/+v+3iK/l8rGxvNuttqtBrNJxurzYX/18/+Yfy/4wSgN+B/a60+c/631hbxv+/lmc3/ifjI7Yb7pFU9jaILkoOHDgohCFWxYEgSRru5Uix2+GbvePf1ji7S808DL2ybEtVkEAx1yktJLVo7C9I2fDaSFMkvE5J9uj43tEdyxcnhzsH+Jq43Je0aip6PT0FKaqdptx/FRE5Ok1oIIaRKYOxSgXzVl5t5Of5sHBSzlCJzJ9WAfBb68FDyRyRSNeAQRTI2SUSlR+9MS+9Lub8O9ulP26vjPFRfiUgKIevo0h+kUwF0VRlYhkBYOpRu0FVvdpdsJHQdCLgKPw+kIeUru1onqVXs3kDBbM2X/PmyaKLjd4c+SUw5zUaNZFjX5Gud2TPO2UrjqM7kbeWQyfmco7IVvFTZEteobk3PTRxjkNMVK1mtDqNxmG7CAW6zi2SpFcIrkug3a6NwNKwlKbSUf2ABsku/wu9Q0TkAO7u8/eKL7MMIP6k8qv6mUUdArya7h6VslctqoIAJlSUj/7MfVqF4ATWjN9xvtUcC6+w4TP14HIpW4RaJbjFXb5RWoasYj3qFwZj3djwT6JKiqv6btpRgd+iHBCpIMwvXQBgf8EfvdJxUG/zX6OKsqkPM2ZbjoarGfVW79OIala5RTzXWLNWWnWwPCVRu3kLasBzs5uvm3t+wo+MklrhntS69iWqxf0aDiSd6wB9REwh4Y6XC2Gry1oASWjH5dqtaR6SqI9Hm4aepB/TLQdpISTs1XafGFWrpcCS/fahkoUlbBX9ZACqQwff5vL6fCID+YHWfXa/ahRtGn4PkJ6qLq7RE8cYptE8BUY9x6jfpF9bc4Q1/qY6geMqayYCwhSt83VFyS/Cbm6jYrmNux0+DkN99uIYs6mwtXt58zRwZE/JV69GQpGpyTtSjSLakrk+kazIi+pq6yfl0N4WPvFHdc+Sw/vLth0s6O3vf0sF3dHzyav/rzSDsR1M5mT9Q+WNyNd/Fo/U/hTF96j5uf/9vBRd/+P7P6sqC/7uXZ6H/+ayfKf3PndCB29//0/jfrDeQ/32h/7n7Z/r+H4njLu3SBtK/rSz0Pz/7h/H/Tk//G/F/fWV1bfr8byzO//t5Hv6SuVPhSy9x1eTceahewvMXIksbacMgo8C/iNOHpTZbGn8WC3XOHwlGfbk+CDsztUULy4FYRUeB5G2qxsnOUJEN9oEP26+vc5p4HDen6yeJ67A7hj+O1CgY+TCnQ9zYe7n79QkJrZulR+++2X+9877mirzMckLJlHi5+2oHRbIK72u5NEIlZ3tr5/X+HvPsU8VkKi7n8CKJbufom5Pdvd3jzboT9NX336tfqmpflR7lOiqpH354ignARO53z6OpoOJtDmQmUn0fvuMVWViJb9OP4XRgrelmoUvUFgtRuOhHv+dG0nD6geNs73y7+2LnZO/gzVebj8re1YV6TMVqf/zD9yz6/OGHRzX1jmqf8J9qUzWeqhDJUd7rYlOf6/zBviDJr/ZHdq/onlz4k++/b7MHevuHH5Y3UZPjmKlHLar1eHo5flLUQLWnHpceLznO3BVh+751OzCTbpd0aZo7h0d89C43zfcl6Nv2Q7toRlSeyjzGa5wAAtlRwYT+LUv6uE3tArFEbRWz6ZnwmQhepwMP6rR/VUAse5rAm4GbKSQ09FJqbBRz8O4At4tM8hw19Ho6vJCnhuNBGlT50qmOydfDUchOff7bQDLTPeQAd4mrOLoMhgP3c/ZqoVaHQ78XSJhRm6dQHDq8RDtR8mQfA/nghgI9bZZmyzrWRCHizXlhghBuUx4kJZo1tKKEiL0x3AA9aqs/hhOIcTArhlw1C8zd/NmPI+snT0tS9Xo9v+c6D6mRjgXoju5j4HsmSJaN0Bwk0FX0kFCRwzOe6C8nojHslbFztKDsjrWkL+rS4Driv6U3xnXdjuoPglGiXWjK7Ax0ood2YpaiQo11xaf0BHcwvLR77sbJUkVfbfbEuS6N6AeiP8J9y0AWPGPysQllzTOvMb7DBVKZKN+LBwHcb8LM7Q8D7ijTqUChtKIHOdWSKIAVcqIN2KOHCDetE49CIrtKOCOQ0zCiZlhlmq3sxE9dTcRKjzJ6UuJ4qo2bqVjfQKTHvrqmWeOeJIO2dKuwG6VHOTwuXdcBAiTpfCHTrmBTzeaV+wzixQ6uc+P76Set15rbPa4b8UWaLi8mXDS1knquY1r5SmJHpZzSUmirPtqWSkyiH+rDkt/xZXUJbobm+H5Nm3/1wx7zX4WTtMfXqxI/y8P1cCoYKiJ4ueqV3081MhGc56oViSIRWTH0ZRkPH3KQLzpqKzqHqrlMH43ThJ0ekYIUqSC7TB7hKAZkG/mIpcX0aBBFF1m434eqzL53XhgSpHT9XHjO6bxlS+hyADDNEpfxbRsQwyEd/g/VES0xG122tr/dOTzePdrZPtnZ2xa9mvZKx+hoZq+29hTRUDmtzKyoB9/gE88Ct2t8miBiCextHQtuHx1D08fR5IfeiEnxJBobNKmG1vQzZxTt6vubkcbsCBbWbvT1bb6fAnRbpfTouiqljwfrRDtbWnDp2bEJ5O7tHMM6cLK7PcVbEHeho53/4Yc//GBYCD/9AH/BHzPugv5k3sJQ9aD31/IW9DvugKlqg7iM3IZlg795e0yC4uK1B+OAqMfYziiWUg0XLAgDj5SuMDOcL8LPLQLwFrmbYjBeAhE7jfdTjR/LrQk6834c+2OOqsj3i4zZEFhKxACBL9Te/jHPUOLi8uxwDuRbbGJGXb7i9vhSp5WNidHAC4IeJkw022Tkd2FoyBzUxV1VD7oyNUhv+haFzXlatI+a42NI9AWxJmYWcibXjtg2da6ldhWZlqZXiNDYprW13uDl2B8NCM7UM6wWkULwmM+FbcGRzmBH08brpdlx3MaFnFbaHHn27Cv2Vq1qn+Wp9rfzIeQ5peOYJBWYi9sF9mh3G4kqCtwzvfJif6o9toIgYomiOWMDOJ4kGAjEQ5DNkQs/E5wdV+eR8DlIIM3MxFR7MR1Ll3Im6Bj8kNLsXubRBQ25QkeEkrG0R+shR1u1quN0gm69uw4xdWGpC+nP75XU8y+aKP+WYKqBEKM31vR7T7VAirkSvlmxjyCG01+Dc7AvSfzA7nLIgerLqU9/a2n90z9JNw5GaVJzTyQFThf+2p9YCwQdz+rq7eI/NtfY/6/RqC/0P/fyLOw/n/Vj8D8zAX16OnAj/ufiPzL+N+trrbWF/ec+nmn7z5O1FXe1tbr6ZGVtvbGw//zsH4P/d3f634T/zfV6awr/G2tr64v4j/fyzLf/bHE0fdZMM0gkOmnLsk42t1yUfuT6oyh4t3SgdUgJLIpCFV4KtDJKtEs2TUwvwp+SQgueuF4wTH5d0jp5aoz1oSV4gsoFRq3JStR49OuSsUPxCCWlfTeKY85+0EskJUMW3R86oFx4f8SG0wlK2YYAJULUN5nnOLMKm6K2946Odl6oS28Q9DhomLyHOtwkvKtQPzbYvE1/JCKS1XnhWikKTufc0KWh2UN5LbFmsrAsquKNUfORVRWeh2i0V0VrCEnYh+luwgkXb2wHF9eTeDxijfFD5Q2QUQyaa0xg4HsXKuWUFKwq5NZu/TwkyT/w+7BZpNEoMUkfeHI7byF5h1FYZcNB0OcRy67yFVqWWQPRQZ6xMdLcBoaQD+9dEm5f7GpzYcFauL17dPjm4JhOr826w0rvdw3W2UHfnZ8v1ERQSuUqNBwH+rbNWUHfkZzFU18k7Y+jExJPfdTJDp3vdr7anMmPbOqc7B5s5vMXO87B1tERjfzl1u4r+nH0WypQd5zoorxEi6q1ZH31WKk/1Fut71vNISrw7/WhUr9K/hBCe9YoPVXc0qNyGT/Vl6ohgQ9PvR6amm2pMUSfc1uyStGm1n6yI7WtL4+p0KQKPHrqGj+zrpOLYMSpSqe7bg0xz7ld8wJQS/iZtQQN4EmhqT+EXL0xpMrSTtbGeyjlf8dRXs79wQjB5RjIewEnXTZab1ZbWIpj9OMw4gEt9P18trEZlQeiVOg4eFSiZLBe7R6UtKHNmn2EDDLJ8hKrpwPFch4K3eGaOlWLQ0OT+eX1T6INLvG4S49+U1LN57Wef1kLx4OBnqXOwYygIUYTxpFfYVxA+C0YjrrnEjIkJaqoBlF4Zoyh1O5jaJjYAAdarHPfiAWKra8SnUKULDaPC5tEgH3WTlVNzqlTCazjE/PHhJ1DWQSskqc96Ptd3IcXgjTB1XeYVHRsk66+JQ/jBrc8jokumrgYvDKOklvqOqv05qOGhNJ9BGURZ6kEjWiopmqpFbWKFLusLcfKqi9pfHGqOP3y5ir9JFKVbDZU6TePpDnc/uDwPGpL/aTOYn+kqj/uqMd//L5effLDl39wH7OXtGT3qEtsjoFPpdB7LwoRPUZ/ZZ0VA6zi3KtynpUcjLGLMZptLT0iUoEfQmvwm6YSJT16joNM2KCBgmB3BI1aleDfxOfSSXnevwfwdwsgsgRdvDYEcktCE0022bzWXCF/GNXHXpnv0MEhrYniM6VnPkNraZsoJZIi7NE7+aWKr2xBZF1tP3B4bbTe/hGTh+pZqur5zjOUPuLTW3cyHj1VoCDsxc6aZf/cuwyicUxAIDyLSzifqQqhitTr/opDJDVYR66hNscOiJEuYwTY4+D4nPWjdKxb4p1OhGFx+SMda2AtLsEz1TSxV8GQc0GdwwJNGCW2WBjBdetVJHJvq5Jb6gD5Xwyica8/ALuzHR0/lYBwxBqxUYwkKCIRnPu8jItC0jgs1xy6A6FtE0b1U5i3+C7Fko6prUNamaATZ4bWSJg6JWHq2BhHzXEVoU/YYG1PhpVvHqI6WareDBI1eTLgqsBaDLpsn3osyBOf76jSH/NGH7MiZSzJT5x6qF1StWiUmtWs+WnX/q5/suPP9aVMo/DKiHuJlM7hwOMiQmj70Z9p7LkMxHlgBB5k+Yl5+7RXzxia9rLNZcXARMtcoLtLJUfjDGOMKUwQ/XL/8LutQ8RJF+iLLeEGjGL/4CMFwDiLdDS5wu6V7EWO0qOyaMQLU2CL2WOcgfQ/a5neJXkHySxtDCBk4ua4uF5ywQA7JjodB7ixBh8CnG9MD/VhaJneAMdg6g0u9NgQbSU7e+TsC2ByNDZpzdzqpLvaWvs0h3TU3nQ1P0sL/ThxafD9SI9XR/lhayZLH4gpiQU7nSCQCk4suIukQkuSgssPQr3HaeI6/hnGcDsg7sXAid80mutunf7XUFE1cocTzMMduGdRdCaJq9Tx3x/nQYz2AYbUUu2PWYWaeie2zj88Wn1fejxVPOdElbNuylhL88ikYaLWhrt7L/ctE2W3SqpiTUMsz8wm7x21Lceluym0Lk+ZTkwYkk91UEzsoja9E2PGMQ5z1Kz2Na8IPsmmZvu8BBoNaJRshnKgZ8t+At4plwmsgIgZsukAWUUmR0A1mY9zvaCnEY3r5vsoXXdUzIiCJR62sBDEyScAmN8Uht61a8DgkOMe1GN6fZa03WUC/8eFeSV0uPClTg4fr7uj6ZVpAqgE0/0UKQlhwpaPzNsVm5g7eHOQan8uQxOO2c54JsDAyXQJx1KI3MMo9q2DkhpFScBl+ATLCcB8YgmzA6pg8q6Bv8mnyK5KomkeKbEosTi5YEBmiNATwK1l4NpVnlpdWfOqWAbdKD4rLnDCvE9bHe0cfgveorjKHxwMczr+n+isA1U3DUwt+mz3VwjBxhOmalh1lMvNEAQcxvhTH7MzHcwBuCbX1kJGO1M1sEPaeJSkJCMMcfIHIbMnuqQIMlqIgQDzOJknnVivNrAKnE8cHAFyIj5UyTi+ZGIP8ceM07D4kLZ9cQjuueo7dkekVugFIk+aQdDaIagywkU91MkeuWOxshsPo1MOLBWNwNG0mczrPHwcGtcwGBV5nQMkglxLd2UqnPI9kYy/7Ecp3smQorQApV5EQzonNasIkc2MCWnXU2IXRQjjNJwQanIHRBD24fAl4gdTmGQyHKURPJSwSCfh7KEhHLw+MR5DH4McyaoGv+YaXDVrYVKjjZniP0SBMK9BIwN8dJO5Q0MPljMU5/4C0//I9jzD7ZhNZV+C5FqgKmJGDhKieESrSLDDS3dddUOibBLobB9lC3MMjoFA2o+2mhf7DBdEo7jrV21JmZ7g2Wv2eTz48J6hs1JAja2oaqSzfJ5HV2qcjsNGvT7nTH9sT/GV9/BK6hJ4V3s1ksYapWu5TD2WwqIbeq5VB4B306thclIOdZlJQjihzbRKdiewe6YR4nL4RCBZzPRpTl0DHvPGMnUo2yLzTuQiuOSw1epBNJs3KzqaSuZQ1kwc1TVd8tRzKhGgbZg7v7U4ieWDl6zfw/bmRHs6OOzgexExKj61071w4Ym2lfchy2Ri3ZAgSJ3pTZ3d7KY+tdv8lvfTfpgRnhEYEYyuOZLhiCiFVXl6QNXnJDHrr+3q/9/ete22bQTRd38FK6u1HEeSJcexI7hFgxYFWiBO0D60QJWLHFEJG5lUTSqO4bg/0Ye+5OvyJZ0zM3uTKF8AIwWanRixYJHL5e7s7FzOzB7+9v3jRw9/PLzYXB64xTt1NMbQwU1neOjcBqJMI6aoG7Z1oyAo0NlsA4KwnNnaozpVHpCVFzK/UTFlxaIjg7ioFtnxv7FOJCOo/dOOqUGA9ce7YNLSI5xp8Aw70UdV92qGzqhL04LBuMHb8ZAta0rsrOcDpoQHdfQwgGZLvlJys/kArCXWXPfZsLxjb6XPX3fvdp92Z2T3wooVqaW/OGdlWbibkQs15oODg0bTNswS/wvPbdVo7Q879PO+N+zg5/2DYQc/7/vb9Nf7e5sbiy3UbQkbij+06khm3fr1uwEXqM3d9YXbZM19nvnqdd+aQcPcs16f6LnOx+BCMkREsfdqVScMc56MtJBuh1jtNJuOuYo9O0kEMI9wEHskM+4ezoj2tNkCwQjRWFhlcjhoAz7ucL5UOh2rTlzktkSzuCQNGHmcTSaQiXqAQ1JCVXtLl/ABaAycpqYO04rEoJxgpDC72SwdnSiY2Wnhmp9RFXStVM+csjq5yR7akjpqvDnEpejegtk7PxYcvzyqs4aCDijPeYU6Ixxc0ud8XmfbnuPlW5mAgbPk4Ovk8Af6sLW1CanQGjaz5K+kO9jdGTa7m4nZNLMF0zdg7o3tYUd/6D5lTtvdRrh1+looX6LZBCrCqQGDja2Zb58B3QOW3CdkOvhL71xl2wU13ljZOywd7yzyZXY1fIJJD1eQdxsE0cpbr9n9JXNDhsTknw2sfiYn7UHHdjkYa2JWrWASA/akK0gN+6NkrOc4K7m2dZu2gjLZDuc5mGjrfpbj0XWqpb1wJBXh6XukA9vMfu17pI3O455n3+vKB+Y19alZwc0XTPFV100mqsUcH0EKcJhEk4a0nK7hwrKmoydQYAdJwznhGpd0VqC4hTw5yAnzvHhhv4NbTGlyd5tJJDPS92FQo9wG9F/h3MQwNSybOD6F9CT5SyIJZZ5SrrjPrjlxosusqVdQY+PZNIOnHf5s8zJcPbqCL6mErY4wGlwQSEqBP1zq3480X21kKq6fEHsTu8r4M1OLxYkDIZGE4ldOdzFucXxLciKEOa26hnGZOIeTn2MD47uTPMHxjmMfgf6uEgQCloYvivHtT788Prxrvao4s66Uqsx4p4RWO/1fQpZTD96kZ2R64ovnyLm51kK8ZAVa9QvxLM7rGZCQkParohpN6QFyQUFXSMAr4S+U/2xPGtbsgaAhw0dbsSCHupbsl9dozbOczl3/OAjNern7m2rtgSKOaBFbVmEKVZb7nC5ZXcZHQZNNzDMbMeigKozkZ/sgfDVjR3s9WDCkkaHnfW/40J0U4yFHfNBIuEp5tenb2xsuuv54XIRNi9dpVePOrJ7n7hpzpxpZIqXYJaZqEQSZADRYKRIRxqnLnA6Qq18rqQ1YX581pXM+gw7Lrd8/fvj744d/nsLKxhLbKLvPusYx3d3wd7fvArANn700R5bEGvuY3Mrh/VUDriuUEHn4nf3t/V63ejmDcdHr7xm9pDcw7IuGF/b8kRrrmvQh5plNZbHbvcfd0sqSV0BaghpNXOxa45NiQ31h+ZFH6VlBIs89VpUgtHb4GGn5tBCKiclr9TUJ7U2dFnGaHj3H18HKDsZFlnkwOs7etkt8QAu8H3irTMuL/gheey2ucdYm9jlOdpOGZgdZt+CgeW5uv+iOZpninMK5lRVbvKkx1u3wYZ+EHJjCFFaVgnMVW8wxtpM19qVtwzk0VBGt7aZnS2o03AGRknb6Z9KDEbfSUWO0OYPRSloO2USdYwP/V5MBblcxPKbObct2FOM2AkNBfDG8j5ElxAehcXN4XTKp7BUMZpHwjh+vTMkQmaks9ZLqrRHYbnNrbM0LsoNMHJMvP07htpLE+FKkMfAjlfh9YQCx+MnYkMrKDEA6tEasnCM4OIV2L2d92hxtL74t+z9v52Wj46QVIGp+6M+TSP1vvuqt+egO2h+OUpz8NnrT5s/tZrMTRJPQoRcA6Ygv6oWJQmKlNZB2Ps8zYwOmOMMNeeuMthkjDRelRitRtLipshobFE56TBOcw2TwVLbKZP8J4ABZhw8TCYAnGZ9ogb4u+McE+rITQF8sn9G6xYv54Bcf+4LfnadbzY3Qj8YAoZs85jSjDRqlDRYiOdd4lp23EcvxlRNnRQhLWYwD+0Yk4n/C++GSMHCrBUopiX3E2tS72fJP+ODz/QQlWdhkUsPnNRLilRUMpURGTGwS7DdTx52/lNC2Cf4vNN/wCjk2hCWb57gemJs8vQgHl77jt9UvnRfQhXlPvcOmTL+qgkEojEEhFhV0jcVWNVsli6n+9mYtumohductkUtBVRxcqkdU3dw7zZfPWRxgRbyV0x4nMAu8YLIEu5YnzLsbnmoE8rQVOaAG5XDq4hE6vtqYqKFTJ6lP0jYgrMwCAQIXQIr85XQOk6wKzfaf03I+pU3fTdiXQIKUzIb0UWKS/JFBUul4mEtMH/BPLGnEM/EbSMrGmoNf0RwCfhXzMT4TMlCpzvM6sNTtPOMG9T939no95H/17/Vj/scnoZj/+VmTWf8u//P25cAN6n/q+u/t7W3H/M9PQQv5n/37+73Og96Dvb17u/di/c//P10Glb6tZ1yx/nu08Bf3/+2deP7bJ6H1sOoMXApnWppRsiUNlP2uTVPy0iMkO/Fa+Q/cJB/KwZaOlw6hmYRBToTNLkS4ijMk7F/MddW0bBv7d5CcpeXSFYiKDpJeh/99u7+7s+6wJ0i9g1Tix0vgpeSDFSRirgX2JHMiSM1ApEp8Tmn+8uRsVsHOApgxQ3zn9QhtjNgAnKZVajwvxcR3PPkBBwkwkaHoMP0oJMk5Ge22FId7R0OVmFvtzDi32OhtkY07ySMEyexFE8nnsP5+nowN+OdnZ1rKJ4DVJxh49ivVAqvX1peg1abu5LzUIpR8EEfVRhkqXPYafi5hkRUZp4q+FzfeYmKFxBI0t4I7xicfr5uwhE1oOVFQu0YaXXaM5sZQH/7rZRYpUqRIkSJFihQpUqRIkSJFihQpUqRIkSJFihQpUqRIkSJFihQpUqRIkSJFinRr9C/1lnlSADACAA==
