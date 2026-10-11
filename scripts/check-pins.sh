@@ -1,10 +1,16 @@
 #!/usr/bin/env bash
-# Fails if anything the stack builds or runs is referenced by a name that can
-# change underneath us: an image without a digest, nvpn by anything but a full
-# commit SHA, an ADD or git fetch of something not pinned to a checksum or
-# commit, a package manager allowed to re-resolve its lockfile, or any RUN
-# command the gate has no rule for. Two installs of the same installer must get
-# the same bits.
+# Fails if anything the stack builds is referenced by a name that can change
+# underneath us: an image without a digest, nvpn by anything but a full commit
+# SHA, an ADD or git fetch of something not pinned to a checksum or commit, a
+# package manager allowed to re-resolve its lockfile, any RUN command the gate
+# has no rule for, or a compose build section that bypasses all of that. Two
+# installs of the same installer must build the same bits.
+#
+# Scope: build inputs only. What a container runs (CMD, ENTRYPOINT, compose
+# command:/entrypoint:, entrypoint.sh) is tracked code in the payload and is
+# reviewed, not gated. Allowed tools that read in-repo files (pnpm run ->
+# package.json, cargo -> build.rs) are pinned by the commit they come from;
+# mdbook's book.toml is the one such file this repo tracks, so it is read below.
 #
 #   scripts/check-pins.sh                  offline: is everything pinned?
 #   scripts/check-pins.sh --verify-remote  also ask the registry that each pin's
@@ -25,6 +31,36 @@ for cf in $compose_files; do
     ref=$(sed -E 's/^[[:space:]]*image:[[:space:]]*//; s/[[:space:]]+#.*$//; s/[[:space:]]+$//' <<<"$line")
     grep -Eq -- "$digest\$" <<<"$ref" || fail "$cf image $ref"
   done < <(grep -E '^[[:space:]]*image:' "$cf" || true)
+done
+
+# A compose build: section decides what is actually built, and can override the
+# Dockerfile's own ARG defaults, name a Dockerfile this gate's glob never sees,
+# build from a remote context, or carry an inline Dockerfile with no file at all.
+dockerfile_args=$(git ls-files '*[Dd]ockerfile*' \
+  | xargs grep -Eih '^[[:space:]]*from[[:space:]]+\$' 2>/dev/null \
+  | sed -E 's/.*\$\{?([A-Za-z0-9_]+).*/\1/' | sort -u || true)
+for cf in $compose_files; do
+  grep -Eiq '^[[:space:]]*dockerfile_inline[[:space:]]*:' "$cf" \
+    && fail "$cf uses dockerfile_inline, which this gate cannot read"
+  # include: and extends: pull in compose files this gate's glob may never see.
+  grep -Eq '^include[[:space:]]*:' "$cf" && fail "$cf uses include:, which this gate does not follow"
+  grep -Eq '^[[:space:]]+extends[[:space:]]*:' "$cf" && fail "$cf uses extends:, which this gate does not follow"
+  while IFS= read -r v; do
+    case "$v" in
+      http://*|https://*|git@*|git://*|ssh://*|*.git|*.git#*) fail "$cf remote build context: $v" ;;
+    esac
+  done < <(grep -Ei '^[[:space:]]*context[[:space:]]*:' "$cf" | sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]+#.*$//; s/[[:space:]]+$//' || true)
+  while IFS= read -r v; do
+    [[ "$(basename "$v")" == *[Dd]ockerfile* ]] || fail "$cf build dockerfile '$v' is not covered by this gate's Dockerfile glob"
+  done < <(grep -Ei '^[[:space:]]*dockerfile[[:space:]]*:' "$cf" | sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]+#.*$//; s/[[:space:]]+$//' || true)
+  for a in $dockerfile_args; do
+    while IFS= read -r v; do
+      v=$(sed -E 's/[[:space:]]+#.*$//; s/[[:space:]]+$//; s/^["'"'"']//; s/["'"'"']$//' <<<"$v")
+      [[ "$v" =~ ^\$\{[A-Za-z0-9_]+:-(.*)\}$ ]] && v=${BASH_REMATCH[1]}
+      grep -Eq -- "$digest\$" <<<"$v" || fail "$cf build arg $a=$v is not pinned by digest"
+    done < <(grep -Eh "^[[:space:]]*(-[[:space:]]*)?$a[[:space:]]*[:=]" $compose_files \
+               | sed -E "s/^[[:space:]]*(-[[:space:]]*)?$a[[:space:]]*[:=][[:space:]]*//" || true)
+  done
 done
 
 # Every tracked Dockerfile ships in the installer payload, whatever its suffix.
@@ -63,6 +99,9 @@ for df in $(git ls-files '*[Dd]ockerfile*'); do
   # neither covers. Join continuation lines, keep RUN instructions, split shell
   # command lists into single commands, and squeeze whitespace so reformatting
   # cannot hide a command from the patterns below.
+  if grep -Eiq '^[[:space:]]*onbuild[[:space:]]' "$df"; then
+    fail "$df uses ONBUILD, whose instructions this gate does not read"
+  fi
   if grep -Eiq '^[[:space:]]*run[[:space:]].*<<' "$df"; then
     fail "$df uses a heredoc RUN, which this gate cannot read"
   fi
@@ -75,7 +114,7 @@ for df in $(git ls-files '*[Dd]ockerfile*'); do
     read -ra words <<<"$line"
     for src in "${words[@]}"; do
       case "$src" in
-        git@*|*.git|*.git#*|*.git/*)
+        git@*|git://*|ssh://*|*.git|*.git#*|*.git/*)
           grep -Eq -- '#[0-9a-f]{40}$' <<<"$src" || fail "$df ADD git source not pinned to a commit: $src" ;;
         http://*|https://*)
           grep -Eq -- "--checksum=sha256:[0-9a-f]{64}( |\$)" <<<"$line" || fail "$df ADD without --checksum: $src" ;;
@@ -89,7 +128,11 @@ for df in $(git ls-files '*[Dd]ockerfile*'); do
     fail "$df sets a Go module setting that can bypass go.sum: $(grep -Eo '(GOFLAGS|GOPROXY|GOSUMDB|GONOSUMDB|GONOSUMCHECK|GOINSECURE|GOPRIVATE|GOWORK)[^[:space:]]*' <<<"$joined" | head -1)"
   fi
 
-  cmds=$(grep -Ei '^[[:space:]]*run[[:space:]]' <<<"$joined" \
+  runs=$(grep -Ei '^[[:space:]]*run[[:space:]]' <<<"$joined" || true)
+  # A command substitution runs a command of its own, so each innermost $(...)
+  # is checked as a command too. Backticks are refused rather than parsed.
+  grep -q '`' <<<"$runs" && fail "$df uses a backtick command substitution, which this gate does not read"
+  cmds=$( { echo "$runs"; grep -o '\$([^()]*)' <<<"$runs" | sed -E 's/^\$\(//; s/\)$//' || true; } \
            | sed -E 's/(&&|\|\||[;|])/\n/g' \
            | sed -E 's/^[[:space:]]*(RUN([[:space:]]+--[^[:space:]]+)*[[:space:]]+)?//I' \
            | tr -s '[:blank:]' ' ' \
@@ -119,25 +162,51 @@ for df in $(git ls-files '*[Dd]ockerfile*'); do
       # apt-get is allowed while the unpinned apt stages are an open item.
       # git fetch must name its commit: a 40-hex literal, or ${VAR} whose ARG
       # default in this Dockerfile is one (and is declared exactly once).
-      git\ fetch\ *)
-        ok=
-        read -ra words <<<"$cmd"
-        for a in "${words[@]}"; do
+      git\ fetch\ *|git\ checkout\ *|git\ checkout)
+        # Every ref named here must be pinned: a 40-hex literal, FETCH_HEAD, or
+        # ${VAR}/$VAR whose ARG default in this Dockerfile is declared exactly
+        # once and is 40-hex. One pinned ref is not enough -- `git fetch R <sha>
+        # main` then `git checkout main` would otherwise ride through.
+        pinned_ref() {
+          local a=$1
           a=${a//\"/}; a=${a//\'/}
-          if grep -Eqx '[0-9a-f]{40}' <<<"$a"; then ok=1
-          elif [[ "$a" =~ ^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$ ]]; then
+          [[ "$a" == FETCH_HEAD ]] && return 0
+          grep -Eqx '[0-9a-f]{40}' <<<"$a" && return 0
+          if [[ "$a" =~ ^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$ ]]; then
+            local defs
             defs=$(grep -Ei "^[[:space:]]*arg[[:space:]]+${BASH_REMATCH[1]}=" "$df" | cut -d= -f2- | sed -E 's/[[:space:]]+$//' || true)
-            [[ -n "$defs" && $(wc -l <<<"$defs") -eq 1 ]] && grep -Eqx '[0-9a-f]{40}' <<<"$defs" && ok=1
+            [[ -n "$defs" && $(wc -l <<<"$defs") -eq 1 ]] && grep -Eqx '[0-9a-f]{40}' <<<"$defs" && return 0
           fi
+          return 1
+        }
+        read -ra words <<<"$cmd"
+        skip=0; pos=0; refs=0
+        for a in "${words[@]:2}"; do
+          if [[ "$skip" == 1 ]]; then skip=0; continue; fi
+          case "$a" in
+            --depth|--deepen|-j|--jobs|--upload-pack|--negotiation-tip|--refmap|-o|--server-option) skip=1; continue ;;
+            -*) continue ;;
+          esac
+          pos=$((pos+1))
+          # `git fetch`'s first positional is the repository; `git checkout`'s is a ref.
+          [[ "${words[1]}" == fetch && "$pos" == 1 ]] && continue
+          refs=$((refs+1))
+          pinned_ref "$a" || fail "$df unpinned ref in: $cmd"
         done
-        [[ -n "$ok" ]] || fail "$df git fetch without a pinned commit: $cmd" ;;
-      mdbook\ build*|git\ init*|git\ checkout*|git\ rev-parse*|\
+        [[ "${words[1]}" == fetch && "$refs" == 0 ]] && fail "$df git fetch names no commit: $cmd" ;;
+      mdbook\ build*|git\ init*|git\ rev-parse*|\
       cd\ *|cp\ *|mv\ *|rm\ *|mkdir\ *|ln\ *|chmod\ *|chown\ *|test\ *|\
       echo\ *|printf\ *|grep\ *|set\ *|exit|exit\ *|fi|true|false|\
       apt-get\ update*|apt-get\ install\ *) ;;
       *) fail "$df command not allowed by the gate (add it with a rule if it is safe): $cmd" ;;
     esac
   done <<<"$cmds"
+done
+
+# mdbook runs any preprocessor or renderer `command` in book.toml, so an
+# allowed `mdbook build` is only as pinned as that file.
+for bt in $(git ls-files '*book.toml'); do
+  grep -Eq '^[[:space:]]*command[[:space:]]*=' "$bt" && fail "$bt sets a command for mdbook to run: $(grep -Em1 '^[[:space:]]*command[[:space:]]*=' "$bt")"
 done
 
 # nvpn source: a full SHA, and the same one everywhere it is defaulted.
