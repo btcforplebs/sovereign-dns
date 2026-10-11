@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Fails if anything the stack builds or runs is referenced by a name that can
 # change underneath us: an image without a digest, nvpn by anything but a full
-# commit SHA, or a package manager allowed to re-resolve its lockfile. Two
-# installs of the same installer must get the same bits.
+# commit SHA, a package manager allowed to re-resolve its lockfile, or any RUN
+# command the gate has no rule for. Two installs of the same installer must get
+# the same bits.
 #
 #   scripts/check-pins.sh                  offline: is everything pinned?
 #   scripts/check-pins.sh --verify-remote  also ask the registry that each pin's
@@ -56,26 +57,50 @@ for df in $(git ls-files '*[Dd]ockerfile*'); do
     grep -Eq -- "$digest\$" <<<"$ref" || fail "$df --from $ref"
   done < <(grep -Eio -- '(--from=|[=,[:space:]]from=)[^[:space:],]+' "$df" | sed -E 's/^.*from=//I' || true)
 
-  # Package managers: a digest pins one image, the lockfile pins the whole
-  # dependency graph, so each command must refuse to re-resolve it. Join
-  # continuation lines, then split shell command lists into single commands.
+  # RUN commands are default-deny: a digest pins one image, a lockfile pins the
+  # whole dependency graph, and any tool not listed here could fetch something
+  # neither covers. Join continuation lines, keep RUN instructions, split shell
+  # command lists into single commands, and squeeze whitespace so reformatting
+  # cannot hide a command from the patterns below.
+  if grep -Eiq '^[[:space:]]*run[[:space:]].*<<' "$df"; then
+    fail "$df uses a heredoc RUN, which this gate cannot read"
+  fi
+  cmds=$(awk '/\\[[:space:]]*$/ { sub(/\\[[:space:]]*$/, " "); buf = buf $0; next } { print buf $0; buf = "" }' "$df" \
+           | grep -Ei '^[[:space:]]*run[[:space:]]' \
+           | sed -E 's/(&&|\|\||[;|])/\n/g' \
+           | sed -E 's/^[[:space:]]*(RUN([[:space:]]+--[^[:space:]]+)*[[:space:]]+)?//I' \
+           | tr -s '[:blank:]' ' ' \
+           | sed -E 's/^ //; s/ $//; s/^((if|then|else|!) )+//; s/^([A-Za-z_][A-Za-z0-9_]*=[^ ]* )*//; s/^cargo \+[^ ]+ /cargo /' \
+           | grep -v '^$' || true)
+  # A gate that read nothing must not report "pinned".
+  if grep -Eiq '^[[:space:]]*run[[:space:]]' "$df" && [[ -z "$cmds" ]]; then
+    fail "$df has RUN instructions but no command could be read from them"
+  fi
   while IFS= read -r cmd; do
-    # (bash 3.2 on macOS has no ;;& so cargo gets its own case.)
+    [[ -n "$cmd" ]] || continue
     case "$cmd" in
-      cargo\ build*|cargo\ install*|cargo\ run*|cargo\ test*)
-        grep -Eq -- '(^|[[:space:]])--(locked|frozen)([[:space:]]|$)' <<<"$cmd" || fail "$df no --locked: $cmd" ;;
-    esac
-    case "$cmd" in
-      cargo\ install*)
-        grep -Eq -- '--version[= ]=[0-9]+\.[0-9]+\.[0-9]+' <<<"$cmd" || fail "$df no exact --version: $cmd" ;;
+      cargo\ build*|cargo\ install*|cargo\ run*|cargo\ test*|cargo\ fetch*)
+        grep -Eq -- '(^| )--(locked|frozen)( |$)' <<<"$cmd" || fail "$df no --locked: $cmd"
+        case "$cmd" in cargo\ install*)
+          grep -Eq -- '--version[= ]=[0-9]+\.[0-9]+\.[0-9]+' <<<"$cmd" || fail "$df no exact --version: $cmd" ;;
+        esac ;;
       pnpm\ install*|pnpm\ i\ *|pnpm\ i)
         grep -Eq -- '--frozen-lockfile' <<<"$cmd" || fail "$df no --frozen-lockfile: $cmd" ;;
-      npm\ install*|npm\ i\ *|npm\ i)
-        fail "$df use npm ci, not: $cmd" ;;
+      pnpm\ run\ *|npm\ ci|npm\ ci\ *|npm\ run\ *) ;;
+      corepack\ enable|corepack\ enable\ *) ;;
+      corepack\ prepare\ *)
+        grep -Eq -- ' [a-z]+@[0-9]+\.[0-9]+\.[0-9]+( |$)' <<<"$cmd" || fail "$df no exact version: $cmd" ;;
+      # go build verifies go.sum read-only by default; go install/get resolve.
+      go\ build*) ;;
+      # Each line: tools that only build, copy or test what is already pinned.
+      # apt-get is allowed while the unpinned apt stages are an open item.
+      mdbook\ build*|git\ init*|git\ fetch*|git\ checkout*|git\ rev-parse*|\
+      cd\ *|cp\ *|mv\ *|rm\ *|mkdir\ *|ln\ *|chmod\ *|chown\ *|test\ *|\
+      echo\ *|printf\ *|grep\ *|set\ *|exit|exit\ *|fi|true|false|\
+      apt-get\ update*|apt-get\ install\ *) ;;
+      *) fail "$df command not allowed by the gate (add it with a rule if it is safe): $cmd" ;;
     esac
-  done < <(awk '/\\[[:space:]]*$/ { sub(/\\[[:space:]]*$/, " "); buf = buf $0; next } { print buf $0; buf = "" }' "$df" \
-             | sed -E 's/(&&|\|\||[;|])/\n/g' \
-             | sed -E 's/^[[:space:]]*(RUN([[:space:]]+--[^[:space:]]+)*[[:space:]]+)?//I; s/^([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*//')
+  done <<<"$cmds"
 done
 
 # nvpn source: a full SHA, and the same one everywhere it is defaulted.
@@ -92,7 +117,7 @@ compose_shas() {
              | sed -E 's/^[[:space:]]*(-[[:space:]]*)?NVPN_COMMIT[[:space:]]*[:=][[:space:]]*//' || true)
 }
 shas=$( { compose_shas
-          grep -Eho '^ARG NVPN_COMMIT=.*' nvpn/Dockerfile | sed -E 's/^ARG NVPN_COMMIT=//' || true; } | sort -u)
+          grep -Eih '^[[:space:]]*arg[[:space:]]+NVPN_COMMIT=' nvpn/Dockerfile | sed -E 's/^[[:space:]]*[Aa][Rr][Gg][[:space:]]+NVPN_COMMIT=//; s/[[:space:]]+$//' || true; } | sort -u)
 [[ -n "$shas" ]] || fail "no NVPN_COMMIT default found"
 for s in $shas; do
   grep -Eqx '[0-9a-f]{40}' <<<"$s" || fail "NVPN_COMMIT default '$s' is not a full commit SHA"
@@ -107,8 +132,10 @@ done
 if [[ "${1:-}" == "--verify-remote" ]]; then
   mismatch() { echo "remote: $*"; status=1; }
   accept='application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json'
-  refs=$(git ls-files '*[Dd]ockerfile*' '*compose*.yml' '*compose*.yaml' | xargs grep -Eoh '[a-z0-9./_-]+:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}' | sort -u)
+  refs=$(git ls-files '*[Dd]ockerfile*' '*compose*.yml' '*compose*.yaml' | xargs grep -Eoh '[a-z0-9./_:-]+@sha256:[0-9a-f]{64}' | sort -u)
   for ref in $refs; do
+    # name@digest with no tag is valid Docker, but there is no tag to check it against.
+    [[ "${ref%%@*}" =~ :[A-Za-z0-9._-]+$ && "${ref%%@*}" != *:*/* ]] || { mismatch "$ref: no tag beside the digest, not checked"; continue; }
     name=${ref%%:*}; rest=${ref#*:}; tag=${rest%%@*}; pin=${rest#*@}
     [[ "$name" == */* ]] || name="library/$name"
     [[ "${name%%/*}" == *.* ]] && { mismatch "$ref: registry other than Docker Hub, not checked"; continue; }
