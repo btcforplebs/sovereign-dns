@@ -424,6 +424,34 @@ for want in 'FTLCONF_dns_listeningMode BIND' 'FTLCONF_ntp_ipv4_active false' 'FT
   fi
 done
 
+# Raw mode cannot tell which of several auto-loadable names compose would load,
+# and an omitted key is as good as a flipped one: a tracked compose.yaml that
+# wins precedence and simply leaves these keys out hands FTL its own defaults
+# (listen on everything, NTP server on). Refuse to judge such a tree.
+if [[ "$mode" == raw ]]; then
+  n=$(printf '%s\n' $compose_files | grep -Ecx '(docker-)?compose\.(yml|yaml)' || true)
+  [[ "$n" -le 1 ]] || fail "more than one auto-loaded compose file is tracked and this gate cannot tell which one compose would load without the compose CLI"
+fi
+
+# The three values above are pinned; the rest of the FTLCONF namespace is not,
+# and FTL has settings that open a listener or move upstreams just as well.
+# FTLCONF_misc_dnsmasq_lines passes dnsmasq config straight through. Allow the
+# keys this stack sets and fail the rest, the way RUN commands are handled.
+# Read keys only, at the start of a line (map or list form, quoted or not): a
+# comment that names another key is not a setting.
+while IFS= read -r k; do
+  case "$k" in
+    FTLCONF_webserver_api_password|FTLCONF_dns_upstreams|FTLCONF_dns_interface|\
+    FTLCONF_dns_listeningMode|FTLCONF_dns_dnssec|FTLCONF_ntp_ipv4_active|\
+    FTLCONF_ntp_ipv6_active|FTLCONF_webserver_port) ;;
+    *) fail "pihole sets $k, an FTL setting this gate has no rule for (add one if it is safe)" ;;
+  esac
+done < <(sed -nE "s/^[[:space:]]*(-[[:space:]]*)?[\"']?(FTLCONF_[A-Za-z0-9_]+).*/\\2/p" "$loaded" | sort -u)
+
+# env_file contents are not in the render -- `config` prints the path only --
+# so an FTLCONF setting there is invisible to every check above.
+grep -Eq '^[[:space:]]+env_file[[:space:]]*:' "$loaded" && fail "a compose service uses env_file:, whose contents this gate does not read"
+
 [[ "$status" == 0 ]] && echo "all images, sources and lockfiles pinned"
 
 # The offline gate proves a digest is present, not that it belongs to the tag
