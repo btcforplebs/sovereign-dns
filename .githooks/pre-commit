@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Catches accidents, enforces nothing: it runs only in clones that opted in with
+#   git config core.hooksPath .githooks
+# and `git commit --no-verify` skips it. The real gate is make-installer.sh,
+# which cannot produce install.sh unless check-pins.sh passes.
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+scripts/make-installer.sh --check || {
+  echo "pre-commit: pins or install.sh are stale. Run scripts/make-installer.sh, then stage scripts/install.sh." >&2
+  exit 1
+}

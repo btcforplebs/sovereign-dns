@@ -19,7 +19,8 @@ done < <(grep -E '^[[:space:]]*image:' docker-compose.yml)
 
 # Every tracked Dockerfile ships in the installer payload, whatever its suffix.
 for df in $(git ls-files '*[Dd]ockerfile*'); do
-  stages=$(grep -Eio '^FROM .* AS [a-z0-9_-]+' "$df" | awk '{print tolower($NF)}' || true)
+  # Instructions are case-insensitive and may be indented; match them as Docker does.
+  stages=$(grep -Eio '^[[:space:]]*from[[:space:]].*[[:space:]]as[[:space:]]+[a-z0-9_.-]+' "$df" | awk '{print tolower($NF)}' || true)
   # The image a FROM names, with --platform and other flags dropped.
   while IFS= read -r ref; do
     case "$ref" in
@@ -27,14 +28,25 @@ for df in $(git ls-files '*[Dd]ockerfile*'); do
       '$'*)
         # FROM ${X} / $X: X's ARG default is what gets pulled, whatever X is called.
         name=$(sed -E 's/^\$\{?([A-Za-z0-9_]+).*/\1/' <<<"$ref")
-        def=$(grep -E "^ARG $name=" "$df" | head -n1 | cut -d= -f2- || true)
-        [[ -n "$def" ]] || { fail "$df FROM $ref has no ARG $name default"; continue; }
+        defs=$(grep -Ei "^[[:space:]]*arg[[:space:]]+$name=" "$df" | cut -d= -f2- || true)
+        [[ -n "$defs" ]] || { fail "$df FROM $ref has no ARG $name default"; continue; }
+        # Docker uses the last declaration; any redeclaration is too easy to misread.
+        [[ $(wc -l <<<"$defs") -eq 1 ]] || { fail "$df ARG $name is declared more than once"; continue; }
+        def=$defs
         grep -Eq -- "$digest\$" <<<"$def" || fail "$df ARG $name=$def"
         continue ;;
     esac
     grep -qx -- "$(tr 'A-Z' 'a-z' <<<"$ref")" <<<"$stages" && continue
     grep -Eq -- "$digest\$" <<<"$ref" || fail "$df FROM $ref"
-  done < <(grep -E '^FROM ' "$df" | awk '{for (i = 2; i <= NF; i++) if ($i !~ /^--/) { print $i; break }}')
+  done < <(grep -Ei '^[[:space:]]*from[[:space:]]' "$df" | awk '{for (i = 2; i <= NF; i++) if ($i !~ /^--/) { print $i; break }}')
+
+  # COPY --from= and RUN --mount=...,from= pull an image too unless they name a stage
+  # (or a stage index).
+  while IFS= read -r ref; do
+    [[ "$ref" =~ ^[0-9]+$ ]] && continue
+    grep -qx -- "$(tr 'A-Z' 'a-z' <<<"$ref")" <<<"$stages" && continue
+    grep -Eq -- "$digest\$" <<<"$ref" || fail "$df --from $ref"
+  done < <(grep -Eio -- '(--from=|[,[:space:]]from=)[^[:space:],]+' "$df" | sed -E 's/^.*from=//I' || true)
 
   # cargo install must name one exact version.
   while IFS= read -r line; do

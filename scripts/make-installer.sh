@@ -14,7 +14,8 @@ OUT="scripts/install.sh"
 MARKER="__PAYLOAD_BELOW__"
 
 payload_files() {
-  git ls-files | grep -v -x "$OUT"
+  # .githooks/ is for people working on the repo, not for installs.
+  git ls-files | grep -v -x "$OUT" | grep -v '^\.githooks/'
 }
 
 make_payload() {
@@ -104,7 +105,7 @@ if [[ ! -f .env ]]; then
   echo "Pick a password for your Pi-hole admin dashboard (typing is hidden):"
   read -rs PIHOLE_PASSWORD
   echo
-  cat > .env << ENV
+  (umask 077; cat > .env) << ENV
 PIHOLE_PASSWORD=${PIHOLE_PASSWORD}
 TZ=UTC
 PIHOLE_WEB_PORT=80
@@ -121,10 +122,13 @@ fi
 # commit is pinned in docker-compose.yml), so drop it rather than leave a
 # setting that looks like it does something.
 if grep -q '^NVPN_REF=' .env; then
-  # Rewrite in place (not mv) so .env keeps its permissions; it holds a password.
   (umask 077; grep -v '^NVPN_REF=' .env > .env.tmp || true) && cat .env.tmp > .env && rm -f .env.tmp
   echo "Removed the old NVPN_REF setting from .env; the NostrVPN commit is now pinned by the stack."
 fi
+
+# .env holds the Pi-hole password. Installs before this line wrote it with the
+# default umask (usually 644), so tighten it every run, not just on creation.
+chmod 600 .env
 
 HUB_PORT=$(grep '^HUB_PORT=' .env | cut -d= -f2 || true)
 HUB_PORT=${HUB_PORT:-8080}
