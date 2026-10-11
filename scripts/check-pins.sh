@@ -60,16 +60,66 @@ root=$(pwd -P)
 rendered=$(mktemp -d)
 trap 'rm -rf "$rendered"' EXIT
 yaml() { echo "$rendered/$(tr / _ <<<"$1")"; }
+
+# Rendering straight into a file lets a short render pass for a whole one: the
+# shell opens the file, compose writes part of its output, the disk fills, and
+# compose can still exit 0. A cut makes the render look cleaner, not dirtier --
+# dropping a forbidden key is exactly what every check below wants to see -- so
+# default-deny does not catch it, and a free-space precondition would not
+# either, because space can go between the check and the write. Render through
+# a pipe, which cannot come up short, and compare the bytes compose produced
+# with the bytes that landed on disk. $1 is the file to render into, the rest
+# are compose's own arguments; the reason for a nonzero return is in
+# $render_err. The same comparison guards the copies raw mode reads.
+render_err=
+render_to() {
+  local out=$1 n size st; shift
+  render_err=
+  : >"$rendered/n"
+  set +e
+  env -i PATH="$PATH" HOME="$HOME" docker compose "$@" --env-file /dev/null --profile '*' \
+      config --no-interpolate 2>"$rendered/err" \
+    | tee "$out" | wc -c >"$rendered/n"
+  st=("${PIPESTATUS[@]}")
+  set -e
+  if [[ ${st[0]} -ne 0 ]]; then
+    render_err="docker compose could not render it: $(head -c 300 "$rendered/err")"
+    return 1
+  fi
+  if [[ ${st[1]} -ne 0 || ${st[2]} -ne 0 ]]; then
+    render_err="the render could not be written out in full"
+    return 1
+  fi
+  # An unwritten or itself-truncated byte count must fail, not compare equal.
+  read -r n <"$rendered/n" || n=
+  read -r size < <(wc -c <"$out") || size=
+  if ! [[ "$n" =~ ^[0-9]+$ && "$size" =~ ^[0-9]+$ && "$n" -eq "$size" ]]; then
+    render_err="compose produced ${n:-no} bytes but ${size:-no} bytes landed on disk: the render is short"
+    return 1
+  fi
+}
+
+# Same comparison for a file this gate copies rather than renders.
+same_size() {
+  local a b
+  read -r a < <(wc -c <"$1") || a=
+  read -r b < <(wc -c <"$2") || b=
+  [[ "$a" =~ ^[0-9]+$ && "$b" =~ ^[0-9]+$ && "$a" -eq "$b" ]]
+}
 if docker compose version >/dev/null 2>&1; then mode=rendered; else
   mode=raw; echo "note: docker compose not found; reading compose files as written"
 fi
 for cf in $compose_files; do
-  if [[ "$mode" == raw ]]; then cp "$cf" "$(yaml "$cf")"; continue; fi
+  if [[ "$mode" == raw ]]; then
+    cp "$cf" "$(yaml "$cf")"
+    same_size "$cf" "$(yaml "$cf")" \
+      || fail "$cf: the copy of it this gate reads is short"
+    continue
+  fi
   # Nonzero means "could not read it", which must not fall through as "read it
   # and it is fine". --profile '*' keeps services in any profile in the render.
-  if ! env -i PATH="$PATH" HOME="$HOME" docker compose -f "$cf" --env-file /dev/null --profile '*' \
-         config --no-interpolate >"$(yaml "$cf")" 2>"$rendered/err"; then
-    fail "$cf: docker compose could not render it: $(head -c 300 "$rendered/err")"
+  if ! render_to "$(yaml "$cf")" -f "$cf"; then
+    fail "$cf: $render_err"
   elif ! grep -q '^services:' "$(yaml "$cf")"; then
     fail "$cf: docker compose rendered no services from it"
   fi
@@ -411,11 +461,14 @@ done
 # docker-compose.override.yml can set these keys to anything it likes.
 loaded=$(yaml __loaded__)
 if [[ "$mode" == rendered ]]; then
-  env -i PATH="$PATH" HOME="$HOME" docker compose --env-file /dev/null --profile '*' \
-    config --no-interpolate >"$loaded" 2>"$rendered/err" \
-    || fail "docker compose could not render the files it auto-loads: $(head -c 300 "$rendered/err")"
+  render_to "$loaded" \
+    || fail "the files compose auto-loads: $render_err"
 else
   cat $compose_files > "$loaded"
+  read -r want < <(cat $compose_files | wc -c) || want=
+  read -r got < <(wc -c <"$loaded") || got=
+  [[ "$want" =~ ^[0-9]+$ && "$got" =~ ^[0-9]+$ && "$want" -eq "$got" ]] \
+    || fail "the concatenation of the compose files this gate reads is short"
 fi
 pihole_env=$(awk '/^  pihole:[[:space:]]*$/ { inp = 1; next }
                   inp && /^  [^[:space:]#]/ { inp = 0 }
