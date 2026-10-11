@@ -27,7 +27,7 @@ b64_decode() {
 }
 
 if [[ "${1:-}" == "--check" ]]; then
-  # The pins are part of what --check guards: CI runs this, not the generator.
+  # The pins are part of what --check guards, so one command proves both.
   scripts/check-pins.sh >/dev/null || { scripts/check-pins.sh; exit 1; }
   [[ -f "$OUT" ]] || { echo "drift: $OUT does not exist"; exit 1; }
   tmp=$(mktemp -d)
@@ -122,7 +122,7 @@ fi
 # setting that looks like it does something.
 if grep -q '^NVPN_REF=' .env; then
   # Rewrite in place (not mv) so .env keeps its permissions; it holds a password.
-  (umask 077; grep -v '^NVPN_REF=' .env > .env.tmp) && cat .env.tmp > .env && rm -f .env.tmp
+  (umask 077; grep -v '^NVPN_REF=' .env > .env.tmp || true) && cat .env.tmp > .env && rm -f .env.tmp
   echo "Removed the old NVPN_REF setting from .env; the NostrVPN commit is now pinned by the stack."
 fi
 

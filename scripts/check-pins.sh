@@ -13,26 +13,28 @@ digest='@sha256:[0-9a-f]{64}'
 
 # Compose services that pull an image.
 while IFS= read -r line; do
-  ref=$(sed -E 's/^[[:space:]]*image:[[:space:]]*//' <<<"$line")
-  grep -Eq "$digest\$" <<<"$ref" || fail "docker-compose.yml image $ref"
+  ref=$(sed -E 's/^[[:space:]]*image:[[:space:]]*//; s/[[:space:]]+#.*$//; s/[[:space:]]+$//' <<<"$line")
+  grep -Eq -- "$digest\$" <<<"$ref" || fail "docker-compose.yml image $ref"
 done < <(grep -E '^[[:space:]]*image:' docker-compose.yml)
 
-for df in $(git ls-files '*Dockerfile'); do
-  # Base images given as ARG defaults (FROM ${X}).
-  while IFS= read -r line; do
-    ref=${line#*=}
-    grep -Eq "$digest\$" <<<"$ref" || fail "$df $line"
-  done < <(grep -E '^ARG [A-Z_]*IMAGE=' "$df")
-
-  # Literal FROM lines. Skip ${ARG} (checked above), scratch, and earlier stages.
-  stages=$(grep -Eio '^FROM .* AS [a-z0-9_-]+' "$df" | awk '{print tolower($NF)}')
+# Every tracked Dockerfile ships in the installer payload, whatever its suffix.
+for df in $(git ls-files '*[Dd]ockerfile*'); do
+  stages=$(grep -Eio '^FROM .* AS [a-z0-9_-]+' "$df" | awk '{print tolower($NF)}' || true)
+  # The image a FROM names, with --platform and other flags dropped.
   while IFS= read -r ref; do
     case "$ref" in
-      '${'*|scratch) continue ;;
+      scratch) continue ;;
+      '$'*)
+        # FROM ${X} / $X: X's ARG default is what gets pulled, whatever X is called.
+        name=$(sed -E 's/^\$\{?([A-Za-z0-9_]+).*/\1/' <<<"$ref")
+        def=$(grep -E "^ARG $name=" "$df" | head -n1 | cut -d= -f2- || true)
+        [[ -n "$def" ]] || { fail "$df FROM $ref has no ARG $name default"; continue; }
+        grep -Eq -- "$digest\$" <<<"$def" || fail "$df ARG $name=$def"
+        continue ;;
     esac
-    grep -qx "$(tr 'A-Z' 'a-z' <<<"$ref")" <<<"$stages" && continue
-    grep -Eq "$digest\$" <<<"$ref" || fail "$df FROM $ref"
-  done < <(grep -E '^FROM ' "$df" | awk '{print $2}')
+    grep -qx -- "$(tr 'A-Z' 'a-z' <<<"$ref")" <<<"$stages" && continue
+    grep -Eq -- "$digest\$" <<<"$ref" || fail "$df FROM $ref"
+  done < <(grep -E '^FROM ' "$df" | awk '{for (i = 2; i <= NF; i++) if ($i !~ /^--/) { print $i; break }}')
 
   # cargo install must name one exact version.
   while IFS= read -r line; do
