@@ -4,7 +4,9 @@
 # commit SHA, or a package manager allowed to re-resolve its lockfile. Two
 # installs of the same installer must get the same bits.
 #
-#   scripts/check-pins.sh
+#   scripts/check-pins.sh                  offline: is everything pinned?
+#   scripts/check-pins.sh --verify-remote  also ask the registry that each pin's
+#                                          tag still points at its digest
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -98,4 +100,30 @@ done
 [[ $(wc -l <<<"$shas") -le 1 ]] || fail "NVPN_COMMIT defaults disagree: $(echo $shas)"
 
 [[ "$status" == 0 ]] && echo "all images, sources and lockfiles pinned"
+
+# The offline gate proves a digest is present, not that it belongs to the tag
+# written beside it, and the tag is what a human reads when bumping. Ask Docker
+# Hub. A tag that has moved is reported, not "fixed": re-pinning is a decision.
+if [[ "${1:-}" == "--verify-remote" ]]; then
+  mismatch() { echo "remote: $*"; status=1; }
+  accept='application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json'
+  refs=$(git ls-files '*[Dd]ockerfile*' '*compose*.yml' '*compose*.yaml' | xargs grep -Eoh '[a-z0-9./_-]+:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}' | sort -u)
+  for ref in $refs; do
+    name=${ref%%:*}; rest=${ref#*:}; tag=${rest%%@*}; pin=${rest#*@}
+    [[ "$name" == */* ]] || name="library/$name"
+    [[ "${name%%/*}" == *.* ]] && { mismatch "$ref: registry other than Docker Hub, not checked"; continue; }
+    token=$(curl -fsS "https://auth.docker.io/token?service=registry.docker.io&scope=repository:$name:pull" \
+              | sed -E 's/.*"token":"([^"]+)".*/\1/') || { mismatch "$ref: no registry token"; continue; }
+    manifest_head() { curl -fsSI -H "Authorization: Bearer $token" -H "Accept: $accept" "https://registry-1.docker.io/v2/$name/manifests/$1"; }
+    live=$(manifest_head "$tag" 2>/dev/null | tr -d '\r' | sed -n 's/^[Dd]ocker-[Cc]ontent-[Dd]igest: //p') || true
+    if [[ -z "$live" ]]; then mismatch "$ref: tag $tag not found on Docker Hub"
+    elif [[ "$live" != "$pin" ]]; then
+      # Either the tag moved on since pinning, or the tag text is wrong for this digest.
+      if manifest_head "$pin" >/dev/null 2>&1; then where="the pinned digest exists in $name"
+      else where="the pinned digest is not in $name at all"; fi
+      mismatch "$name:$tag points at $live, not the pinned $pin; $where"
+    else echo "ok: $name:$tag"; fi
+  done
+  [[ "$status" == 0 ]] && echo "every tag still points at its pinned digest"
+fi
 exit "$status"
