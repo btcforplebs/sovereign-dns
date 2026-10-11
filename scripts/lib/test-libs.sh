@@ -4,8 +4,13 @@
 #   bash scripts/lib/test-libs.sh
 #
 # Safe on a machine running the live stack: it never starts, stops or
-# restarts Docker, installs nothing (installs run under DR_DRY_RUN=1), and
-# writes the login agent and Docker Desktop settings only into a temp dir.
+# restarts Docker and installs nothing. The install, start and port paths run
+# for real with every download, privileged command and docker call replaced
+# by a stand-in that records what would have run; one docker_ready run is
+# under DR_DRY_RUN=1. The only real engine calls are read-only (docker info,
+# context inspect, compose version, container inspect) in the "live" section
+# at the end, which skips when no Docker answers. The login agent and Docker
+# Desktop settings are written only into a temp dir.
 # Runs on macOS and Linux; checks that need one of them say so and skip.
 
 set -u
@@ -28,6 +33,13 @@ cleanup() { [[ -n "$holder_pid" ]] && kill "$holder_pid" 2>/dev/null; rm -rf "$t
 trap cleanup EXIT
 
 os=$(dr_os)
+
+# A PATH with the usual tools but no docker.
+nodocker=$tmp/bin
+mkdir -p "$nodocker"
+for c in uname grep awk sed cut id perl tail sw_vers defaults plutil sha256sum shasum mktemp rm cat mkdir tr head; do
+  p=$(command -v "$c" 2>/dev/null) && ln -s "$p" "$nodocker/$c"
+done
 printf '# %s %s, bash %s\n' "$(uname -s)" "$(uname -m)" "$BASH_VERSION"
 
 # ---------------------------------------------------------------- free-port
@@ -51,7 +63,16 @@ hold_udp() {
 
 newenv() { printf 'PIHOLE_PASSWORD=x\nTZ=UTC\n' > "$1"; }
 # docker stand-ins for `docker inspect sovereign-dns-nvpn`.
-no_box() { echo "Error response from daemon: No such object: sovereign-dns-nvpn" >&2; return 1; }
+# no_box behaves like an engine with no box container but with the
+# sovereign-dns-nvpn image compose leaves behind after `compose down`.
+no_box() {
+  if [[ "${1:-}" == container ]]; then
+    echo "Error response from daemon: No such container: sovereign-dns-nvpn" >&2
+  else
+    echo 'template: :1:13: executing "" at <.HostConfig.PortBindings>: map has no entry for key "HostConfig"' >&2
+  fi
+  return 1
+}
 box_on() { printf '{"51820/udp":[{"HostIp":"","HostPort":"%s"}]}\n' "$1"; }
 
 # A base port nobody uses, so the tests never depend on what this machine runs.
@@ -118,7 +139,23 @@ newenv "$tmp/f.env"
 out=$(docker() { echo "Cannot connect to the Docker daemon" >&2; return 1; }; nvpn_listen_port "$tmp/f.env" 2>/dev/null); rc=$?
 check "Docker not answering: returns 1 and prints no port (rc=$rc)" test "$rc" = 1 -a -z "$out"
 
-nvpn_listen_port "$tmp/missing.env" > /dev/null 2>&1; rc=$?
+# Only the box's image is left (after `compose down`): that's a fresh install.
+newenv "$tmp/h.env"
+out=$(docker() { no_box "$@"; }; FP_DEFAULT_PORT=$base nvpn_listen_port "$tmp/h.env" 2>/dev/null); rc=$?
+check "only the box's image left: treated as no box (rc=$rc, got $out)" test "$rc" = 0 -a "$out" = "$base"
+
+# A box from before 81e8ee1 publishes no 51820/udp: it holds no host port.
+newenv "$tmp/i.env"
+out=$(docker() { echo '{}'; }; FP_DEFAULT_PORT=$base nvpn_listen_port "$tmp/i.env" 2>/dev/null); rc=$?
+check "box without a 51820/udp binding: probes as a fresh install (rc=$rc, got $out)" test "$rc" = 0 -a "$out" = "$base"
+
+# No docker command on PATH: can't tell whether a box exists, so don't probe.
+newenv "$tmp/j.env"
+out=$(unset -f docker; PATH=$nodocker; FP_DEFAULT_PORT=$base nvpn_listen_port "$tmp/j.env" 2>/dev/null); rc=$?
+check "no docker on PATH: returns 1 and prints no port (rc=$rc, got '$out')" test "$rc" = 1 -a -z "$out"
+check "  and writes nothing to .env" not_in NVPN_LISTEN_PORT "$tmp/j.env"
+
+(docker() { no_box "$@"; }; FP_DEFAULT_PORT=$base nvpn_listen_port "$tmp/missing.env" > /dev/null 2>&1); rc=$?
 check "no .env yet: returns 1 and doesn't create it (rc=$rc)" test "$rc" = 1 -a ! -e "$tmp/missing.env"
 
 printf 'TZ=UTC' > "$tmp/g.env" # no trailing newline
@@ -199,11 +236,6 @@ out=$(ready_run 1)
 check "control: docker_ready, Docker not running: starts and waits (did: $out)" test "$out" = "start wait autostart "
 
 # Missing docker: with docker off PATH, dry-run shows the pinned install.
-nodocker=$tmp/bin
-mkdir -p "$nodocker"
-for c in uname grep awk sed cut id sw_vers defaults plutil sha256sum shasum mktemp rm cat mkdir tr head; do
-  p=$(command -v "$c" 2>/dev/null) && ln -s "$p" "$nodocker/$c"
-done
 (
   PATH=$nodocker
   dr_find_docker() { return 1; }

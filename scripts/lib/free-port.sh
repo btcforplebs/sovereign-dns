@@ -84,20 +84,29 @@ fp_pick_free_udp_port() {
 # The host UDP port an existing sovereign-dns-nvpn container publishes,
 # running or stopped. A reinstall must keep that port, not move away from
 # itself. Prints the port and returns 0; returns 1 when there is no such
-# container; returns 2 when Docker can't be read, so we can't tell.
+# container, or it publishes no 51820/udp (boxes from before 81e8ee1), so it
+# holds no host port we could collide with; returns 2 when we can't tell:
+# Docker can't be read, or no docker command is on PATH.
 fp_existing_box_port() {
-  command -v docker >/dev/null 2>&1 || return 1
-  local out
-  if ! out=$(docker inspect sovereign-dns-nvpn --format '{{json .HostConfig.PortBindings}}' 2>&1); then
+  command -v docker >/dev/null 2>&1 || return 2
+  local out port
+  # "container": the sovereign-dns-nvpn image that compose builds outlives
+  # the container, and plain `docker inspect` would match it.
+  if ! out=$(docker container inspect sovereign-dns-nvpn --format '{{json .HostConfig.PortBindings}}' 2>&1); then
     case "$out" in
-      *"No such object"* | *"no such object"*) return 1 ;;
+      *"No such container"* | *"no such container"*) return 1 ;;
       *) return 2 ;;
     esac
   fi
   # e.g. {"51820/udp":[{"HostIp":"","HostPort":"51820"}]}
-  out=$(printf '%s\n' "$out" | sed -n 's/.*"51820\/udp":\[{[^]]*"HostPort":"\([0-9][0-9]*\)".*/\1/p')
-  [[ -n "$out" ]] || return 2
-  printf '%s\n' "$out"
+  case "$out" in
+    *'"51820/udp"'*) ;;
+    "{"*"}" | null) return 1 ;; # a box with no 51820/udp binding
+    *) return 2 ;;
+  esac
+  port=$(printf '%s\n' "$out" | sed -n 's/.*"51820\/udp":\[{[^]]*"HostPort":"\([0-9][0-9]*\)".*/\1/p')
+  [[ -n "$port" ]] || return 2
+  printf '%s\n' "$port"
 }
 
 # Prints the port and records it in ENV_FILE so later runs keep it. Call it
