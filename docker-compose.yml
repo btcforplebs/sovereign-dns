@@ -9,11 +9,11 @@ services:
     build:
       context: ./nvpn
       args:
-        NVPN_REPO: ${NVPN_REPO:-https://github.com/btcforplebs/nostr-vpn.git}
+        NVPN_REPO: https://github.com/btcforplebs/nostr-vpn.git
         # A full commit SHA, not a branch: the build checks it out exactly and
         # fails if the fetched commit is anything else. Change the pin here,
         # where it is visible, rather than in .env.
-        NVPN_COMMIT: ${NVPN_COMMIT:-fc0ab76574134809536bb2414ec3d5684cfd34a1}
+        NVPN_COMMIT: fc0ab76574134809536bb2414ec3d5684cfd34a1
     container_name: sovereign-dns-nvpn
     restart: unless-stopped
     cap_add:
@@ -66,8 +66,8 @@ services:
     build:
       context: ./nvpn
       args:
-        NVPN_REPO: ${NVPN_REPO:-https://github.com/btcforplebs/nostr-vpn.git}
-        NVPN_COMMIT: ${NVPN_COMMIT:-fc0ab76574134809536bb2414ec3d5684cfd34a1}
+        NVPN_REPO: https://github.com/btcforplebs/nostr-vpn.git
+        NVPN_COMMIT: fc0ab76574134809536bb2414ec3d5684cfd34a1
     container_name: sovereign-dns-web
     restart: unless-stopped
     entrypoint: ["/usr/local/bin/nvpn-web"]

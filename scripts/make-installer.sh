@@ -112,18 +112,18 @@ PIHOLE_WEB_PORT=80
 HUB_PORT=8080
 DOCS_PORT=8081
 WEB_UI_PORT=8082
-NVPN_REPO=https://github.com/btcforplebs/nostr-vpn.git
 NVPN_TUN_IFACE=utun100
 RUST_LOG=info
 ENV
 fi
 
-# Older installs wrote NVPN_REF=<branch> here. Nothing reads it any more (the
-# commit is pinned in docker-compose.yml), so drop it rather than leave a
-# setting that looks like it does something.
-if grep -q '^NVPN_REF=' .env; then
-  (umask 077; grep -v '^NVPN_REF=' .env > .env.tmp || true) && cat .env.tmp > .env && rm -f .env.tmp
-  echo "Removed the old NVPN_REF setting from .env; the NostrVPN commit is now pinned by the stack."
+# Older installs wrote NVPN_REF, NVPN_REPO or NVPN_COMMIT here. Nothing reads
+# them any more: the source and commit are literals in docker-compose.yml, so
+# .env cannot move what gets built. Drop them rather than leave settings that
+# look like they do something.
+if grep -Eq '^(NVPN_REF|NVPN_REPO|NVPN_COMMIT)=' .env; then
+  (umask 077; grep -Ev '^(NVPN_REF|NVPN_REPO|NVPN_COMMIT)=' .env > .env.tmp || true) && cat .env.tmp > .env && rm -f .env.tmp
+  echo "Removed old NostrVPN source settings from .env; the source and commit are pinned by the stack."
 fi
 
 # .env holds the Pi-hole password. Installs before this line wrote it with the

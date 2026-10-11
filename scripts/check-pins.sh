@@ -179,7 +179,10 @@ for cf in $compose_files; do
         grep -Fqx -- "$p" <<<"$dockerfiles" || fail "$cf builds $p, which is not a tracked Dockerfile this gate reads" ;;
       arg)
         v=$(sed -E 's/[[:space:]]+#.*$//; s/[[:space:]]+$//; s/^["'"'"']//; s/["'"'"']$//' <<<"$b")
-        [[ "$v" =~ ^\$\{[A-Za-z0-9_]+:-(.*)\}$ ]] && v=${BASH_REMATCH[1]}
+        # A build arg must be a literal. ${X:-pinned} is not a pin: .env or the
+        # caller's environment supplies X, the gate reads the tree, and the two
+        # disagree with no warning (install.sh itself writes NVPN_REPO to .env).
+        case "$v" in *'${'*|*'$'[A-Za-z_]*) fail "$cf build arg $a=$v is interpolated, so .env decides it; write the pinned value literally"; continue ;; esac
         if grep -Fqx -- "$a" <<<"$dockerfile_args"; then
           grep -Eq -- "$digest\$" <<<"$v" || fail "$cf build arg $a=$v is not pinned by digest"
         elif [[ "$a" == NVPN_COMMIT ]] || grep -Fqx -- "$a" <<<"$gitref_args"; then
@@ -392,13 +395,33 @@ done
 # a digest: a literal value in the pihole service, never ${...}, because .env
 # beats a compose default. Losing BIND or an NTP line opens a listener to every
 # mesh device with the same image digest, so no digest check would notice.
+# `docker compose up` does not load docker-compose.yml by name: it loads the
+# first of compose.yaml/compose.yml/docker-compose.yaml/docker-compose.yml it
+# finds, plus the matching override file. Read that set -- the one the installer
+# builds -- not a fixed filename, or a tracked compose.yaml or
+# docker-compose.override.yml can set these keys to anything it likes.
+loaded=$(yaml __loaded__)
+if [[ "$mode" == rendered ]]; then
+  env -i PATH="$PATH" HOME="$HOME" docker compose --env-file /dev/null --profile '*' \
+    config --no-interpolate >"$loaded" 2>"$rendered/err" \
+    || fail "docker compose could not render the files it auto-loads: $(head -c 300 "$rendered/err")"
+else
+  cat $compose_files > "$loaded"
+fi
 pihole_env=$(awk '/^  pihole:[[:space:]]*$/ { inp = 1; next }
                   inp && /^  [^[:space:]#]/ { inp = 0 }
-                  inp' "$(yaml docker-compose.yml)")
+                  inp' "$loaded")
 for want in 'FTLCONF_dns_listeningMode BIND' 'FTLCONF_ntp_ipv4_active false' 'FTLCONF_ntp_ipv6_active false'; do
   read -r key val <<<"$want"
   grep -Eq "^[[:space:]]*(-[[:space:]]*)?${key}[[:space:]]*[:=][[:space:]]*[\"']?${val}[\"']?[[:space:]]*(#.*)?$" <<<"$pihole_env" \
-    || fail "pihole must set $key to a literal $val in docker-compose.yml"
+    || fail "pihole must set $key to a literal $val in the compose files the installer loads"
+  # Raw mode cannot tell which file wins, so no tracked file may disagree.
+  if [[ "$mode" == raw ]]; then
+    while IFS= read -r line; do
+      grep -Eq "[:=][[:space:]]*[\"']?${val}[\"']?[[:space:]]*(#.*)?$" <<<"$line" \
+        || fail "a tracked compose file sets $key to something other than $val: $line"
+    done < <(grep -Eh "^[[:space:]]*(-[[:space:]]*)?${key}[[:space:]]*[:=]" $compose_files || true)
+  fi
 done
 
 [[ "$status" == 0 ]] && echo "all images, sources and lockfiles pinned"

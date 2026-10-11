@@ -8,8 +8,8 @@ ARG NVPN_COMMIT=fc0ab76574134809536bb2414ec3d5684cfd34a1
 WORKDIR /src
 # Fetch exactly one commit by SHA, then prove that is what was checked out.
 # A branch name would let two installs build different code.
-# The SHA check below is load-bearing: a user's .env can set NVPN_COMMIT, which
-# beats the compose default and is invisible to scripts/check-pins.sh.
+# The SHA check below is load-bearing: compose passes NVPN_COMMIT as a literal
+# today, but a `docker build --build-arg` bypasses compose and check-pins.sh.
 RUN set -e; \
     if ! printf '%s' "${NVPN_COMMIT}" | grep -Eqx '[0-9a-f]{40}'; then \
       echo "NVPN_COMMIT must be a full 40-char commit SHA, got '${NVPN_COMMIT}'" >&2; exit 1; \
