@@ -44,8 +44,12 @@ can opt out locally in their own nvpn config instead of waiting on the
 network setting. A second Pi-hole+Unbound instance as a fallback is a
 planned post-MVP improvement.
 
-## `network-dns-gui` is a feature branch, not a release
+## nvpn is pinned to a commit, not a release
 
-`.env`'s `NVPN_REF` currently pins the compose stack to the
-`network-dns-gui` branch of `nostr-vpn`. Once that branch merges, pin
-`NVPN_REF` to a tagged release instead of a branch name.
+The stack builds `nostr-vpn` at one exact commit (`NVPN_COMMIT` in
+`docker-compose.yml`), taken from the `network-dns-gui` feature branch.
+The build fetches that commit and refuses anything that isn't a full
+40-character SHA, so two installs never build different code. Every
+container image is pinned by digest for the same reason. To move to a
+newer nvpn, change the SHA in `docker-compose.yml` and `nvpn/Dockerfile`
+together; `scripts/check-pins.sh` catches a mismatch.

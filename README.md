@@ -24,8 +24,8 @@ troubleshooting/gotchas page) — see [`docs/`](docs/).
                                                     enforced by the signed roster
 ```
 
-**How it propagates:** NostrVPN's network DNS override (branch
-`network-dns-gui`) carries the admin's nameserver choice on the signed
+**How it propagates:** NostrVPN's network DNS override (from the
+`network-dns-gui` branch, built at a pinned commit) carries the admin's nameserver choice on the signed
 roster. The admin points the network at this container's device and enables
 the override; every member then resolves through it — on any network,
 anywhere — and **fails closed** if the resolver is unreachable rather than
@@ -108,5 +108,8 @@ work as usual — for your entire device fleet.
 - One instance is one point of failure for the whole fleet's DNS (fail-closed
   by design). Run it on something reliable; a second instance + selecting it
   as the fallback admin action is the simple recovery path today.
-- `network-dns-gui` is a feature branch. Pin `NVPN_REF` to a tagged release
-  once it merges.
+- nvpn is built from one pinned commit (`NVPN_COMMIT` in
+  `docker-compose.yml`, currently the head of the `network-dns-gui` feature
+  branch), and every image is pinned by digest. `scripts/check-pins.sh`
+  fails if anything is unpinned, and `make-installer.sh` won't build an
+  installer until it passes.

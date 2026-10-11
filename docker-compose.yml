@@ -10,7 +10,10 @@ services:
       context: ./nvpn
       args:
         NVPN_REPO: ${NVPN_REPO:-https://github.com/btcforplebs/nostr-vpn.git}
-        NVPN_REF: ${NVPN_REF:-network-dns-gui}
+        # A full commit SHA, not a branch: the build checks it out exactly and
+        # fails if the fetched commit is anything else. Change the pin here,
+        # where it is visible, rather than in .env.
+        NVPN_COMMIT: ${NVPN_COMMIT:-fc0ab76574134809536bb2414ec3d5684cfd34a1}
     container_name: sovereign-dns-nvpn
     restart: unless-stopped
     cap_add:
@@ -61,7 +64,7 @@ services:
       context: ./nvpn
       args:
         NVPN_REPO: ${NVPN_REPO:-https://github.com/btcforplebs/nostr-vpn.git}
-        NVPN_REF: ${NVPN_REF:-network-dns-gui}
+        NVPN_COMMIT: ${NVPN_COMMIT:-fc0ab76574134809536bb2414ec3d5684cfd34a1}
     container_name: sovereign-dns-web
     restart: unless-stopped
     entrypoint: ["/usr/local/bin/nvpn-web"]
@@ -90,7 +93,9 @@ services:
   # listeningMode=BIND is what keeps the two from colliding — same pattern the
   # nostr-vpn repo's own network-DNS e2e uses (dnsmasq --bind-interfaces).
   pihole:
-    image: pihole/pihole:latest
+    # Pinned by digest (the tag is for people; Docker uses only the digest).
+    # Bump both together: scripts/check-pins.sh fails on an unpinned image.
+    image: pihole/pihole:2026.09.0@sha256:5b9c8cf51de7d6d3f2240dbe72baf5f06e1fd39cb4d77a99fab4fa13e23bd1be
     container_name: sovereign-dns-pihole
     restart: unless-stopped
     network_mode: service:nvpn
@@ -130,7 +135,9 @@ services:
   # validating. Internal-only — nothing is published to the host or the mesh;
   # only Pi-hole talks to it.
   unbound:
-    image: mvance/unbound:latest
+    # amd64-only, and the last release is from 2024-10: it runs under emulation
+    # on Apple Silicon and won't start on arm64 Linux without qemu.
+    image: mvance/unbound:1.22.0@sha256:76906da36d1806f3387338f15dcf8b357c51ce6897fb6450d6ce010460927e90
     container_name: sovereign-dns-unbound
     restart: unless-stopped
     volumes:

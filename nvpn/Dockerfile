@@ -1,12 +1,22 @@
-ARG BUILDER_IMAGE=rust:1.93-bookworm
-ARG WEB_BUILDER_IMAGE=node:24-bookworm
-ARG RUNTIME_IMAGE=debian:bookworm-slim
+ARG BUILDER_IMAGE=rust:1.93-bookworm@sha256:7c4ae649a84014c467d79319bbf17ce2632ae8b8be123ac2fb2ea5be46823f31
+ARG WEB_BUILDER_IMAGE=node:24-bookworm@sha256:3d27e5c11e5786e309ec3e03f93ae536eb36e6e5eb3714d5eb3300a36157add0
+ARG RUNTIME_IMAGE=debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587
 
-FROM alpine/git:latest AS source
+FROM alpine/git:v2.54.0@sha256:ce84fd6a057b4dc5cf5009da2dd832f1c6d096c1984bf50496cf3c256402264d AS source
 ARG NVPN_REPO=https://github.com/btcforplebs/nostr-vpn.git
-ARG NVPN_REF=network-dns-gui
+ARG NVPN_COMMIT=fc0ab76574134809536bb2414ec3d5684cfd34a1
 WORKDIR /src
-RUN git clone --depth 1 --branch "${NVPN_REF}" "${NVPN_REPO}" nostr-vpn
+# Fetch exactly one commit by SHA, then prove that is what was checked out.
+# A branch name would let two installs build different code.
+RUN set -e; \
+    if ! printf '%s' "${NVPN_COMMIT}" | grep -Eqx '[0-9a-f]{40}'; then \
+      echo "NVPN_COMMIT must be a full 40-char commit SHA, got '${NVPN_COMMIT}'" >&2; exit 1; \
+    fi; \
+    git init -q nostr-vpn; \
+    cd nostr-vpn; \
+    git fetch -q --depth 1 "${NVPN_REPO}" "${NVPN_COMMIT}"; \
+    git checkout -q FETCH_HEAD; \
+    test "$(git rev-parse HEAD)" = "${NVPN_COMMIT}"
 
 # Builds the Svelte control panel (nvpn-web's static UI) — the browser-based
 # join-request approval flow, so admins never need docker exec/CLI.
@@ -31,7 +41,7 @@ WORKDIR /app/nostr-vpn
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/app/nostr-vpn/target \
-    cargo build --release -p nvpn -p nostr-vpn-web \
+    cargo build --release --locked -p nvpn -p nostr-vpn-web \
     && cp target/release/nvpn /tmp/nvpn \
     && cp target/release/nostr-vpn-web /tmp/nvpn-web
 

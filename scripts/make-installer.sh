@@ -51,6 +51,9 @@ if [[ "${1:-}" == "--check" ]]; then
   exit "$status"
 fi
 
+# Never ship an installer whose images or sources can change underneath it.
+scripts/check-pins.sh >/dev/null || { scripts/check-pins.sh; exit 1; }
+
 {
   cat << 'HEADER'
 #!/usr/bin/env bash
@@ -107,10 +110,18 @@ HUB_PORT=8080
 DOCS_PORT=8081
 WEB_UI_PORT=8082
 NVPN_REPO=https://github.com/btcforplebs/nostr-vpn.git
-NVPN_REF=network-dns-gui
 NVPN_TUN_IFACE=utun100
 RUST_LOG=info
 ENV
+fi
+
+# Older installs wrote NVPN_REF=<branch> here. Nothing reads it any more (the
+# commit is pinned in docker-compose.yml), so drop it rather than leave a
+# setting that looks like it does something.
+if grep -q '^NVPN_REF=' .env; then
+  # Rewrite in place (not mv) so .env keeps its permissions; it holds a password.
+  (umask 077; grep -v '^NVPN_REF=' .env > .env.tmp) && cat .env.tmp > .env && rm -f .env.tmp
+  echo "Removed the old NVPN_REF setting from .env; the NostrVPN commit is now pinned by the stack."
 fi
 
 HUB_PORT=$(grep '^HUB_PORT=' .env | cut -d= -f2 || true)
