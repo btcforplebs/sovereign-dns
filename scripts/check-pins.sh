@@ -41,27 +41,59 @@ flags_allowed() {
 dockerfiles=$(git ls-files '*[Dd]ockerfile*')
 [[ -n "$dockerfiles" ]] || fail "no tracked Dockerfile found"
 
-# Compose services that pull an image, in every tracked compose file: compose
-# auto-loads docker-compose.override.yml, and any of them can be passed with -f.
+# Every tracked compose file: compose auto-loads docker-compose.override.yml,
+# and any of them can be passed with -f.
 compose_files=$(git ls-files '*compose*.yml' '*compose*.yaml')
 [[ -n "$compose_files" ]] || fail "no tracked compose file found"
+
+# Read each compose file the way compose reads it. `docker compose config
+# --no-interpolate` resolves anchors, aliases, merge keys, flow style, include:
+# and extends: into canonical block YAML, and leaves ${X:-default} literal, so
+# the verdict does not depend on .env or the caller's environment (and a failing
+# gate cannot print PIHOLE_PASSWORD). One file per render: compose only renders
+# the files it is given, so a tracked docker-compose.prod.yml would otherwise
+# never be read. The render is client-side and needs no daemon. Without the
+# compose CLI, the raw files are read instead and must be block style (below).
+root=$(pwd -P)
+rendered=$(mktemp -d)
+trap 'rm -rf "$rendered"' EXIT
+yaml() { echo "$rendered/$(tr / _ <<<"$1")"; }
+if docker compose version >/dev/null 2>&1; then mode=rendered; else
+  mode=raw; echo "note: docker compose not found; reading compose files as written"
+fi
+for cf in $compose_files; do
+  if [[ "$mode" == raw ]]; then cp "$cf" "$(yaml "$cf")"; continue; fi
+  # Nonzero means "could not read it", which must not fall through as "read it
+  # and it is fine". --profile '*' keeps services in any profile in the render.
+  if ! env -i PATH="$PATH" HOME="$HOME" docker compose -f "$cf" --env-file /dev/null --profile '*' \
+         config --no-interpolate >"$(yaml "$cf")" 2>"$rendered/err"; then
+    fail "$cf: docker compose could not render it: $(head -c 300 "$rendered/err")"
+  elif ! grep -q '^services:' "$(yaml "$cf")"; then
+    fail "$cf: docker compose rendered no services from it"
+  fi
+done
+
+# Compose services that pull an image.
 for cf in $compose_files; do
   while IFS= read -r line; do
     ref=$(sed -E 's/^[[:space:]]*image:[[:space:]]*//; s/[[:space:]]+#.*$//; s/[[:space:]]+$//' <<<"$line")
     grep -Eq -- "$digest\$" <<<"$ref" || fail "$cf image $ref"
-  done < <(grep -E '^[[:space:]]*image:' "$cf" || true)
+  done < <(grep -E '^[[:space:]]*image:' "$(yaml "$cf")" || true)
 done
 
-# Everything below reads compose line by line, so a flow mapping or a whole
-# JSON document would hide keys from it rather than fail. YAML is a superset of
-# JSON: `{"services":{"docs":{"build":{"cache_from":[...]}}}}` is a valid
-# compose file that no line-oriented check can see. Require block style, with
-# ${...} interpolation (and flow sequences, which cannot carry keys) exempt.
-for cf in $compose_files; do
+# Raw files only (no compose CLI): everything below reads compose line by line,
+# so a flow mapping or a whole JSON document would hide keys from it rather than
+# fail. YAML is a superset of JSON: `{"services":{"docs":{"build":{"cache_from":
+# [...]}}}}` is a valid compose file that no line-oriented check can see. Require
+# block style, with ${...} interpolation (and flow sequences, which cannot carry
+# keys) exempt. include: and extends: pull in files this reading does not follow.
+if [[ "$mode" == raw ]]; then for cf in $compose_files; do
+  grep -Eq '^include[[:space:]]*:' "$cf" && fail "$cf uses include:, which this gate does not follow without docker compose"
+  grep -Eq '^[[:space:]]+extends[[:space:]]*:' "$cf" && fail "$cf uses extends:, which this gate does not follow without docker compose"
   if sed -E 's/\$\{[^}]*\}//g; s/[[:space:]]#.*$//' "$cf" | grep -q '[{}]'; then
     fail "$cf uses a flow mapping, which this gate reads line by line and cannot see into"
   fi
-done
+done; fi
 
 # A compose build: section decides what is actually built: it can override the
 # Dockerfile's ARG defaults, replace a whole stage with a named context, import
@@ -125,8 +157,6 @@ gitref_args=$(printf '%s\n' $dockerfiles \
   | sed -E 's/git[[:space:]]+fetch([[:space:]]+(-[^[:space:]]+|[0-9]+))*[[:space:]]+[^[:space:]]+/git fetch/' \
   | grep -Eo '\$\{?[A-Za-z_][A-Za-z0-9_]*' | tr -d '${' | sort -u || true)
 for cf in $compose_files; do
-  grep -Eq '^include[[:space:]]*:' "$cf" && fail "$cf uses include:, which this gate does not follow"
-  grep -Eq '^[[:space:]]+extends[[:space:]]*:' "$cf" && fail "$cf uses extends:, which this gate does not follow"
   while read -r kind a b; do
     case "$kind" in
       bkey)
@@ -142,7 +172,9 @@ for cf in $compose_files; do
       dpath)
         # The Dockerfile compose will build, resolved against its context, must
         # be one the loop below reads: tracked, and matched by its glob.
-        p=$(sed -E 's|(^\|/)\./|\1|g; s|//+|/|g' <<<"$a")
+        # A rendered context is absolute; the tracked list is repo-relative.
+        p=${a#"$root"/}
+        p=$(sed -E 's|(^\|/)\./|\1|g; s|//+|/|g' <<<"$p")
         case "$p" in http://*|https://*|git@*|git://*|ssh://*|*.git*) continue ;; esac
         grep -Fqx -- "$p" <<<"$dockerfiles" || fail "$cf builds $p, which is not a tracked Dockerfile this gate reads" ;;
       arg)
@@ -158,7 +190,7 @@ for cf in $compose_files; do
           fail "$cf build arg '$a' has no rule in this gate (add one if it is safe)"
         fi ;;
     esac
-  done < <(compose_build_keys "$cf")
+  done < <(compose_build_keys "$(yaml "$cf")")
 done
 
 # Every tracked Dockerfile ships in the installer payload, whatever its suffix.
@@ -344,7 +376,8 @@ compose_shas() {
     v=$(sed -E 's/[[:space:]]+#.*$//; s/[[:space:]]+$//; s/^["'"'"']//; s/["'"'"']$//' <<<"$v")
     if [[ "$v" =~ ^\$\{NVPN_COMMIT:-(.*)\}$ ]]; then echo "${BASH_REMATCH[1]}"
     else echo "$v"; fi
-  done < <(grep -Eh '^[[:space:]]*(-[[:space:]]*)?NVPN_COMMIT[[:space:]]*[:=]' $compose_files \
+  done < <(for cf in $compose_files; do cat "$(yaml "$cf")"; done \
+             | grep -Eh '^[[:space:]]*(-[[:space:]]*)?NVPN_COMMIT[[:space:]]*[:=]' \
              | sed -E 's/^[[:space:]]*(-[[:space:]]*)?NVPN_COMMIT[[:space:]]*[:=][[:space:]]*//' || true)
 }
 shas=$( { compose_shas
@@ -361,7 +394,7 @@ done
 # mesh device with the same image digest, so no digest check would notice.
 pihole_env=$(awk '/^  pihole:[[:space:]]*$/ { inp = 1; next }
                   inp && /^  [^[:space:]#]/ { inp = 0 }
-                  inp' docker-compose.yml)
+                  inp' "$(yaml docker-compose.yml)")
 for want in 'FTLCONF_dns_listeningMode BIND' 'FTLCONF_ntp_ipv4_active false' 'FTLCONF_ntp_ipv6_active false'; do
   read -r key val <<<"$want"
   grep -Eq "^[[:space:]]*(-[[:space:]]*)?${key}[[:space:]]*[:=][[:space:]]*[\"']?${val}[\"']?[[:space:]]*(#.*)?$" <<<"$pihole_env" \
