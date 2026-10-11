@@ -27,6 +27,8 @@ b64_decode() {
 }
 
 if [[ "${1:-}" == "--check" ]]; then
+  # The pins are part of what --check guards: CI runs this, not the generator.
+  scripts/check-pins.sh >/dev/null || { scripts/check-pins.sh; exit 1; }
   [[ -f "$OUT" ]] || { echo "drift: $OUT does not exist"; exit 1; }
   tmp=$(mktemp -d)
   trap 'rm -rf "$tmp"' EXIT
