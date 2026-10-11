@@ -21,6 +21,8 @@ cd "$(dirname "$0")/.."
 status=0
 fail() { echo "unpinned: $*"; status=1; }
 digest='@sha256:[0-9a-f]{64}'
+dockerfiles=$(git ls-files '*[Dd]ockerfile*')
+[[ -n "$dockerfiles" ]] || fail "no tracked Dockerfile found"
 
 # Compose services that pull an image, in every tracked compose file: compose
 # auto-loads docker-compose.override.yml, and any of them can be passed with -f.
@@ -33,38 +35,106 @@ for cf in $compose_files; do
   done < <(grep -E '^[[:space:]]*image:' "$cf" || true)
 done
 
-# A compose build: section decides what is actually built, and can override the
-# Dockerfile's own ARG defaults, name a Dockerfile this gate's glob never sees,
-# build from a remote context, or carry an inline Dockerfile with no file at all.
-dockerfile_args=$(git ls-files '*[Dd]ockerfile*' \
+# A compose build: section decides what is actually built: it can override the
+# Dockerfile's ARG defaults, replace a whole stage with a named context, import
+# layers from a remote build cache, or carry an inline Dockerfile with no file
+# at all. Its keys are default-deny -- compose keeps growing new build inputs,
+# and an input this gate cannot read must fail, not be ignored.
+compose_build_keys() {
+  awk '
+    # Emits one record per compose build: input.
+    #   bkey <key>            a first-level key inside a build: block
+    #   ctx  <value>          a build context (long or short form)
+    #   arg  <name> <value>   a build arg name and its value
+    #   dpath <path>          the Dockerfile this build: block builds
+    #   raw  <value>          a value in a form this parser does not read
+    function ind(s) { match(s, /[^ \t]/); return RSTART - 1 }
+    function val(s) { sub(/^[^:]*:[ \t]*/, "", s); sub(/[ \t]+#.*$/, "", s); sub(/[ \t]+$/, "", s); gsub(/^["\047]|["\047]$/, "", s); return s }
+    # A context is a plain path or a remote URL. Anything else (an anchor, an
+    # alias, a flow mapping) can hide a whole build: block from this parser.
+    function ctxv(v) { if (v !~ /^[A-Za-z0-9_.\/:@#+=-]+$/) print "raw " v; else { print "ctx " v; c = v } }
+    function endb() { if (inb) print "dpath " (c == "" ? "." : c) "/" (d == "" ? "Dockerfile" : d); inb = 0; ina = 0 }
+    /^[ \t]*#/ { next }
+    /^[ \t]*$/ { next }
+    {
+      i = ind($0)
+      if (inb && i <= bi) endb()
+      if (!inb && $0 ~ /^[ \t]*build:[ \t]*$/) { bi = i; inb = 1; ki = -1; ina = 0; c = ""; d = ""; next }
+      if (!inb && $0 ~ /^[ \t]*build:[ \t]*[^ \t]/) { c = ""; ctxv(val($0)); print "dpath " c "/Dockerfile"; next }
+      if (!inb) next
+      if (ki < 0) ki = i
+      if (i == ki) {
+        ina = 0
+        k = $0; sub(/^[ \t]*/, "", k); sub(/[ \t]*:.*$/, "", k)
+        print "bkey " k
+        v = val($0)
+        if (k == "args") { if (v != "") print "raw " v; ina = 1; ai = -1; next }
+        if (k == "context") ctxv(v)
+        if (k == "dockerfile") d = v
+        next
+      }
+      if (ina && i > ki) {
+        if (ai < 0) ai = i
+        if (i != ai) next
+        a = $0; sub(/^[ \t]*/, "", a); sub(/^-[ \t]*/, "", a)
+        n = a; sub(/[ \t]*[:=].*$/, "", n)
+        v = a; if (v ~ /[:=]/) sub(/^[^:=]*[:=][ \t]*/, "", v); else v = ""
+        print "arg " n " " v
+      }
+    }
+    END { endb() }
+  ' "$1"
+}
+# ARGs whose value this gate proves from a Dockerfile default: used in a FROM,
+# or named as a ref by git fetch/checkout. Compose must not be able to move one.
+dockerfile_args=$(printf '%s\n' $dockerfiles \
   | xargs grep -Eih '^[[:space:]]*from[[:space:]]+\$' 2>/dev/null \
   | sed -E 's/.*\$\{?([A-Za-z0-9_]+).*/\1/' | sort -u || true)
+# `git fetch`'s first positional is the repository, not a ref: any repo serves
+# the same commit or the SHA check fails, so only the refs after it are pinned.
+gitref_args=$(printf '%s\n' $dockerfiles \
+  | xargs grep -Eoh 'git[[:space:]]+(fetch|checkout)[^&;|]*' 2>/dev/null \
+  | sed -E 's/git[[:space:]]+fetch([[:space:]]+(-[^[:space:]]+|[0-9]+))*[[:space:]]+[^[:space:]]+/git fetch/' \
+  | grep -Eo '\$\{?[A-Za-z_][A-Za-z0-9_]*' | tr -d '${' | sort -u || true)
 for cf in $compose_files; do
-  grep -Eiq '^[[:space:]]*dockerfile_inline[[:space:]]*:' "$cf" \
-    && fail "$cf uses dockerfile_inline, which this gate cannot read"
-  # include: and extends: pull in compose files this gate's glob may never see.
   grep -Eq '^include[[:space:]]*:' "$cf" && fail "$cf uses include:, which this gate does not follow"
   grep -Eq '^[[:space:]]+extends[[:space:]]*:' "$cf" && fail "$cf uses extends:, which this gate does not follow"
-  while IFS= read -r v; do
-    case "$v" in
-      http://*|https://*|git@*|git://*|ssh://*|*.git|*.git#*) fail "$cf remote build context: $v" ;;
+  while read -r kind a b; do
+    case "$kind" in
+      bkey)
+        case "$a" in
+          context|dockerfile|args) ;;
+          *) fail "$cf build key '$a' is a build input this gate does not check" ;;
+        esac ;;
+      ctx)
+        case "$a" in
+          http://*|https://*|git@*|git://*|ssh://*|*.git|*.git#*) fail "$cf remote build context: $a" ;;
+        esac ;;
+      raw) fail "$cf build value '$a${b:+ $b}' is in a form this gate does not read" ;;
+      dpath)
+        # The Dockerfile compose will build, resolved against its context, must
+        # be one the loop below reads: tracked, and matched by its glob.
+        p=$(sed -E 's|(^\|/)\./|\1|g; s|//+|/|g' <<<"$a")
+        case "$p" in http://*|https://*|git@*|git://*|ssh://*|*.git*) continue ;; esac
+        grep -Fqx -- "$p" <<<"$dockerfiles" || fail "$cf builds $p, which is not a tracked Dockerfile this gate reads" ;;
+      arg)
+        v=$(sed -E 's/[[:space:]]+#.*$//; s/[[:space:]]+$//; s/^["'"'"']//; s/["'"'"']$//' <<<"$b")
+        [[ "$v" =~ ^\$\{[A-Za-z0-9_]+:-(.*)\}$ ]] && v=${BASH_REMATCH[1]}
+        if grep -Fqx -- "$a" <<<"$dockerfile_args"; then
+          grep -Eq -- "$digest\$" <<<"$v" || fail "$cf build arg $a=$v is not pinned by digest"
+        elif [[ "$a" == NVPN_COMMIT ]] || grep -Fqx -- "$a" <<<"$gitref_args"; then
+          grep -Eqx '[0-9a-f]{40}' <<<"$v" || fail "$cf build arg $a=$v is not a full commit SHA"
+        elif [[ "$a" == NVPN_REPO ]]; then
+          : # any repo is fine: the commit SHA proves the content, whatever served it
+        else
+          fail "$cf build arg '$a' has no rule in this gate (add one if it is safe)"
+        fi ;;
     esac
-  done < <(grep -Ei '^[[:space:]]*context[[:space:]]*:' "$cf" | sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]+#.*$//; s/[[:space:]]+$//' || true)
-  while IFS= read -r v; do
-    [[ "$(basename "$v")" == *[Dd]ockerfile* ]] || fail "$cf build dockerfile '$v' is not covered by this gate's Dockerfile glob"
-  done < <(grep -Ei '^[[:space:]]*dockerfile[[:space:]]*:' "$cf" | sed -E 's/^[^:]*:[[:space:]]*//; s/[[:space:]]+#.*$//; s/[[:space:]]+$//' || true)
-  for a in $dockerfile_args; do
-    while IFS= read -r v; do
-      v=$(sed -E 's/[[:space:]]+#.*$//; s/[[:space:]]+$//; s/^["'"'"']//; s/["'"'"']$//' <<<"$v")
-      [[ "$v" =~ ^\$\{[A-Za-z0-9_]+:-(.*)\}$ ]] && v=${BASH_REMATCH[1]}
-      grep -Eq -- "$digest\$" <<<"$v" || fail "$cf build arg $a=$v is not pinned by digest"
-    done < <(grep -Eh "^[[:space:]]*(-[[:space:]]*)?$a[[:space:]]*[:=]" $compose_files \
-               | sed -E "s/^[[:space:]]*(-[[:space:]]*)?$a[[:space:]]*[:=][[:space:]]*//" || true)
-  done
+  done < <(compose_build_keys "$cf")
 done
 
 # Every tracked Dockerfile ships in the installer payload, whatever its suffix.
-for df in $(git ls-files '*[Dd]ockerfile*'); do
+for df in $dockerfiles; do
   # Instructions are case-insensitive and may be indented; match them as Docker does.
   stages=$(grep -Eio '^[[:space:]]*from[[:space:]].*[[:space:]]as[[:space:]]+[a-z0-9_.-]+' "$df" | awk '{print tolower($NF)}' || true)
   # The image a FROM names, with --platform and other flags dropped.
@@ -99,6 +169,11 @@ for df in $(git ls-files '*[Dd]ockerfile*'); do
   # neither covers. Join continuation lines, keep RUN instructions, split shell
   # command lists into single commands, and squeeze whitespace so reformatting
   # cannot hide a command from the patterns below.
+  # SHELL replaces the command line every later RUN is appended to, so it runs
+  # whatever it likes while the RUN the gate reads stays in the allowlist.
+  if grep -Eiq '^[[:space:]]*shell[[:space:]]' "$df"; then
+    fail "$df uses SHELL, which this gate does not read"
+  fi
   if grep -Eiq '^[[:space:]]*onbuild[[:space:]]' "$df"; then
     fail "$df uses ONBUILD, whose instructions this gate does not read"
   fi
@@ -132,6 +207,11 @@ for df in $(git ls-files '*[Dd]ockerfile*'); do
   # A command substitution runs a command of its own, so each innermost $(...)
   # is checked as a command too. Backticks are refused rather than parsed.
   grep -q '`' <<<"$runs" && fail "$df uses a backtick command substitution, which this gate does not read"
+  # $( (cmd) ) and $(a $(b) c) are substitutions the innermost-only pattern
+  # below cannot read. Count them: one extraction per $( or the gate is blind.
+  opens=$( { grep -o '\$(' <<<"$runs" || true; } | wc -l | tr -d ' ')
+  reads=$( { grep -o '\$([^()]*)' <<<"$runs" || true; } | wc -l | tr -d ' ')
+  [[ "$opens" == "$reads" ]] || fail "$df has a command substitution this gate cannot read ($opens found, $reads readable)"
   cmds=$( { echo "$runs"; grep -o '\$([^()]*)' <<<"$runs" | sed -E 's/^\$\(//; s/\)$//' || true; } \
            | sed -E 's/(&&|\|\||[;|])/\n/g' \
            | sed -E 's/^[[:space:]]*(RUN([[:space:]]+--[^[:space:]]+)*[[:space:]]+)?//I' \
