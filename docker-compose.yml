@@ -114,6 +114,13 @@ services:
       FTLCONF_dns_interface: ${NVPN_TUN_IFACE:-utun100}
       FTLCONF_dns_listeningMode: BIND
       FTLCONF_dns_dnssec: "true"
+      # No NTP server. Stock FTL listens on 0.0.0.0:123 and [::]:123, which
+      # serves time to every mesh device; the box has no reason to. One line
+      # per address family: each closes only its own socket. ntp.sync (the
+      # box's own outbound client) is separate and stays on.
+      # scripts/check-pins.sh fails if either line is lost.
+      FTLCONF_ntp_ipv4_active: "false"
+      FTLCONF_ntp_ipv6_active: "false"
       # The web UI is reachable over the mesh at http://<mesh-ip>/admin
       FTLCONF_webserver_port: ${PIHOLE_WEB_PORT:-80}
     volumes:

@@ -355,6 +355,19 @@ for s in $shas; do
 done
 [[ $(wc -l <<<"$shas") -le 1 ]] || fail "NVPN_COMMIT defaults disagree: $(echo $shas)"
 
+# Pi-hole settings that decide what listens on the mesh. They are pinned like
+# a digest: a literal value in the pihole service, never ${...}, because .env
+# beats a compose default. Losing BIND or an NTP line opens a listener to every
+# mesh device with the same image digest, so no digest check would notice.
+pihole_env=$(awk '/^  pihole:[[:space:]]*$/ { inp = 1; next }
+                  inp && /^  [^[:space:]#]/ { inp = 0 }
+                  inp' docker-compose.yml)
+for want in 'FTLCONF_dns_listeningMode BIND' 'FTLCONF_ntp_ipv4_active false' 'FTLCONF_ntp_ipv6_active false'; do
+  read -r key val <<<"$want"
+  grep -Eq "^[[:space:]]*(-[[:space:]]*)?${key}[[:space:]]*[:=][[:space:]]*[\"']?${val}[\"']?[[:space:]]*(#.*)?$" <<<"$pihole_env" \
+    || fail "pihole must set $key to a literal $val in docker-compose.yml"
+done
+
 [[ "$status" == 0 ]] && echo "all images, sources and lockfiles pinned"
 
 # The offline gate proves a digest is present, not that it belongs to the tag
