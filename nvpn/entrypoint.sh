@@ -7,6 +7,15 @@ CONFIG_DIR="${HOME}/.config/nvpn"
 CONFIG_FILE="${CONFIG_DIR}/config.toml"
 DAEMON_LOG="${CONFIG_DIR}/daemon.log"
 
+# A container start is a fresh PID namespace, so no daemon from a previous run
+# can still be alive and any daemon.pid on the volume is stale. Left in place
+# it can crash-loop the container: nvpn treats the recorded pid as "already
+# running" when it is live here with a daemon command line, which includes the
+# new daemon's own thread ids (/proc/<tid> resolves but is not listed). Any
+# change in how many processes start before the daemon shifts the pids onto
+# that collision.
+rm -f "${CONFIG_DIR}/daemon.pid"
+
 FRESH_INIT=0
 if [[ ! -f "$CONFIG_FILE" ]]; then
   echo "sovereign-dns: no config found, creating a fresh NostrVPN identity"
@@ -55,6 +64,35 @@ if [[ -n "${NVPN_ADVERTISED_ENDPOINT:-}" ]]; then
   nvpn set --endpoint "$NVPN_ADVERTISED_ENDPOINT" || \
     echo "sovereign-dns: warning: could not set the advertised endpoint"
 fi
+
+# nvpn dials two public FIPS transit seeds by default (185.18.221.232 and
+# 65.109.48.91, compiled into nvpn), which joins this box to a public FIPS mesh.
+# NVPN_FIPS_BOOTSTRAP=off sets nvpn's own master switch, fips_bootstrap_enabled,
+# so the list is kept but never dialed. Emptying the list would not work: nvpn
+# re-adds the default seeds every time it loads the config. The file is edited
+# by hand because `nvpn set` rewrites the whole config and drops fields it does
+# not model.
+set_fips_bootstrap() {
+  local tmp="${CONFIG_FILE}.tmp"
+  awk -v want="$1" '
+    /^fips_bootstrap_enabled[[:space:]]*=/ { next }
+    !done && /^\[/ { if (want == "false") print "fips_bootstrap_enabled = false"; done = 1 }
+    { print }
+    END { if (!done && want == "false") print "fips_bootstrap_enabled = false" }
+  ' "$CONFIG_FILE" > "$tmp" && mv "$tmp" "$CONFIG_FILE"
+}
+case "${NVPN_FIPS_BOOTSTRAP:-on}" in
+  off)
+    set_fips_bootstrap false
+    echo "sovereign-dns: public FIPS transit seeds: OFF (NVPN_FIPS_BOOTSTRAP=off)" ;;
+  on)
+    set_fips_bootstrap true
+    echo "sovereign-dns: public FIPS transit seeds: ON. This node dials 185.18.221.232 and"
+    echo "  65.109.48.91 and joins the public FIPS mesh. Set NVPN_FIPS_BOOTSTRAP=off to stop." ;;
+  *)
+    echo "sovereign-dns: NVPN_FIPS_BOOTSTRAP must be on or off, got '${NVPN_FIPS_BOOTSTRAP}'" >&2
+    exit 1 ;;
+esac
 
 NETWORK_ID=$(awk '
   /^\[\[networks\]\]/ { in_net = 1; next }

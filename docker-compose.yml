@@ -31,6 +31,9 @@ services:
       # its own mapping via STUN, which only works because the port below is
       # published.
       NVPN_ADVERTISED_ENDPOINT: ${NVPN_ADVERTISED_ENDPOINT:-}
+      # on: dial nvpn's two built-in public FIPS transit seeds (joins the
+      # public FIPS mesh). off: never dial them. See .env.example.
+      NVPN_FIPS_BOOTSTRAP: ${NVPN_FIPS_BOOTSTRAP:-on}
     # WireGuard underlay. Without this published, the container's only
     # address is the Docker-internal 172.28.53.10, which no other device can
     # reach and which STUN cannot map — peers then show as present (they
