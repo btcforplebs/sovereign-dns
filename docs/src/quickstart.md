@@ -310,8 +310,8 @@ Close it and run `bash install.sh` again. If you can't close it, change
 the matching `_PORT` line in the `sovereign-dns/.env` file to a free
 number and run the installer again.
 
-**Linux: "permission denied" from a `docker` command.** Put `sudo ` in
-front of the command and enter your password.
+**Linux: "permission denied" from a `docker` command.** Type `sudo` and a
+space in front of the command, then enter your password.
 
 **Running the installer again is safe.** It refreshes the box's setup
 files and keeps your password, settings and devices.
