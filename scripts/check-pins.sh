@@ -21,6 +21,23 @@ cd "$(dirname "$0")/.."
 status=0
 fail() { echo "unpinned: $*"; status=1; }
 digest='@sha256:[0-9a-f]{64}'
+
+# Fails on any flag in $1 that is not named in the rest of the arguments. A
+# rule that only requires --locked still allows --index: for a command the gate
+# trusts, the flags are part of what it has to trust.
+flags_allowed() {
+  local cmd orig f ok
+  orig=$1
+  # Collapse quoted values first: -ldflags="-s -w" is one flag, not two.
+  cmd=$(sed -E 's/"[^"]*"/""/g; s/'"'"'[^'"'"']*'"'"'/'"'"''"'"'/g' <<<"$1"); shift
+  read -ra _words <<<"$cmd"
+  for f in "${_words[@]}"; do
+    case "$f" in -*) ;; *) continue ;; esac
+    f=${f%%=*}; ok=
+    for a in "$@"; do [[ "$f" == "$a" ]] && ok=1; done
+    [[ -n "$ok" ]] || fail "$df flag $f is not one this gate's rule for '${_words[0]} ${_words[1]:-}' allows: $orig"
+  done
+}
 dockerfiles=$(git ls-files '*[Dd]ockerfile*')
 [[ -n "$dockerfiles" ]] || fail "no tracked Dockerfile found"
 
@@ -33,6 +50,17 @@ for cf in $compose_files; do
     ref=$(sed -E 's/^[[:space:]]*image:[[:space:]]*//; s/[[:space:]]+#.*$//; s/[[:space:]]+$//' <<<"$line")
     grep -Eq -- "$digest\$" <<<"$ref" || fail "$cf image $ref"
   done < <(grep -E '^[[:space:]]*image:' "$cf" || true)
+done
+
+# Everything below reads compose line by line, so a flow mapping or a whole
+# JSON document would hide keys from it rather than fail. YAML is a superset of
+# JSON: `{"services":{"docs":{"build":{"cache_from":[...]}}}}` is a valid
+# compose file that no line-oriented check can see. Require block style, with
+# ${...} interpolation (and flow sequences, which cannot carry keys) exempt.
+for cf in $compose_files; do
+  if sed -E 's/\$\{[^}]*\}//g; s/[[:space:]]#.*$//' "$cf" | grep -q '[{}]'; then
+    fail "$cf uses a flow mapping, which this gate reads line by line and cannot see into"
+  fi
 done
 
 # A compose build: section decides what is actually built: it can override the
@@ -199,9 +227,19 @@ for df in $dockerfiles; do
 
   # Go's own escape hatches: these make an allowed `go build` resolve or skip
   # checksum verification, wherever they are set (ENV, ARG, or a RUN prefix).
-  if grep -Eq '(^|[^A-Za-z0-9_])(GOFLAGS|GOPROXY|GOSUMDB|GONOSUMDB|GONOSUMCHECK|GOINSECURE|GOPRIVATE|GOWORK)[[:space:]]*[= ]' <<<"$joined"; then
-    fail "$df sets a Go module setting that can bypass go.sum: $(grep -Eo '(GOFLAGS|GOPROXY|GOSUMDB|GONOSUMDB|GONOSUMCHECK|GOINSECURE|GOPRIVATE|GOWORK)[^[:space:]]*' <<<"$joined" | head -1)"
-  fi
+  # Every toolchain here reads its own config from the environment, and those
+  # settings decide where code comes from: GOPROXY/GOFLAGS for go, CARGO_* and
+  # RUSTUP_DIST_SERVER for cargo (RUSTUP_TOOLCHAIN alone makes any cargo call
+  # download a whole toolchain), COREPACK_NPM_REGISTRY for corepack, npm_config_*
+  # for pnpm. Default-deny the namespaces and allow the two this stack sets.
+  while IFS= read -r v; do
+    case "$v" in
+      RUST_LOG|CGO_ENABLED) continue ;;
+      CARGO*|RUSTUP*|RUSTC*|RUSTFLAGS|COREPACK*|PNPM*|YARN*|NPM_CONFIG*|npm_config*|GOFLAGS|GOPROXY|GOSUMDB|GONOSUM*|GOINSECURE|GOPRIVATE|GOWORK|GOPATH|GOMODCACHE|GOTOOLCHAIN)
+        fail "$df sets $v, a toolchain setting that decides where code comes from" ;;
+    esac
+  done < <(grep -Eio '(^[[:space:]]*(env|arg)[[:space:]]+|[[:space:]])[A-Za-z_][A-Za-z0-9_]*=' <<<"$joined" \
+             | sed -E 's/^[[:space:]]*(env|arg)[[:space:]]+//I; s/^[[:space:]]+//; s/=$//' | sort -u || true)
 
   runs=$(grep -Ei '^[[:space:]]*run[[:space:]]' <<<"$joined" || true)
   # A command substitution runs a command of its own, so each innermost $(...)
@@ -229,15 +267,22 @@ for df in $dockerfiles; do
         grep -Eq -- '(^| )--(locked|frozen)( |$)' <<<"$cmd" || fail "$df no --locked: $cmd"
         case "$cmd" in cargo\ install*)
           grep -Eq -- '--version[= ]=[0-9]+\.[0-9]+\.[0-9]+' <<<"$cmd" || fail "$df no exact --version: $cmd" ;;
-        esac ;;
+        esac
+        # --index, --registry and --config each move where the crate comes from
+        # while leaving --locked and --version in place, so flags are an
+        # allowlist too, not just a list of ones that must be present.
+        flags_allowed "$cmd" --locked --frozen --release --version -p --package --bin --bins --features --no-default-features --root ;;
       pnpm\ install*|pnpm\ i\ *|pnpm\ i)
-        grep -Eq -- '--frozen-lockfile' <<<"$cmd" || fail "$df no --frozen-lockfile: $cmd" ;;
+        grep -Eq -- '--frozen-lockfile' <<<"$cmd" || fail "$df no --frozen-lockfile: $cmd"
+        flags_allowed "$cmd" --frozen-lockfile --store-dir --prod --ignore-scripts ;;
       pnpm\ run\ *|npm\ ci|npm\ ci\ *|npm\ run\ *) ;;
       corepack\ enable|corepack\ enable\ *) ;;
       corepack\ prepare\ *)
-        grep -Eq -- ' [a-z]+@[0-9]+\.[0-9]+\.[0-9]+( |$)' <<<"$cmd" || fail "$df no exact version: $cmd" ;;
+        grep -Eq -- ' [a-z]+@[0-9]+\.[0-9]+\.[0-9]+( |$)' <<<"$cmd" || fail "$df no exact version: $cmd"
+        flags_allowed "$cmd" --activate ;;
       # go build verifies go.sum read-only by default; go install/get resolve.
-      go\ build*) ;;
+      # -mod=mod is GOFLAGS=-mod=mod spelled as a flag.
+      go\ build*) flags_allowed "$cmd" -trimpath -ldflags -o -tags -buildvcs ;;
       # Each line: tools that only build, copy or test what is already pinned.
       # apt-get is allowed while the unpinned apt stages are an open item.
       # git fetch must name its commit: a 40-hex literal, or ${VAR} whose ARG
