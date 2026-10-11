@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Fails if anything the stack builds or runs is referenced by a name that can
-# change underneath us: an image without a digest, or nvpn by anything but a
-# full commit SHA. Two installs of the same installer must get the same bits.
+# change underneath us: an image without a digest, nvpn by anything but a full
+# commit SHA, or a package manager allowed to re-resolve its lockfile. Two
+# installs of the same installer must get the same bits.
 #
 #   scripts/check-pins.sh
 set -euo pipefail
@@ -53,20 +54,48 @@ for df in $(git ls-files '*[Dd]ockerfile*'); do
     grep -Eq -- "$digest\$" <<<"$ref" || fail "$df --from $ref"
   done < <(grep -Eio -- '(--from=|[=,[:space:]]from=)[^[:space:],]+' "$df" | sed -E 's/^.*from=//I' || true)
 
-  # cargo install must name one exact version.
-  while IFS= read -r line; do
-    grep -Eq -- '--version =[0-9]+\.[0-9]+\.[0-9]+' <<<"$line" || fail "$df $line"
-  done < <(grep -E 'cargo install' "$df" || true)
+  # Package managers: a digest pins one image, the lockfile pins the whole
+  # dependency graph, so each command must refuse to re-resolve it. Join
+  # continuation lines, then split shell command lists into single commands.
+  while IFS= read -r cmd; do
+    # (bash 3.2 on macOS has no ;;& so cargo gets its own case.)
+    case "$cmd" in
+      cargo\ build*|cargo\ install*|cargo\ run*|cargo\ test*)
+        grep -Eq -- '(^|[[:space:]])--(locked|frozen)([[:space:]]|$)' <<<"$cmd" || fail "$df no --locked: $cmd" ;;
+    esac
+    case "$cmd" in
+      cargo\ install*)
+        grep -Eq -- '--version[= ]=[0-9]+\.[0-9]+\.[0-9]+' <<<"$cmd" || fail "$df no exact --version: $cmd" ;;
+      pnpm\ install*|pnpm\ i\ *|pnpm\ i)
+        grep -Eq -- '--frozen-lockfile' <<<"$cmd" || fail "$df no --frozen-lockfile: $cmd" ;;
+      npm\ install*|npm\ i\ *|npm\ i)
+        fail "$df use npm ci, not: $cmd" ;;
+    esac
+  done < <(awk '/\\[[:space:]]*$/ { sub(/\\[[:space:]]*$/, " "); buf = buf $0; next } { print buf $0; buf = "" }' "$df" \
+             | sed -E 's/(&&|\|\||[;|])/\n/g' \
+             | sed -E 's/^[[:space:]]*(RUN([[:space:]]+--[^[:space:]]+)*[[:space:]]+)?//I; s/^([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*//')
 done
 
 # nvpn source: a full SHA, and the same one everywhere it is defaulted.
-shas=$( { grep -Eho 'NVPN_COMMIT:-[^}]*' $compose_files || true
-          grep -Eho '^ARG NVPN_COMMIT=.*' nvpn/Dockerfile || true; } | sed -E 's/.*(:-|=)//' | sort -u)
+# Every NVPN_COMMIT a compose file sets, in map (`NVPN_COMMIT: x`) or list
+# (`- NVPN_COMMIT=x`) form. ${NVPN_COMMIT:-x} contributes x; a literal value
+# counts as itself, so `NVPN_COMMIT: main` cannot slip past.
+compose_shas() {
+  local v
+  while IFS= read -r v; do
+    v=$(sed -E 's/[[:space:]]+#.*$//; s/[[:space:]]+$//; s/^["'"'"']//; s/["'"'"']$//' <<<"$v")
+    if [[ "$v" =~ ^\$\{NVPN_COMMIT:-(.*)\}$ ]]; then echo "${BASH_REMATCH[1]}"
+    else echo "$v"; fi
+  done < <(grep -Eh '^[[:space:]]*(-[[:space:]]*)?NVPN_COMMIT[[:space:]]*[:=]' $compose_files \
+             | sed -E 's/^[[:space:]]*(-[[:space:]]*)?NVPN_COMMIT[[:space:]]*[:=][[:space:]]*//' || true)
+}
+shas=$( { compose_shas
+          grep -Eho '^ARG NVPN_COMMIT=.*' nvpn/Dockerfile | sed -E 's/^ARG NVPN_COMMIT=//' || true; } | sort -u)
 [[ -n "$shas" ]] || fail "no NVPN_COMMIT default found"
 for s in $shas; do
   grep -Eqx '[0-9a-f]{40}' <<<"$s" || fail "NVPN_COMMIT default '$s' is not a full commit SHA"
 done
 [[ $(wc -l <<<"$shas") -le 1 ]] || fail "NVPN_COMMIT defaults disagree: $(echo $shas)"
 
-[[ "$status" == 0 ]] && echo "all images and sources pinned"
+[[ "$status" == 0 ]] && echo "all images, sources and lockfiles pinned"
 exit "$status"
