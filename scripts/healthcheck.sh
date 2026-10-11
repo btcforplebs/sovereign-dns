@@ -69,9 +69,12 @@ head_ "Layer 1 — Unbound: recursion, not forwarding"
 # The whole sovereignty claim. The stock mvance/unbound image ships an active
 # `forward-zone: "."` to Cloudflare DoT; if that ever comes back (base image
 # change, missing bind mount) every query silently goes to a third party while
-# everything else still looks perfectly healthy.
+# everything else still looks perfectly healthy. Read the whole directory, not
+# two names: the generated unbound.conf also includes a-records.conf and
+# srv-records.conf, and a forward-zone in either one forwards just the same.
+# -D skip: the image copies /dev/random and friends into dev/ here.
 forwarders=$(docker exec "$UNBOUND" sh -lc \
-  'grep -rhE "^[[:space:]]*forward-(zone|addr):" /opt/unbound/etc/unbound/unbound.conf /opt/unbound/etc/unbound/forward-records.conf 2>/dev/null' 2>/dev/null)
+  'grep -rhE -D skip "^[[:space:]]*forward-(zone|addr):" /opt/unbound/etc/unbound/ 2>/dev/null' 2>/dev/null)
 if [[ -z "$forwarders" ]]; then
   ok "no forward-zone configured (Unbound recurses from the root)"
 else

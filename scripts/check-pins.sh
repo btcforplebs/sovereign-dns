@@ -6,7 +6,9 @@
 # has no rule for, or a compose build section that bypasses all of that. Two
 # installs of the same installer must build the same bits.
 #
-# Scope: build inputs only. What a container runs (CMD, ENTRYPOINT, compose
+# Scope: build inputs, plus the compose settings that decide what the box
+# exposes (pihole's FTLCONF keys, mounts, ports, network_mode, networks; see
+# the end of this file). What a container runs (CMD, ENTRYPOINT, compose
 # command:/entrypoint:, entrypoint.sh) is tracked code in the payload and is
 # reviewed, not gated. Allowed tools that read in-repo files (pnpm run ->
 # package.json, cargo -> build.rs) are pinned by the commit they come from;
@@ -93,6 +95,13 @@ if [[ "$mode" == raw ]]; then for cf in $compose_files; do
   if sed -E 's/\$\{[^}]*\}//g; s/[[:space:]]#.*$//' "$cf" | grep -q '[{}]'; then
     fail "$cf uses a flow mapping, which this gate reads line by line and cannot see into"
   fi
+  # `? key` puts a key where a line-oriented read does not look for one, and a
+  # double-quoted scalar can be folded over two lines, so `? "FTLCONF_misc_\`
+  # hides a setting from every key scan below. Both are block YAML this gate
+  # still cannot read.
+  grep -Eq '^[[:space:]]*\?[[:space:]]' "$cf" && fail "$cf uses an explicit '? key', which this gate reads line by line and cannot see"
+  awk '{ n = gsub(/"/, "\""); if (n % 2) exit 1 }' "$cf" \
+    || fail "$cf has a double-quoted value continued onto another line, which this gate reads line by line and cannot see"
 done; fi
 
 # A compose build: section decides what is actually built: it can override the
@@ -451,6 +460,104 @@ done < <(sed -nE "s/^[[:space:]]*(-[[:space:]]*)?[\"']?(FTLCONF_[A-Za-z0-9_]+).*
 # env_file contents are not in the render -- `config` prints the path only --
 # so an FTLCONF setting there is invisible to every check above.
 grep -Eq '^[[:space:]]+env_file[[:space:]]*:' "$loaded" && fail "a compose service uses env_file:, whose contents this gate does not read"
+
+# What a service can reach and be reached by is as much a part of the box's
+# exposure as the three FTLCONF values: a bind mount can replace
+# forward-records.conf (the file that stops Unbound forwarding to a third
+# party) or drop config into /etc/dnsmasq.d, a published port lands in the
+# host netns where the listener inventory never looks, and network_mode or a
+# new network moves a service out of, or adds an interface to, nvpn's netns.
+# Default-deny, like RUN commands: every service, every service key, every
+# top-level network key, and every item of the keys below must be one this
+# gate has a rule for. Each value is listed in both the canonical form compose
+# renders and the short form the tree is written in (raw mode).
+surface() {
+  awk '
+    function flush() { if (it != "") print svc "\t" key "\t" it; it = "" }
+    BEGIN { split("ports volumes network_mode devices cap_add networks", w, " "); for (i in w) W[w[i]] = 1 }
+    {
+      line = $0
+      sub(/[[:space:]]+#.*$/, "", line); sub(/[[:space:]]+$/, "", line)
+      if (line ~ /^[[:space:]]*(#|$)/) next
+      match(line, /^ */); n = RLENGTH; body = substr(line, n + 1)
+      if (n == 0) { flush(); top = body; sub(/:.*/, "", top); si = ki = ii = mi = -1; next }
+      if (top != "services" && top != "networks") next
+      if (si < 0) si = n
+      if (n == si) { flush(); svc = body; sub(/:.*/, "", svc); if (top == "networks") svc = "@network:" svc; key = ""; ki = -1; next }
+      if (ki < 0) ki = n
+      if (n == ki) {
+        flush(); key = body; v = body; sub(/:.*/, "", key); ii = mi = -1
+        print svc "\t" key "\t"
+        if (sub(/^[^:]*:[[:space:]]*/, "", v) && v != "" && (key in W)) { gsub(/["\047]/, "", v); print svc "\t" key "\t" v }
+        next
+      }
+      if (!(key in W)) next
+      if (body ~ /^- /) {
+        flush(); ii = n + 2; v = substr(body, 3)
+        if (v ~ /^[A-Za-z_]+:( |$)/) { body = v; n = ii } else { gsub(/["\047]/, "", v); it = v; next }
+      } else if (ii < 0) {
+        # Map form (networks:): the names at the first level are the items.
+        if (mi < 0) mi = n
+        if (n == mi) { v = body; sub(/:.*/, "", v); print svc "\t" key "\t" v }
+        next
+      }
+      if (n == ii && body ~ /^[A-Za-z_]+:/) {
+        f = body; sub(/:.*/, "", f); v = body; sub(/^[^:]*:[[:space:]]*/, "", v); gsub(/["\047]/, "", v)
+        if (v != "") it = it (it == "" ? "" : ";") f "=" v
+      }
+    }
+    END { flush() }' "$1"
+}
+surface_allowed=$(cat <<'ALLOW'
+docs	ports	127.0.0.1:${DOCS_PORT:-8081}:80
+docs	networks	default
+hub	ports	127.0.0.1:${HUB_PORT:-8080}:8080
+hub	networks	default
+hub	networks	dns-internal
+web	ports	127.0.0.1:${WEB_UI_PORT:-8082}:8081
+web	networks	default
+web	volumes	source=nvpn-config;target=/root/.config/nvpn;type=volume;volume={}
+web	volumes	nvpn-config:/root/.config/nvpn
+nvpn	ports	${NVPN_LISTEN_PORT:-51820}:51820/udp
+nvpn	networks	dns-internal
+nvpn	cap_add	NET_ADMIN
+nvpn	devices	permissions=rwm;source=/dev/net/tun;target=/dev/net/tun
+nvpn	devices	/dev/net/tun:/dev/net/tun
+nvpn	volumes	source=nvpn-config;target=/root/.config/nvpn;type=volume;volume={}
+nvpn	volumes	nvpn-config:/root/.config/nvpn
+pihole	network_mode	service:nvpn
+pihole	cap_add	NET_BIND_SERVICE
+pihole	volumes	source=pihole-config;target=/etc/pihole;type=volume;volume={}
+pihole	volumes	pihole-config:/etc/pihole
+unbound	networks	dns-internal
+unbound	volumes	read_only=true;source=./unbound/forward-records.conf;target=/opt/unbound/etc/unbound/forward-records.conf;type=bind
+unbound	volumes	./unbound/forward-records.conf:/opt/unbound/etc/unbound/forward-records.conf:ro
+ALLOW
+)
+surface_files="$loaded"
+for cf in $compose_files; do surface_files+=" $(yaml "$cf")"; done
+for f in $surface_files; do
+  while IFS=$'\t' read -r s k v; do
+    case "$s" in
+      docs|hub|web|nvpn|pihole|unbound) ;;
+      @network:dns-internal|@network:default)
+        case "$k" in driver|internal|ipam|name) ;; *) fail "network ${s#@network:} sets $k, which this gate has no rule for (enable_ipv6 would give the bridge an address [::] listeners answer on)" ;; esac
+        continue ;;
+      @network:*) fail "a compose file defines network ${s#@network:}, which this gate has no rule for"; continue ;;
+      *) fail "a compose file defines service $s, which this gate has no rule for"; continue ;;
+    esac
+    case "$k" in
+      build|cap_add|command|container_name|depends_on|devices|entrypoint|environment|healthcheck|image|network_mode|networks|ports|restart|volumes) ;;
+      *) fail "$s sets $k, a service key this gate has no rule for" ;;
+    esac
+    [[ -z "$v" ]] && continue
+    grep -Fqx -- "$s	$k	$v" <<<"$surface_allowed" \
+      || fail "$s $k '$v' is not one this gate allows (bind mounts, published ports, network_mode, networks, devices and capabilities are default-deny)"
+  done < <(sed "s|$root/|./|g" "$f" | surface /dev/stdin)
+done
+# Required, not just allowed: pihole serves the mesh only from inside nvpn's netns.
+surface /dev/stdin <"$loaded" | grep -Fqx "pihole	network_mode	service:nvpn" \
+  || fail "pihole must set network_mode: service:nvpn in the compose files the installer loads"
 
 [[ "$status" == 0 ]] && echo "all images, sources and lockfiles pinned"
 
