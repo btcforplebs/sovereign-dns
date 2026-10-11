@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Fails if anything the stack builds or runs is referenced by a name that can
 # change underneath us: an image without a digest, nvpn by anything but a full
-# commit SHA, a package manager allowed to re-resolve its lockfile, or any RUN
+# commit SHA, an ADD or git fetch of something not pinned to a checksum or
+# commit, a package manager allowed to re-resolve its lockfile, or any RUN
 # command the gate has no rule for. Two installs of the same installer must get
 # the same bits.
 #
@@ -65,8 +66,30 @@ for df in $(git ls-files '*[Dd]ockerfile*'); do
   if grep -Eiq '^[[:space:]]*run[[:space:]].*<<' "$df"; then
     fail "$df uses a heredoc RUN, which this gate cannot read"
   fi
-  cmds=$(awk '/\\[[:space:]]*$/ { sub(/\\[[:space:]]*$/, " "); buf = buf $0; next } { print buf $0; buf = "" }' "$df" \
-           | grep -Ei '^[[:space:]]*run[[:space:]]' \
+  joined=$(awk '/\\[[:space:]]*$/ { sub(/\\[[:space:]]*$/, " "); buf = buf $0; next } { print buf $0; buf = "" }' "$df")
+
+  # ADD fetches a URL or git repo itself, with no RUN involved. BuildKit has
+  # pinned forms for both: --checksum=sha256:... and repo.git#<commit>.
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    read -ra words <<<"$line"
+    for src in "${words[@]}"; do
+      case "$src" in
+        git@*|*.git|*.git#*|*.git/*)
+          grep -Eq -- '#[0-9a-f]{40}$' <<<"$src" || fail "$df ADD git source not pinned to a commit: $src" ;;
+        http://*|https://*)
+          grep -Eq -- "--checksum=sha256:[0-9a-f]{64}( |\$)" <<<"$line" || fail "$df ADD without --checksum: $src" ;;
+      esac
+    done
+  done <<<"$(grep -Ei '^[[:space:]]*add[[:space:]]' <<<"$joined" | tr -s '[:blank:]' ' ' || true)"
+
+  # Go's own escape hatches: these make an allowed `go build` resolve or skip
+  # checksum verification, wherever they are set (ENV, ARG, or a RUN prefix).
+  if grep -Eq '(^|[^A-Za-z0-9_])(GOFLAGS|GOPROXY|GOSUMDB|GONOSUMDB|GONOSUMCHECK|GOINSECURE|GOPRIVATE|GOWORK)[[:space:]]*[= ]' <<<"$joined"; then
+    fail "$df sets a Go module setting that can bypass go.sum: $(grep -Eo '(GOFLAGS|GOPROXY|GOSUMDB|GONOSUMDB|GONOSUMCHECK|GOINSECURE|GOPRIVATE|GOWORK)[^[:space:]]*' <<<"$joined" | head -1)"
+  fi
+
+  cmds=$(grep -Ei '^[[:space:]]*run[[:space:]]' <<<"$joined" \
            | sed -E 's/(&&|\|\||[;|])/\n/g' \
            | sed -E 's/^[[:space:]]*(RUN([[:space:]]+--[^[:space:]]+)*[[:space:]]+)?//I' \
            | tr -s '[:blank:]' ' ' \
@@ -94,7 +117,21 @@ for df in $(git ls-files '*[Dd]ockerfile*'); do
       go\ build*) ;;
       # Each line: tools that only build, copy or test what is already pinned.
       # apt-get is allowed while the unpinned apt stages are an open item.
-      mdbook\ build*|git\ init*|git\ fetch*|git\ checkout*|git\ rev-parse*|\
+      # git fetch must name its commit: a 40-hex literal, or ${VAR} whose ARG
+      # default in this Dockerfile is one (and is declared exactly once).
+      git\ fetch\ *)
+        ok=
+        read -ra words <<<"$cmd"
+        for a in "${words[@]}"; do
+          a=${a//\"/}; a=${a//\'/}
+          if grep -Eqx '[0-9a-f]{40}' <<<"$a"; then ok=1
+          elif [[ "$a" =~ ^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$ ]]; then
+            defs=$(grep -Ei "^[[:space:]]*arg[[:space:]]+${BASH_REMATCH[1]}=" "$df" | cut -d= -f2- | sed -E 's/[[:space:]]+$//' || true)
+            [[ -n "$defs" && $(wc -l <<<"$defs") -eq 1 ]] && grep -Eqx '[0-9a-f]{40}' <<<"$defs" && ok=1
+          fi
+        done
+        [[ -n "$ok" ]] || fail "$df git fetch without a pinned commit: $cmd" ;;
+      mdbook\ build*|git\ init*|git\ checkout*|git\ rev-parse*|\
       cd\ *|cp\ *|mv\ *|rm\ *|mkdir\ *|ln\ *|chmod\ *|chown\ *|test\ *|\
       echo\ *|printf\ *|grep\ *|set\ *|exit|exit\ *|fi|true|false|\
       apt-get\ update*|apt-get\ install\ *) ;;
