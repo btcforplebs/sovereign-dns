@@ -35,7 +35,9 @@ DR_MAC_MIN_MAJOR=14 # Docker Desktop 4.94 needs macOS 14 Sonoma or newer.
 
 DR_GET_DOCKER_COMMIT="2b32480025b223ebfddae9a3a8bef09027680f53"
 DR_GET_DOCKER_SHA256="fefa50ccd50efb42f438b506fc3a88574118f314aaf2a7cd5b6e1ffb1bffcf26"
-DR_LINUX_ENGINE_VERSION="${DR_LINUX_ENGINE_VERSION:-29.4}"
+# Exact engine release. get-docker picks the newest apt/dnf version string
+# containing this, so a bare "29.4" would float to whatever 29.4.x is newest.
+DR_LINUX_ENGINE_VERSION="29.4.3"
 
 DR_AGENT_LABEL="com.sovereign-dns.docker-autostart"
 
@@ -206,6 +208,8 @@ dr_install_docker_linux() {
   # Let this user run docker without sudo from the next login on. For the
   # rest of this run, dr_wait_docker falls back to sudo.
   if [[ "$(id -u)" != "0" ]]; then
+    dr_log "Adding your user ($(id -un)) to the 'docker' group so you can run docker without sudo."
+    dr_log "  Note: anyone in the 'docker' group can control Docker, which is the same as having root on this machine."
     dr_sudo usermod -aG docker "$(id -un)" || true
   fi
 }
@@ -289,11 +293,16 @@ dr_wait_docker() {
 # launchd loads everything in ~/Library/LaunchAgents at the next login, which
 # is the only time it matters, and loading it now would poke a running Docker.
 dr_write_launch_agent() {
-  local dir=${DR_LAUNCH_AGENTS_DIR:-$HOME/Library/LaunchAgents} engine=$1 plist args
+  local dir=${DR_LAUNCH_AGENTS_DIR:-$HOME/Library/LaunchAgents} engine=$1 plist args colima
   plist="$dir/$DR_AGENT_LABEL.plist"
   case "$engine" in
     orbstack) args="    <string>/usr/bin/open</string><string>-g</string><string>-a</string><string>OrbStack</string>" ;;
-    colima) args="    <string>$(command -v colima)</string><string>start</string>" ;;
+    colima)
+      colima=$(command -v colima) || {
+        dr_log "Docker here runs on colima, but the 'colima' command isn't on PATH, so no login agent was written."
+        return 1
+      }
+      args="    <string>$colima</string><string>start</string>" ;;
     *) args="    <string>/usr/bin/open</string><string>-g</string><string>-a</string><string>Docker</string>" ;;
   esac
   if [[ "${DR_DRY_RUN:-0}" == "1" ]]; then

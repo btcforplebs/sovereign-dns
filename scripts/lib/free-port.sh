@@ -6,6 +6,7 @@
 #   fp_udp_port_free PORT            0 = free, 1 = taken, 2 = could not tell
 #   fp_pick_free_udp_port FROM [N]   prints the first free port in FROM..FROM+N-1
 #   nvpn_listen_port [ENV_FILE]      prints the port to use for NVPN_LISTEN_PORT
+#                                    and saves it in ENV_FILE (default .env)
 #
 # Why: the box publishes UDP 51820. When the Nostr VPN app also runs on the
 # same computer it already holds 51820, and the container fails to start.
@@ -80,42 +81,68 @@ fp_pick_free_udp_port() {
   return 1
 }
 
-# The host port an existing sovereign-dns-nvpn container already publishes,
-# if any. A reinstall must keep that port, not move away from itself.
+# The host UDP port an existing sovereign-dns-nvpn container publishes,
+# running or stopped. A reinstall must keep that port, not move away from
+# itself. Prints the port and returns 0; returns 1 when there is no such
+# container; returns 2 when Docker can't be read, so we can't tell.
 fp_existing_box_port() {
   command -v docker >/dev/null 2>&1 || return 1
-  local ports
-  ports=$(docker ps --filter 'name=^sovereign-dns-nvpn$' --format '{{.Ports}}' 2>/dev/null) || return 1
-  # e.g. "0.0.0.0:51820->51820/udp, [::]:51820->51820/udp"
-  printf '%s\n' "$ports" | tr ',' '\n' | sed -n 's/.*:\([0-9][0-9]*\)->[0-9]*\/udp.*/\1/p' | head -n 1 | grep .
+  local out
+  if ! out=$(docker inspect sovereign-dns-nvpn --format '{{json .HostConfig.PortBindings}}' 2>&1); then
+    case "$out" in
+      *"No such object"* | *"no such object"*) return 1 ;;
+      *) return 2 ;;
+    esac
+  fi
+  # e.g. {"51820/udp":[{"HostIp":"","HostPort":"51820"}]}
+  out=$(printf '%s\n' "$out" | sed -n 's/.*"51820\/udp":\[{[^]]*"HostPort":"\([0-9][0-9]*\)".*/\1/p')
+  [[ -n "$out" ]] || return 2
+  printf '%s\n' "$out"
 }
 
+# Prints the port and records it in ENV_FILE so later runs keep it. Call it
+# after install.sh has written .env: it adds a line, and refuses to create
+# the file (install.sh only writes .env when there is none).
 nvpn_listen_port() {
-  local env_file=${1:-.env} port chosen
+  local env_file=${1:-.env} port chosen rc
 
-  # 1. Already chosen on an earlier run: keep it.
-  if [[ -f "$env_file" ]]; then
-    port=$(sed -n 's/^NVPN_LISTEN_PORT=\([0-9][0-9]*\)[[:space:]]*$/\1/p' "$env_file" | tail -n 1)
-    if [[ -n "$port" ]]; then
-      fp_log "VPN port: UDP $port (kept from $env_file)."
-      printf '%s\n' "$port"
-      return 0
-    fi
+  if [[ ! -f "$env_file" ]]; then
+    fp_log "nvpn_listen_port: $env_file doesn't exist yet; write it first."
+    return 1
   fi
 
-  # 2. Our own box is already running and holds a port: keep that one.
-  if port=$(fp_existing_box_port); then
-    fp_log "VPN port: UDP $port (already used by this box)."
+  # 1. Already chosen on an earlier run: keep it.
+  port=$(sed -n 's/^NVPN_LISTEN_PORT=\([0-9][0-9]*\)[[:space:]]*$/\1/p' "$env_file" | tail -n 1)
+  if [[ -n "$port" ]]; then
+    fp_log "VPN port: UDP $port (kept from $env_file)."
     printf '%s\n' "$port"
     return 0
   fi
 
-  # 3. Fresh install: 51820 unless something else on this computer has it.
-  chosen=$(fp_pick_free_udp_port "$FP_DEFAULT_PORT") || return 1
-  if [[ "$chosen" == "$FP_DEFAULT_PORT" ]]; then
-    fp_log "VPN port: UDP $chosen."
-  else
-    fp_log "VPN port: UDP $chosen. UDP $FP_DEFAULT_PORT is already in use on this computer (often the Nostr VPN app), so the box uses $chosen instead."
+  # 2. This box already exists (running or stopped): keep its port.
+  port=$(fp_existing_box_port); rc=$?
+  if [[ $rc == 2 ]]; then
+    # Probing now would find the box's own port taken and move it.
+    fp_log "Can't read Docker to check whether this box already has a VPN port. Make sure Docker is running, then run this again."
+    return 1
   fi
+  if [[ $rc == 0 ]]; then
+    fp_log "VPN port: UDP $port (already used by this box)."
+    chosen=$port
+  else
+    # 3. Fresh install: 51820 unless something else on this computer has it.
+    chosen=$(fp_pick_free_udp_port "$FP_DEFAULT_PORT") || return 1
+    if [[ "$chosen" == "$FP_DEFAULT_PORT" ]]; then
+      fp_log "VPN port: UDP $chosen."
+    else
+      fp_log "VPN port: UDP $chosen. UDP $FP_DEFAULT_PORT is already in use on this computer (often the Nostr VPN app), so the box uses $chosen instead."
+    fi
+  fi
+
+  # Don't glue the new line onto a last line that has no newline.
+  if [[ -s "$env_file" && -n "$(tail -c 1 "$env_file")" ]]; then
+    printf '\n' >> "$env_file" || return 1
+  fi
+  printf 'NVPN_LISTEN_PORT=%s\n' "$chosen" >> "$env_file" || return 1
   printf '%s\n' "$chosen"
 }
