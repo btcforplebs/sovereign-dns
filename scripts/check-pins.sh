@@ -11,11 +11,16 @@ status=0
 fail() { echo "unpinned: $*"; status=1; }
 digest='@sha256:[0-9a-f]{64}'
 
-# Compose services that pull an image.
-while IFS= read -r line; do
-  ref=$(sed -E 's/^[[:space:]]*image:[[:space:]]*//; s/[[:space:]]+#.*$//; s/[[:space:]]+$//' <<<"$line")
-  grep -Eq -- "$digest\$" <<<"$ref" || fail "docker-compose.yml image $ref"
-done < <(grep -E '^[[:space:]]*image:' docker-compose.yml)
+# Compose services that pull an image, in every tracked compose file: compose
+# auto-loads docker-compose.override.yml, and any of them can be passed with -f.
+compose_files=$(git ls-files '*compose*.yml' '*compose*.yaml')
+[[ -n "$compose_files" ]] || fail "no tracked compose file found"
+for cf in $compose_files; do
+  while IFS= read -r line; do
+    ref=$(sed -E 's/^[[:space:]]*image:[[:space:]]*//; s/[[:space:]]+#.*$//; s/[[:space:]]+$//' <<<"$line")
+    grep -Eq -- "$digest\$" <<<"$ref" || fail "$cf image $ref"
+  done < <(grep -E '^[[:space:]]*image:' "$cf" || true)
+done
 
 # Every tracked Dockerfile ships in the installer payload, whatever its suffix.
 for df in $(git ls-files '*[Dd]ockerfile*'); do
@@ -46,7 +51,7 @@ for df in $(git ls-files '*[Dd]ockerfile*'); do
     [[ "$ref" =~ ^[0-9]+$ ]] && continue
     grep -qx -- "$(tr 'A-Z' 'a-z' <<<"$ref")" <<<"$stages" && continue
     grep -Eq -- "$digest\$" <<<"$ref" || fail "$df --from $ref"
-  done < <(grep -Eio -- '(--from=|[,[:space:]]from=)[^[:space:],]+' "$df" | sed -E 's/^.*from=//I' || true)
+  done < <(grep -Eio -- '(--from=|[=,[:space:]]from=)[^[:space:],]+' "$df" | sed -E 's/^.*from=//I' || true)
 
   # cargo install must name one exact version.
   while IFS= read -r line; do
@@ -55,7 +60,7 @@ for df in $(git ls-files '*[Dd]ockerfile*'); do
 done
 
 # nvpn source: a full SHA, and the same one everywhere it is defaulted.
-shas=$( { grep -Eho 'NVPN_COMMIT:-[^}]*' docker-compose.yml || true
+shas=$( { grep -Eho 'NVPN_COMMIT:-[^}]*' $compose_files || true
           grep -Eho '^ARG NVPN_COMMIT=.*' nvpn/Dockerfile || true; } | sed -E 's/.*(:-|=)//' | sort -u)
 [[ -n "$shas" ]] || fail "no NVPN_COMMIT default found"
 for s in $shas; do

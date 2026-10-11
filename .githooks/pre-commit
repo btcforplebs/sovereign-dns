@@ -5,6 +5,14 @@
 # which cannot produce install.sh unless check-pins.sh passes.
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
+# --check reads the working tree, but the commit records the index. Only when
+# the two agree does a passing --check say anything about this commit.
+if ! git diff --quiet; then
+  echo "pre-commit: unstaged changes to tracked files, so the check below would not describe this commit." >&2
+  echo "Stage them (git add -u) or set them aside, then commit again:" >&2
+  git diff --name-only | sed 's/^/  /' >&2
+  exit 1
+fi
 scripts/make-installer.sh --check || {
   echo "pre-commit: pins or install.sh are stale. Run scripts/make-installer.sh, then stage scripts/install.sh." >&2
   exit 1
