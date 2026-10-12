@@ -84,6 +84,10 @@ const pageHTML = `<!doctype html>
 
   <h2>Open</h2>
   <div class="grid">
+    <a class="card" href="/setup">
+      <span class="name">Setup guide</span><br>
+      <span class="detail">Add a device, approve it, check it really uses this box.</span>
+    </a>
     <a class="card" href="{{.PanelURL}}">
       <span class="name">Control Panel</span><br>
       <span class="detail">Manage devices, approve joins, pair with QR.</span>
