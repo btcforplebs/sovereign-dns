@@ -13,7 +13,7 @@ RUN apk add --no-cache unbound=1.25.2-r1 drill=1.8.4-r0 \
  && chown unbound:unbound /var/lib/unbound
 
 COPY unbound.conf /etc/unbound/unbound.conf
-COPY entrypoint.sh healthcheck.sh /usr/local/bin/
+COPY --chmod=0755 entrypoint.sh healthcheck.sh /usr/local/bin/
 
 EXPOSE 53/udp 53/tcp
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

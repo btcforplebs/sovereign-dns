@@ -66,17 +66,19 @@ fi
 
 head_ "Layer 1 — Unbound: recursion, not forwarding"
 
-# The whole sovereignty claim. A `forward-zone` anywhere in Unbound's config
-# (a base image change, a stray mount, an edit) sends every query to a third
-# party while everything else still looks perfectly healthy. Read the whole
+# The whole sovereignty claim. A `forward-zone` or `stub-zone` anywhere in
+# Unbound's config (a base image change, a stray mount, an edit) sends every
+# query to a third party while everything else still looks perfectly healthy.
+# Unbound's keywords are case-insensitive, so the match is too. Read the whole
 # config directory, not one name, and refuse an include: that points outside
-# it, since that file would forward just the same without being read here.
+# it, since that file would forward just the same without being read here. The
+# include path itself stays case-sensitive: /ETC/UNBOUND is a different place.
 # Fails closed: stderr is kept, so a container that cannot exec or a grep that
 # cannot read reports as a failure rather than as "no forwarder found".
 forwarders=$(docker exec "$UNBOUND" sh -c '
   test -r /etc/unbound/unbound.conf || { echo "cannot read /etc/unbound/unbound.conf"; exit; }
-  grep -rhE "^[[:space:]]*forward-(zone|addr):" /etc/unbound/; [ $? -le 1 ] || echo "grep could not read /etc/unbound"
-  grep -rhE "^[[:space:]]*include(-toplevel)?:" /etc/unbound/ | grep -vE "include(-toplevel)?:[[:space:]]*\"?/etc/unbound/"
+  grep -rhiE "^[[:space:]]*(forward|stub)-(zone|addr|host):" /etc/unbound/; [ $? -le 1 ] || echo "grep could not read /etc/unbound"
+  grep -rhiE "^[[:space:]]*include(-toplevel)?:" /etc/unbound/ | grep -vE "[Ii][Nn][Cc][Ll][Uu][Dd][Ee](-[Tt][Oo][Pp][Ll][Ee][Vv][Ee][Ll])?:[[:space:]]*\"?/etc/unbound/"
   ' 2>&1)
 if [[ -z "$forwarders" ]]; then
   ok "no forward-zone configured (Unbound recurses from the root)"
