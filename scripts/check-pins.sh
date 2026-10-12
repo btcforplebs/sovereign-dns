@@ -489,7 +489,7 @@ fi
 pihole_env=$(awk '/^  pihole:[[:space:]]*$/ { inp = 1; next }
                   inp && /^  [^[:space:]#]/ { inp = 0 }
                   inp' "$loaded")
-for want in 'FTLCONF_dns_listeningMode BIND' 'FTLCONF_ntp_ipv4_active false' 'FTLCONF_ntp_ipv6_active false'; do
+for want in 'FTLCONF_dns_listeningMode BIND' 'FTLCONF_ntp_ipv4_active false' 'FTLCONF_ntp_ipv6_active false' 'FTLCONF_ntp_sync_active false'; do
   read -r key val <<<"$want"
   grep -Eq "^[[:space:]]*(-[[:space:]]*)?${key}[[:space:]]*[:=][[:space:]]*[\"']?${val}[\"']?[[:space:]]*(#.*)?$" <<<"$pihole_env" \
     || fail "pihole must set $key to a literal $val in the compose files the installer loads"
@@ -521,7 +521,7 @@ while IFS= read -r k; do
   case "$k" in
     FTLCONF_webserver_api_password|FTLCONF_dns_upstreams|FTLCONF_dns_interface|\
     FTLCONF_dns_listeningMode|FTLCONF_dns_dnssec|FTLCONF_ntp_ipv4_active|\
-    FTLCONF_ntp_ipv6_active|FTLCONF_webserver_port) ;;
+    FTLCONF_ntp_ipv6_active|FTLCONF_ntp_sync_active|FTLCONF_webserver_port) ;;
     *) fail "pihole sets $k, an FTL setting this gate has no rule for (add one if it is safe)" ;;
   esac
 done < <(sed -nE "s/^[[:space:]]*(-[[:space:]]*)?[\"']?(FTLCONF_[A-Za-z0-9_]+).*/\\2/p" "$loaded" | sort -u)
