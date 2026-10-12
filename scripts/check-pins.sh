@@ -521,7 +521,7 @@ while IFS= read -r k; do
   case "$k" in
     FTLCONF_webserver_api_password|FTLCONF_dns_upstreams|FTLCONF_dns_interface|\
     FTLCONF_dns_listeningMode|FTLCONF_dns_dnssec|FTLCONF_ntp_ipv4_active|\
-    FTLCONF_ntp_ipv6_active|FTLCONF_webserver_port) ;;
+    FTLCONF_ntp_ipv6_active|FTLCONF_ntp_sync_active|FTLCONF_webserver_port) ;;
     *) fail "pihole sets $k, an FTL setting this gate has no rule for (add one if it is safe)" ;;
   esac
 done < <(sed -nE "s/^[[:space:]]*(-[[:space:]]*)?[\"']?(FTLCONF_[A-Za-z0-9_]+).*/\\2/p" "$loaded" | sort -u)
