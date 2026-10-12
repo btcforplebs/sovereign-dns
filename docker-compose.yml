@@ -13,7 +13,7 @@ services:
         # A full commit SHA, not a branch: the build checks it out exactly and
         # fails if the fetched commit is anything else. Change the pin here,
         # where it is visible, rather than in .env.
-        NVPN_COMMIT: fc0ab76574134809536bb2414ec3d5684cfd34a1
+        NVPN_COMMIT: b16e1f75913308a1e4fd24db7fd49938d3fcd921
     container_name: sovereign-dns-nvpn
     restart: unless-stopped
     cap_add:
@@ -72,7 +72,7 @@ services:
       context: ./nvpn
       args:
         NVPN_REPO: https://github.com/btcforplebs/nostr-vpn.git
-        NVPN_COMMIT: fc0ab76574134809536bb2414ec3d5684cfd34a1
+        NVPN_COMMIT: b16e1f75913308a1e4fd24db7fd49938d3fcd921
     container_name: sovereign-dns-web
     restart: unless-stopped
     entrypoint: ["/usr/local/bin/nvpn-web"]
@@ -174,9 +174,11 @@ services:
 
   # Landing page: what's running, the real URLs with the mesh IP filled in,
   # and the invite command that otherwise only exists in `docker compose logs`.
-  # Read-only by design — it launches the other UIs rather than duplicating
-  # them, holds no credentials, and gets no docker.sock (a web-facing
-  # container with the socket is root on the host). Joined to dns-internal so
+  # Read-only by design, with one exception: the network DNS on/off switch,
+  # which it changes through the control panel's API (hub/dns.go), never by
+  # itself. It launches the other UIs rather than duplicating them, holds no
+  # credentials, and gets no docker.sock (a web-facing container with the
+  # socket is root on the host). Joined to dns-internal so
   # it can probe Pi-hole and Unbound, which the browser cannot reach.
   # Published to loopback only: it fronts an admin surface with no login.
   hub:

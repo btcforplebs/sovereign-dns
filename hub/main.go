@@ -2,11 +2,14 @@
 // reach it, and how to add a device — the things that otherwise require
 // reading `docker compose logs` and knowing which container to exec into.
 //
-// It is deliberately read-only. Every mutable setting in this stack already
-// has an owner with a UI (devices in the control panel, blocklists in Pi-hole,
-// the rest in .env), so the hub launches those rather than re-implementing
-// them badly. It holds no credentials and never touches the Docker socket:
-// status comes from probing the services the same way a user would.
+// It is read-only with one exception. Every mutable setting in this stack
+// already has an owner with a UI (devices in the control panel, blocklists in
+// Pi-hole, the rest in .env), so the hub launches those rather than
+// re-implementing them badly. The exception is the network DNS override, the
+// one setting this stack exists for: dns.go switches it through the control
+// panel's own API, behind the guards described there. The hub holds no
+// credentials and never touches the Docker socket: status comes from probing
+// the services the same way a user would.
 //
 // Standard library only, on purpose. This page fronts an unauthenticated
 // admin surface, so it should be readable end to end by whoever is trusting
@@ -44,6 +47,7 @@ type config struct {
 	envSettings  []setting
 	mock         string // HUB_MOCK: render a canned state instead of probing (screenshots, demos)
 	checkName    string // unique name a device can look up to prove it resolves through Pi-hole
+	csrfToken    string // per process; every form that changes something must echo it
 }
 
 type setting struct {
@@ -56,33 +60,40 @@ type setting struct {
 // UI is driven by this same payload, so it stays in step with the daemon
 // without us parsing config.toml.
 type tick struct {
-	DaemonRunning bool   `json:"daemonRunning"`
-	OwnNpub       string `json:"ownNpub"`
-	NetworkID     string `json:"networkId"`
-	TunnelIP      string `json:"tunnelIp"`
-	MagicDNS      string `json:"magicDnsSuffix"`
-	Networks      []struct {
-		Name                string `json:"name"`
-		NetworkID           string `json:"networkId"`
-		DNSOverride         bool   `json:"dnsOverride"`
-		LocalIsDNSNode      bool   `json:"localIsDnsNode"`
-		InboundJoinRequests []struct {
-			Npub string `json:"npub"`
-		} `json:"inboundJoinRequests"`
-		Participants []struct {
-			Alias     string `json:"alias"`
-			Npub      string `json:"npub"`
-			TunnelIP  string `json:"tunnelIp"`
-			Reachable bool   `json:"reachable"`
-			State     string `json:"state"`
-			// Presence over the relays is not a data path. A device can be
-			// "online" here and still pass no traffic, so this is what
-			// separates an amber tile from a green one.
-			DirectProbePending bool   `json:"fipsDirectProbePending"`
-			TransportType      string `json:"fipsTransportType"`
-			StatusText         string `json:"statusText"`
-		} `json:"participants"`
-	} `json:"networks"`
+	DaemonRunning bool          `json:"daemonRunning"`
+	OwnNpub       string        `json:"ownNpub"`
+	NetworkID     string        `json:"networkId"`
+	TunnelIP      string        `json:"tunnelIp"`
+	MagicDNS      string        `json:"magicDnsSuffix"`
+	Networks      []tickNetwork `json:"networks"`
+}
+
+type tickNetwork struct {
+	ID                  string `json:"id"` // config-local id; the panel's write routes key on this
+	Name                string `json:"name"`
+	NetworkID           string `json:"networkId"`
+	LocalIsAdmin        bool   `json:"localIsAdmin"`
+	DNSNodeNpub         string `json:"dnsNodeNpub"`
+	DNSOverride         bool   `json:"dnsOverride"`
+	LocalIsDNSNode      bool   `json:"localIsDnsNode"`
+	InboundJoinRequests []struct {
+		Npub string `json:"npub"`
+	} `json:"inboundJoinRequests"`
+	Participants []tickParticipant `json:"participants"`
+}
+
+type tickParticipant struct {
+	Alias     string `json:"alias"`
+	Npub      string `json:"npub"`
+	TunnelIP  string `json:"tunnelIp"`
+	Reachable bool   `json:"reachable"`
+	State     string `json:"state"`
+	// Presence over the relays is not a data path. A device can be
+	// "online" here and still pass no traffic, so this is what
+	// separates an amber tile from a green one.
+	DirectProbePending bool   `json:"fipsDirectProbePending"`
+	TransportType      string `json:"fipsTransportType"`
+	StatusText         string `json:"statusText"`
 }
 
 type tile struct {
@@ -113,7 +124,8 @@ type page struct {
 	MeshSummary   string
 	MeshState     string
 	Settings      []setting
-	OverrideState string
+	OverrideState string // "on", "off", or "unknown" when the panel did not answer
+	DNS           dnsControl
 	Error         string
 	GeneratedAt   string
 
@@ -126,6 +138,17 @@ type page struct {
 	Covered   int // devices that actually get DNS through this box
 	CheckName string
 	FirstRun  bool // no device besides this box has ever joined
+
+	// Request-scoped, never part of /api/status: the form token, and which
+	// confirmation (if any) the dashboard is asking for.
+	CSRF    string `json:"-"`
+	Confirm string `json:"-"`
+
+	network *tickNetwork // the network the DNS switch acts on
+	ownNpub string
+	// Why network is nil although the panel answered. Empty means the panel
+	// itself is the problem.
+	noNetwork string
 }
 
 func main() {
@@ -159,12 +182,16 @@ func newMux(cfg config) *http.ServeMux {
 	// grid means nothing to someone who has not added a device yet.
 	mux.HandleFunc("/dashboard", func(w http.ResponseWriter, r *http.Request) {
 		data := cfg.buildPage(r.Context())
+		data.CSRF = cfg.csrfToken
+		data.Confirm = r.URL.Query().Get("confirm")
+		noFraming(w)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		if err := tmpl.Execute(w, data); err != nil {
 			log.Printf("hub: rendering page: %v", err)
 		}
 	})
 	mux.HandleFunc("/setup", cfg.serveWizard)
+	mux.HandleFunc("/dns", cfg.serveDNS(tmpl))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
@@ -175,6 +202,8 @@ func newMux(cfg config) *http.ServeMux {
 			http.Redirect(w, r, "/setup", http.StatusFound)
 			return
 		}
+		data.CSRF = cfg.csrfToken
+		noFraming(w)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		if err := tmpl.Execute(w, data); err != nil {
 			log.Printf("hub: rendering page: %v", err)
@@ -190,6 +219,7 @@ func loadConfig() config {
 	return config{
 		mock:        env("HUB_MOCK", ""),
 		checkName:   newCheckName(),
+		csrfToken:   newCSRFToken(),
 		listen:      env("HUB_LISTEN", ":8080"),
 		panelURL:    fmt.Sprintf("http://localhost:%s", webPort),
 		panelAPI:    env("PANEL_API", "http://sovereign-dns-web:8081"),
@@ -275,13 +305,26 @@ func (c config) buildPage(ctx context.Context) page {
 
 	p.OwnNpub = state.OwnNpub
 	p.NetworkID = state.NetworkID
+	// Unknown until the panel says otherwise: a dead panel must not read as a
+	// default-looking "off".
+	p.OverrideState = "unknown"
+	if tickErr == nil && len(state.Networks) == 0 {
+		p.noNetwork = "No network has been joined or created yet, so there is nothing to switch. Set one up in the control panel first."
+	}
 	if len(state.Networks) > 0 {
-		net := state.Networks[0]
+		net, matched := activeNetwork(state)
 		p.NetworkName = net.Name
 		p.PendingJoins = len(net.InboundJoinRequests)
-		p.OverrideState = "off"
-		if net.DNSOverride {
-			p.OverrideState = "on"
+		if tickErr == nil && !matched {
+			p.noNetwork = "The control panel lists more than one network but doesn't say which one is running, so the switch can't tell which to change."
+		}
+		if tickErr == nil && matched {
+			p.network = &net
+			p.ownNpub = state.OwnNpub
+			p.OverrideState = "off"
+			if net.DNSOverride {
+				p.OverrideState = "on"
+			}
 		}
 		if net.NetworkID != "" {
 			p.NetworkID = net.NetworkID
@@ -338,6 +381,8 @@ func (c config) buildPage(ctx context.Context) page {
 		}
 	}
 
+	p.DNS = buildDNSControl(p)
+
 	// Only offer links that actually go somewhere: a launch card for a service
 	// that is down is worse than no card, because the user blames themselves
 	// for the dead page.
@@ -360,6 +405,29 @@ func newCheckName() string {
 		return "sovereign-check.test"
 	}
 	return fmt.Sprintf("sovereign-check-%s.test", hex.EncodeToString(b[:]))
+}
+
+// activeNetwork is the network the daemon is running, which the panel names
+// at the top level of the tick. The DNS switch writes to it, so it must be
+// the one on screen, not whichever happens to be listed first. With several
+// networks and none matching (the top-level id blank or stale), there is no
+// right answer: matched is false and the switch refuses rather than guess.
+// The first network is still returned so the page has something to show.
+func activeNetwork(state tick) (tickNetwork, bool) {
+	for _, n := range state.Networks {
+		if n.NetworkID != "" && n.NetworkID == state.NetworkID {
+			return n, true
+		}
+	}
+	return state.Networks[0], len(state.Networks) == 1
+}
+
+// noFraming stops another site from framing a page and steering a click onto
+// one of its buttons. The tokens and origin checks cannot catch that: the
+// click really does come from this page.
+func noFraming(w http.ResponseWriter) {
+	w.Header().Set("X-Frame-Options", "DENY")
+	w.Header().Set("Content-Security-Policy", "frame-ancestors 'none'")
 }
 
 func boolTile(name string, ok bool, up, down string) tile {

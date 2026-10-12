@@ -50,8 +50,11 @@ the CLI daemon; the crate the iOS app builds on can publish the policy but
 never consumes it. Don't treat an iOS device's presence on the roster as
 DNS coverage — check `nvpn status` on the device itself.
 
-The override toggle itself is CLI/macOS-GUI only — the web control panel
-(Layer 4) can approve devices and manage the roster, but has no
-network-DNS control (`nvpn set --network-dns-override ...` must be run
-from a shell, e.g. `docker exec sovereign-dns-nvpn nvpn set
---network-dns-override false`).
+The override has an on/off switch on the hub dashboard
+(`http://localhost:8080`, "Network DNS"). It shows the current setting, asks
+before turning DNS off (and before turning it on while Pi-hole or Unbound is
+down), and changes it through the control panel's own API, so the admin
+check and the daemon reload stay in nvpn. The control panel at
+`http://localhost:8082` has the same setting in its network view. From a
+shell it is still `docker exec sovereign-dns-nvpn nvpn set
+--network-dns-override false`.
