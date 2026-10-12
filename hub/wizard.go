@@ -268,8 +268,8 @@ const wizardHTML = `<!doctype html>
   {{else}}
   <div class="verdict wait">
     <strong>Still starting. You don't need to do anything.</strong>
-    <p>The very first start builds the VPN from source, which takes 10 to 15 minutes. Every start after that takes seconds. This page checks again every few seconds and moves on by itself.</p>
-    <p class="fine">Still showing "Not yet" after 20 minutes? Open a terminal in the folder you installed into, run <code>docker compose up -d</code>, and come back. If Docker itself is not running, start Docker first.</p>
+    <p>Unbound and Pi-hole normally come up within about a minute. This page checks again every few seconds and moves on by itself.</p>
+    <p class="fine">Still showing "Not yet" after a few minutes? Open a terminal in the folder you installed into, run <code>docker compose up -d</code>, and come back. If Docker itself is not running, start Docker first.</p>
   </div>
   {{end}}
   {{end}}
