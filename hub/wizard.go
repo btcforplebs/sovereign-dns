@@ -108,9 +108,9 @@ func buildWizard(p page, want int) wizardPage {
 // exactly the facts the wizard renders, so a reload happens when the reader
 // would see something different and not on every clock tick.
 func stateKey(p page) string {
-	return fmt.Sprintf("%t%t%t%t-%d-%d-%d-%t",
+	return fmt.Sprintf("%t%t%t%t-%d-%d-%d-%t%t",
 		p.DaemonUp, p.PanelUp, p.PiholeUp, p.UnboundUp,
-		p.PendingJoins, len(p.Devices), p.Covered, p.InviteCommand != "")
+		p.PendingJoins, len(p.Devices), p.Covered, p.InviteCommand != "", p.PiholeURL != "")
 }
 
 func (c config) serveWizard(w http.ResponseWriter, r *http.Request) {
@@ -177,6 +177,9 @@ const wizardHTML = `<!doctype html>
   .verdict strong { display: block; margin-bottom: 2px; }
   .verdict p { margin: 4px 0; }
   .verdict .fine { color: var(--dim); font-size: 14px; }
+  .verdict.down { border-color: var(--down); }
+  .verdict code, .err code { word-break: break-all; }
+  .err { border-left: 3px solid var(--down); padding: 10px 14px; margin: 20px 0; color: var(--dim); }
 
   .kind { margin: 0 0 10px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--dim); font-weight: 600; }
   .placeholder { border: 1px dashed var(--line); border-radius: 10px; padding: 14px 16px; color: var(--dim); font-size: 15px; }
@@ -211,7 +214,10 @@ const wizardHTML = `<!doctype html>
     {{end}}
   </ol>
 
-  {{if .Error}}{{/* The control panel is the source of device facts; without it, say so once. */}}{{end}}
+  {{/* The control panel is the source of device facts. Step 1 says what
+       went wrong in full; every other step gets the one-line version so a
+       reader who typed ?step=3 still learns why nothing is moving. */}}
+  {{if and .Error (ne .Step 1)}}<div class="err">{{.Error}}</div>{{end}}
 
   {{/* ───────────────────────── STEP 1 ───────────────────────── */}}
   {{if eq .Step 1}}
@@ -249,6 +255,12 @@ const wizardHTML = `<!doctype html>
   <div class="verdict ok">
     <strong>All four are running.</strong>
     <p>Nothing to fix here. Next, add the first device that will use it.</p>
+  </div>
+  {{else if .Error}}
+  <div class="verdict down">
+    <strong>The admin panel isn't answering, so the VPN can't be checked.</strong>
+    <p>{{.Error}}</p>
+    <p>If you installed a few minutes ago, that's the first build still compiling the VPN; it takes 10 to 15 minutes and this page moves on by itself. If this box was already working, the VPN container has stopped: open a terminal in the folder you installed into and run <code>docker compose up -d</code>.</p>
   </div>
   {{else}}
   <div class="verdict wait">

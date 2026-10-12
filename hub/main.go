@@ -130,6 +130,20 @@ type page struct {
 
 func main() {
 	cfg := loadConfig()
+	mux := newMux(cfg)
+
+	log.Printf("hub: listening on %s", cfg.listen)
+	server := &http.Server{
+		Addr:              cfg.listen,
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	log.Fatal(server.ListenAndServe())
+}
+
+// newMux wires the routes. Split from main so tests can serve a request
+// against a config whose probes point at nothing.
+func newMux(cfg config) *http.ServeMux {
 	tmpl := template.Must(template.New("page").Parse(pageHTML))
 
 	mux := http.NewServeMux()
@@ -166,14 +180,7 @@ func main() {
 			log.Printf("hub: rendering page: %v", err)
 		}
 	})
-
-	log.Printf("hub: listening on %s", cfg.listen)
-	server := &http.Server{
-		Addr:              cfg.listen,
-		Handler:           mux,
-		ReadHeaderTimeout: 10 * time.Second,
-	}
-	log.Fatal(server.ListenAndServe())
+	return mux
 }
 
 func loadConfig() config {
@@ -243,7 +250,12 @@ func (c config) buildPage(ctx context.Context) page {
 		PiholeUp:    piholeUp,
 		UnboundUp:   unboundUp,
 		CheckName:   c.checkName,
-		FirstRun:    true,
+		// "No device has joined" is only knowable when the panel answered.
+		// If it did not, this is a box in an unknown state, and the
+		// dashboard (which shows the error) is the right page for that;
+		// sending the reader to the wizard would tell an established box
+		// it is brand new.
+		FirstRun: tickErr == nil,
 	}
 	if tickErr != nil {
 		p.Error = "Can't reach the VPN control panel, so device and network details are unavailable: " + tickErr.Error()
