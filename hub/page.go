@@ -57,6 +57,30 @@ const pageHTML = `<!doctype html>
   .dev:first-child { border-top: 0; }
   .dev .meta { color: var(--dim); font-size: 13px; }
   footer { color: var(--dim); font-size: 12px; margin-top: 44px; }
+
+  .dns-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+  .dns-row .what { flex: 1 1 260px; }
+  .dns-row .what .detail { color: var(--dim); font-size: 13px; }
+  .pill { flex: none; border-radius: 999px; padding: 3px 12px; font-weight: 700;
+          font-size: 13px; letter-spacing: 0.04em; text-transform: uppercase;
+          border: 1px solid currentColor; }
+  .pill.on { color: var(--up); } .pill.off { color: var(--warn); }
+  .pill.unknown { color: var(--dim); }
+  form.inline { margin: 0; flex: none; }
+  .btn { font: inherit; font-size: 14px; font-weight: 600; line-height: 1.2;
+         border-radius: 8px; padding: 9px 16px; cursor: pointer; text-decoration: none;
+         display: inline-block; border: 1px solid var(--line); background: #1f2430; color: var(--ink); }
+  .btn:hover { border-color: var(--accent); }
+  .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #0b1220; }
+  .btn.danger { background: transparent; border-color: var(--down); color: #ff8f92; }
+  .btn.danger:hover { background: #2a1517; }
+  .confirm { margin-top: 16px; padding: 14px 16px; border-radius: 8px;
+             border: 1px solid var(--down); background: #1d1416; }
+  .confirm.warn { border-color: var(--warn); background: #1f1a10; }
+  .confirm h3 { margin: 0 0 6px; font-size: 16px; }
+  .confirm p { margin: 0 0 12px; color: var(--dim); font-size: 14px; }
+  .confirm .actions { display: flex; gap: 10px; flex-wrap: wrap; }
 </style>
 </head>
 <body>
@@ -81,6 +105,76 @@ const pageHTML = `<!doctype html>
     <a href="{{.PanelURL}}" class="badge">{{.PendingJoins}} device(s) waiting to join — approve</a>
   </p>
   {{end}}
+
+  <h2 id="dns">Network DNS</h2>
+  <div class="card">
+    <div class="dns-row">
+      <span class="pill {{.DNS.State}}">{{.DNS.State}}</span>
+      <div class="what">
+        {{if eq .DNS.State "on"}}
+          <strong>Every device on the mesh resolves through this box.</strong>
+          <div class="detail">{{if .DNS.NodeIsThisBox}}Filtered by Pi-hole, resolved by Unbound.{{else}}DNS device: <code>{{.DNS.Node}}</code>, not this box.{{end}}
+            If the resolver goes down, lookups fail rather than leak to another resolver.</div>
+        {{else if eq .DNS.State "off"}}
+          <strong>Devices are using their own DNS.</strong>
+          <div class="detail">Usually the router's or the ISP's, with no filtering.</div>
+        {{else}}
+          <strong>Current setting unknown.</strong>
+          <div class="detail">{{.DNS.Blocked}}</div>
+        {{end}}
+        {{if and .DNS.Blocked (ne .DNS.State "unknown")}}<div class="detail">{{.DNS.Blocked}}</div>{{end}}
+      </div>
+      {{if and .DNS.CanSwitch (not .ConfirmingDNS)}}
+      <form class="inline" method="post" action="/dns">
+        <input type="hidden" name="csrf" value="{{.CSRF}}">
+        {{if eq .DNS.State "on"}}
+        <input type="hidden" name="override" value="off">
+        <button class="btn danger" type="submit">Turn off…</button>
+        {{else}}
+        <input type="hidden" name="override" value="on">
+        <button class="btn primary" type="submit">Turn on{{if not .DNS.ResolverUp}}…{{end}}</button>
+        {{end}}
+      </form>
+      {{end}}
+    </div>
+
+    {{if eq .ConfirmingDNS "off"}}
+    <section class="confirm" role="alert" aria-labelledby="confirm-title">
+      <h3 id="confirm-title">Turn off DNS for the whole mesh?</h3>
+      <p>Every device on the mesh goes back to its own resolver, usually the
+        router's or the ISP's, including this computer if it's a mesh member.
+        Blocklists stop applying and lookups are no longer private. You can turn
+        it back on here.</p>
+      <div class="actions">
+        <a class="btn" href="/dashboard#dns" autofocus>Keep it on</a>
+        <form class="inline" method="post" action="/dns">
+          <input type="hidden" name="csrf" value="{{.CSRF}}">
+          <input type="hidden" name="override" value="off">
+          <input type="hidden" name="confirm" value="yes">
+          <button class="btn danger" type="submit">Turn off DNS</button>
+        </form>
+      </div>
+    </section>
+    {{end}}
+    {{if eq .ConfirmingDNS "on"}}
+    <section class="confirm warn" role="alert" aria-labelledby="confirm-title">
+      <h3 id="confirm-title">Pi-hole or Unbound isn't answering</h3>
+      <p>With the override on, mesh devices refuse every other resolver. If this
+        box can't answer, every lookup on every mesh device fails, including this
+        computer if it's a mesh member. Fix the resolver first unless you mean to
+        do this.</p>
+      <div class="actions">
+        <a class="btn" href="/dashboard#dns" autofocus>Leave it off</a>
+        <form class="inline" method="post" action="/dns">
+          <input type="hidden" name="csrf" value="{{.CSRF}}">
+          <input type="hidden" name="override" value="on">
+          <input type="hidden" name="confirm" value="yes">
+          <button class="btn danger" type="submit">Turn on anyway</button>
+        </form>
+      </div>
+    </section>
+    {{end}}
+  </div>
 
   <h2>Open</h2>
   <div class="grid">
@@ -142,7 +236,7 @@ const pageHTML = `<!doctype html>
       <tr><th>Setting</th><th>Value</th><th>Changed in</th></tr>
       <tr>
         <td>Network DNS override</td><td>{{.OverrideState}}</td>
-        <td class="owner">terminal — <code>docker exec sovereign-dns-nvpn nvpn set --network-dns-override true|false</code></td>
+        <td class="owner"><a href="#dns" style="color:var(--accent)">this page</a></td>
       </tr>
       <tr><td>Blocklists</td><td>managed in Pi-hole</td><td class="owner">Pi-hole</td></tr>
       {{range .Settings}}

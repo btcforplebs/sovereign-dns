@@ -21,38 +21,12 @@ func mockState(name string) mock {
 		NetworkID:     "9683dbda",
 		TunnelIP:      "10.44.5.1/16",
 	}
-	base.Networks = append(base.Networks, struct {
-		Name                string `json:"name"`
-		NetworkID           string `json:"networkId"`
-		DNSOverride         bool   `json:"dnsOverride"`
-		LocalIsDNSNode      bool   `json:"localIsDnsNode"`
-		InboundJoinRequests []struct {
-			Npub string `json:"npub"`
-		} `json:"inboundJoinRequests"`
-		Participants []struct {
-			Alias              string `json:"alias"`
-			Npub               string `json:"npub"`
-			TunnelIP           string `json:"tunnelIp"`
-			Reachable          bool   `json:"reachable"`
-			State              string `json:"state"`
-			DirectProbePending bool   `json:"fipsDirectProbePending"`
-			TransportType      string `json:"fipsTransportType"`
-			StatusText         string `json:"statusText"`
-		} `json:"participants"`
-	}{Name: "home", NetworkID: "9683dbda", DNSOverride: true, LocalIsDNSNode: true})
+	base.Networks = append(base.Networks, tickNetwork{ID: "network-1", Name: "home", NetworkID: "9683dbda", LocalIsAdmin: true,
+		DNSNodeNpub: mockNpub, DNSOverride: true, LocalIsDNSNode: true})
 	net := &base.Networks[0]
 
 	addDevice := func(alias, ip string, reachable bool, state, status string) {
-		net.Participants = append(net.Participants, struct {
-			Alias              string `json:"alias"`
-			Npub               string `json:"npub"`
-			TunnelIP           string `json:"tunnelIp"`
-			Reachable          bool   `json:"reachable"`
-			State              string `json:"state"`
-			DirectProbePending bool   `json:"fipsDirectProbePending"`
-			TransportType      string `json:"fipsTransportType"`
-			StatusText         string `json:"statusText"`
-		}{Alias: alias, Npub: "npub1" + alias + "0000000000000000000000000000000000000000000000000000000",
+		net.Participants = append(net.Participants, tickParticipant{Alias: alias, Npub: "npub1" + alias + "0000000000000000000000000000000000000000000000000000000",
 			TunnelIP: ip, Reachable: reachable, State: state, StatusText: status})
 	}
 
