@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -57,6 +58,19 @@ func TestWizardShowsPanelError(t *testing.T) {
 	}
 	if strings.Contains(body, "Still starting") {
 		t.Fatalf("step 1 still gives the \"still starting\" advice with the panel down:\n%s", body)
+	}
+}
+
+// Steps 2 to 4 are reachable by URL with the panel down. Each must carry the
+// error as a one-line banner, or a reader who typed ?step=3 sees an empty
+// join list with no reason given.
+func TestWizardLaterStepsCarryPanelError(t *testing.T) {
+	mux := newMux(deadConfig(t))
+	for step := 2; step <= wizardSteps; step++ {
+		body := get(t, mux, fmt.Sprintf("/setup?step=%d", step)).Body.String()
+		if !strings.Contains(body, `<div class="err">`) || !strings.Contains(body, "connection refused") {
+			t.Errorf("step %d does not show the panel error banner", step)
+		}
 	}
 }
 

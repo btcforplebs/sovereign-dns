@@ -60,7 +60,10 @@ func mockState(name string) mock {
 
 	switch name {
 	case "fresh":
-		// Seconds after install.sh finished: the first build is still compiling.
+		// The panel is not answering. Not "still building": compose builds
+		// every image before it starts any container, and the hub and the
+		// panel start together, so by the time this page can be served the
+		// panel is either binding (seconds) or has stopped.
 		return mock{tickErr: errors.New("dial tcp: connect: connection refused")}
 	case "starting":
 		// The daemon is up, Pi-hole is not there yet.

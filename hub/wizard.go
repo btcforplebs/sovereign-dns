@@ -178,7 +178,9 @@ const wizardHTML = `<!doctype html>
   .verdict p { margin: 4px 0; }
   .verdict .fine { color: var(--dim); font-size: 14px; }
   .verdict.down { border-color: var(--down); }
-  .verdict code, .err code { word-break: break-all; }
+  .verdict code { white-space: nowrap; }
+  /* The dial error is one long token; the commands next to it are not. */
+  .verdict .cause, .err { overflow-wrap: anywhere; }
   .err { border-left: 3px solid var(--down); padding: 10px 14px; margin: 20px 0; color: var(--dim); }
 
   .kind { margin: 0 0 10px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--dim); font-weight: 600; }
@@ -259,8 +261,9 @@ const wizardHTML = `<!doctype html>
   {{else if .Error}}
   <div class="verdict down">
     <strong>The admin panel isn't answering, so the VPN can't be checked.</strong>
-    <p>{{.Error}}</p>
-    <p>If you installed a few minutes ago, that's the first build still compiling the VPN; it takes 10 to 15 minutes and this page moves on by itself. If this box was already working, the VPN container has stopped: open a terminal in the folder you installed into and run <code>docker compose up -d</code>.</p>
+    <p class="cause">{{.Error}}</p>
+    <p>Give it a few seconds; the panel starts right after this page does, and this page checks again by itself.</p>
+    <p>If it stays red, the panel container has stopped. Open a terminal in the folder you installed into and run <code>docker compose up -d</code>.</p>
   </div>
   {{else}}
   <div class="verdict wait">
