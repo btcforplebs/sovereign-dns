@@ -148,6 +148,9 @@ check "only the box's image left: treated as no box (rc=$rc, got $out)" test "$r
 newenv "$tmp/i.env"
 out=$(docker() { echo '{}'; }; FP_DEFAULT_PORT=$base nvpn_listen_port "$tmp/i.env" 2>/dev/null); rc=$?
 check "box without a 51820/udp binding: probes as a fresh install (rc=$rc, got $out)" test "$rc" = 0 -a "$out" = "$base"
+newenv "$tmp/i2.env"
+out=$(docker() { echo null; }; FP_DEFAULT_PORT=$base nvpn_listen_port "$tmp/i2.env" 2>/dev/null); rc=$?
+check "box with no port bindings at all (null): probes as a fresh install (rc=$rc, got $out)" test "$rc" = 0 -a "$out" = "$base"
 
 # No docker command on PATH: can't tell whether a box exists, so don't probe.
 newenv "$tmp/j.env"
