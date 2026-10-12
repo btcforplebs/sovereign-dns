@@ -4,8 +4,8 @@ NostrVPN is the transport and propagation layer — the mesh tunnel
 connecting every device, plus the mechanism that tells every device to use
 this DNS stack, automatically.
 
-- Built from the `nostr-vpn` repo, branch `network-dns-gui` — the feature
-  that carries an admin's DNS-node choice on the **signed mesh roster**
+- Built from the `nostr-vpn` repo at a pinned commit of the
+  `network-dns-gui` branch — the feature that carries an admin's DNS-node choice on the **signed mesh roster**
   (`dns-node`/`dns-override` tags), instead of relying on a third-party
   control plane like Tailscale's admin console.
 - Enforced admin-only in core (`set_network_dns`), so every client (CLI,

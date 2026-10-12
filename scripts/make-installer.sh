@@ -14,7 +14,8 @@ OUT="scripts/install.sh"
 MARKER="__PAYLOAD_BELOW__"
 
 payload_files() {
-  git ls-files | grep -v -x "$OUT"
+  # .githooks/ is for people working on the repo, not for installs.
+  git ls-files | grep -v -x "$OUT" | grep -v '^\.githooks/'
 }
 
 make_payload() {
@@ -27,6 +28,8 @@ b64_decode() {
 }
 
 if [[ "${1:-}" == "--check" ]]; then
+  # The pins are part of what --check guards, so one command proves both.
+  scripts/check-pins.sh >/dev/null || { scripts/check-pins.sh; exit 1; }
   [[ -f "$OUT" ]] || { echo "drift: $OUT does not exist"; exit 1; }
   tmp=$(mktemp -d)
   trap 'rm -rf "$tmp"' EXIT
@@ -50,6 +53,9 @@ if [[ "${1:-}" == "--check" ]]; then
   [[ "$status" == 0 ]] && echo "install.sh matches the tree"
   exit "$status"
 fi
+
+# Never ship an installer whose images or sources can change underneath it.
+scripts/check-pins.sh >/dev/null || { scripts/check-pins.sh; exit 1; }
 
 {
   cat << 'HEADER'
@@ -99,19 +105,30 @@ if [[ ! -f .env ]]; then
   echo "Pick a password for your Pi-hole admin dashboard (typing is hidden):"
   read -rs PIHOLE_PASSWORD
   echo
-  cat > .env << ENV
+  (umask 077; cat > .env) << ENV
 PIHOLE_PASSWORD=${PIHOLE_PASSWORD}
 TZ=UTC
 PIHOLE_WEB_PORT=80
 HUB_PORT=8080
 DOCS_PORT=8081
 WEB_UI_PORT=8082
-NVPN_REPO=https://github.com/btcforplebs/nostr-vpn.git
-NVPN_REF=network-dns-gui
 NVPN_TUN_IFACE=utun100
 RUST_LOG=info
 ENV
 fi
+
+# Older installs wrote NVPN_REF, NVPN_REPO or NVPN_COMMIT here. Nothing reads
+# them any more: the source and commit are literals in docker-compose.yml, so
+# .env cannot move what gets built. Drop them rather than leave settings that
+# look like they do something.
+if grep -Eq '^(NVPN_REF|NVPN_REPO|NVPN_COMMIT)=' .env; then
+  (umask 077; grep -Ev '^(NVPN_REF|NVPN_REPO|NVPN_COMMIT)=' .env > .env.tmp || true) && cat .env.tmp > .env && rm -f .env.tmp
+  echo "Removed old NostrVPN source settings from .env; the source and commit are pinned by the stack."
+fi
+
+# .env holds the Pi-hole password. Installs before this line wrote it with the
+# default umask (usually 644), so tighten it every run, not just on creation.
+chmod 600 .env
 
 HUB_PORT=$(grep '^HUB_PORT=' .env | cut -d= -f2 || true)
 HUB_PORT=${HUB_PORT:-8080}

@@ -9,8 +9,11 @@ services:
     build:
       context: ./nvpn
       args:
-        NVPN_REPO: ${NVPN_REPO:-https://github.com/btcforplebs/nostr-vpn.git}
-        NVPN_REF: ${NVPN_REF:-network-dns-gui}
+        NVPN_REPO: https://github.com/btcforplebs/nostr-vpn.git
+        # A full commit SHA, not a branch: the build checks it out exactly and
+        # fails if the fetched commit is anything else. Change the pin here,
+        # where it is visible, rather than in .env.
+        NVPN_COMMIT: fc0ab76574134809536bb2414ec3d5684cfd34a1
     container_name: sovereign-dns-nvpn
     restart: unless-stopped
     cap_add:
@@ -28,6 +31,9 @@ services:
       # its own mapping via STUN, which only works because the port below is
       # published.
       NVPN_ADVERTISED_ENDPOINT: ${NVPN_ADVERTISED_ENDPOINT:-}
+      # on: dial nvpn's two built-in public FIPS transit seeds (joins the
+      # public FIPS mesh). off: never dial them. See .env.example.
+      NVPN_FIPS_BOOTSTRAP: ${NVPN_FIPS_BOOTSTRAP:-on}
     # WireGuard underlay. Without this published, the container's only
     # address is the Docker-internal 172.28.53.10, which no other device can
     # reach and which STUN cannot map — peers then show as present (they
@@ -60,8 +66,8 @@ services:
     build:
       context: ./nvpn
       args:
-        NVPN_REPO: ${NVPN_REPO:-https://github.com/btcforplebs/nostr-vpn.git}
-        NVPN_REF: ${NVPN_REF:-network-dns-gui}
+        NVPN_REPO: https://github.com/btcforplebs/nostr-vpn.git
+        NVPN_COMMIT: fc0ab76574134809536bb2414ec3d5684cfd34a1
     container_name: sovereign-dns-web
     restart: unless-stopped
     entrypoint: ["/usr/local/bin/nvpn-web"]
@@ -90,7 +96,9 @@ services:
   # listeningMode=BIND is what keeps the two from colliding — same pattern the
   # nostr-vpn repo's own network-DNS e2e uses (dnsmasq --bind-interfaces).
   pihole:
-    image: pihole/pihole:latest
+    # Pinned by digest (the tag is for people; Docker uses only the digest).
+    # Bump both together: scripts/check-pins.sh fails on an unpinned image.
+    image: pihole/pihole:2026.09.0@sha256:5b9c8cf51de7d6d3f2240dbe72baf5f06e1fd39cb4d77a99fab4fa13e23bd1be
     container_name: sovereign-dns-pihole
     restart: unless-stopped
     network_mode: service:nvpn
@@ -106,6 +114,13 @@ services:
       FTLCONF_dns_interface: ${NVPN_TUN_IFACE:-utun100}
       FTLCONF_dns_listeningMode: BIND
       FTLCONF_dns_dnssec: "true"
+      # No NTP server. Stock FTL listens on 0.0.0.0:123 and [::]:123, which
+      # serves time to every mesh device; the box has no reason to. One line
+      # per address family: each closes only its own socket. ntp.sync (the
+      # box's own outbound client) is separate and stays on.
+      # scripts/check-pins.sh fails if either line is lost.
+      FTLCONF_ntp_ipv4_active: "false"
+      FTLCONF_ntp_ipv6_active: "false"
       # The web UI is reachable over the mesh at http://<mesh-ip>/admin
       FTLCONF_webserver_port: ${PIHOLE_WEB_PORT:-80}
     volumes:
@@ -130,23 +145,27 @@ services:
   # validating. Internal-only — nothing is published to the host or the mesh;
   # only Pi-hole talks to it.
   unbound:
-    image: mvance/unbound:latest
+    # Built from unbound/Dockerfile: a digest-pinned Alpine base with exact
+    # package versions, native on arm64 and amd64. scripts/check-pins.sh fails
+    # if either pin goes missing. It replaces mvance/unbound, which is
+    # amd64-only and ran under emulation on Apple Silicon until that emulation
+    # broke. No forward-zone exists anywhere in the image's config, so nothing
+    # needs mounting over it.
+    build:
+      context: ./unbound
     container_name: sovereign-dns-unbound
     restart: unless-stopped
-    volumes:
-      # The stock image ships an active `forward-zone: "."` sending every
-      # query to Cloudflare over DoT, which would make this stack a Cloudflare
-      # client rather than a resolver. Overriding that file with an empty one
-      # restores real recursion from the root servers. See the file itself.
-      - ./unbound/forward-records.conf:/opt/unbound/etc/unbound/forward-records.conf:ro
     networks:
       dns-internal:
         ipv4_address: 172.28.53.11
     healthcheck:
-      test: ["CMD-SHELL", "drill @127.0.0.1 cloudflare.com >/dev/null 2>&1 || dig @127.0.0.1 cloudflare.com >/dev/null 2>&1"]
+      # Resolves a never-before-seen name every run, so it fails as soon as
+      # recursion breaks instead of answering from cache. See the script.
+      test: ["CMD", "/usr/local/bin/healthcheck.sh"]
       interval: 30s
       timeout: 10s
-      retries: 5
+      retries: 3
+      start_period: 20s
 
   # Landing page: what's running, the real URLs with the mesh IP filled in,
   # and the invite command that otherwise only exists in `docker compose logs`.
@@ -179,14 +198,15 @@ services:
   # Self-hosted docs site (mdBook) — explains the whole stack in plain
   # language plus the technical detail behind each layer. Runs standalone;
   # no dependency on the other services, so it's up even before you've
-  # joined the mesh.
+  # joined the mesh. Loopback only, like the hub and the web UI: nothing on
+  # the LAN needs it, and scripts/check-pins.sh allows no other publish.
   docs:
     build:
       context: ./docs
     container_name: sovereign-dns-docs
     restart: unless-stopped
     ports:
-      - "${DOCS_PORT:-8081}:80"
+      - "127.0.0.1:${DOCS_PORT:-8081}:80"
 
 networks:
   dns-internal:
