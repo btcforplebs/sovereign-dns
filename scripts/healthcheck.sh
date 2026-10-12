@@ -66,15 +66,18 @@ fi
 
 head_ "Layer 1 — Unbound: recursion, not forwarding"
 
-# The whole sovereignty claim. The stock mvance/unbound image ships an active
-# `forward-zone: "."` to Cloudflare DoT; if that ever comes back (base image
-# change, missing bind mount) every query silently goes to a third party while
-# everything else still looks perfectly healthy. Read the whole directory, not
-# two names: the generated unbound.conf also includes a-records.conf and
-# srv-records.conf, and a forward-zone in either one forwards just the same.
-# -D skip: the image copies /dev/random and friends into dev/ here.
-forwarders=$(docker exec "$UNBOUND" sh -lc \
-  'grep -rhE -D skip "^[[:space:]]*forward-(zone|addr):" /opt/unbound/etc/unbound/ 2>/dev/null' 2>/dev/null)
+# The whole sovereignty claim. A `forward-zone` anywhere in Unbound's config
+# (a base image change, a stray mount, an edit) sends every query to a third
+# party while everything else still looks perfectly healthy. Read the whole
+# config directory, not one name, and refuse an include: that points outside
+# it, since that file would forward just the same without being read here.
+# Fails closed: stderr is kept, so a container that cannot exec or a grep that
+# cannot read reports as a failure rather than as "no forwarder found".
+forwarders=$(docker exec "$UNBOUND" sh -c '
+  test -r /etc/unbound/unbound.conf || { echo "cannot read /etc/unbound/unbound.conf"; exit; }
+  grep -rhE "^[[:space:]]*forward-(zone|addr):" /etc/unbound/; [ $? -le 1 ] || echo "grep could not read /etc/unbound"
+  grep -rhE "^[[:space:]]*include(-toplevel)?:" /etc/unbound/ | grep -vE "include(-toplevel)?:[[:space:]]*\"?/etc/unbound/"
+  ' 2>&1)
 if [[ -z "$forwarders" ]]; then
   ok "no forward-zone configured (Unbound recurses from the root)"
 else

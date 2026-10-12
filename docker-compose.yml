@@ -145,25 +145,27 @@ services:
   # validating. Internal-only — nothing is published to the host or the mesh;
   # only Pi-hole talks to it.
   unbound:
-    # amd64-only, and the last release is from 2024-10: it runs under emulation
-    # on Apple Silicon and won't start on arm64 Linux without qemu.
-    image: mvance/unbound:1.22.0@sha256:76906da36d1806f3387338f15dcf8b357c51ce6897fb6450d6ce010460927e90
+    # Built from unbound/Dockerfile: a digest-pinned Alpine base with exact
+    # package versions, native on arm64 and amd64. scripts/check-pins.sh fails
+    # if either pin goes missing. It replaces mvance/unbound, which is
+    # amd64-only and ran under emulation on Apple Silicon until that emulation
+    # broke. No forward-zone exists anywhere in the image's config, so nothing
+    # needs mounting over it.
+    build:
+      context: ./unbound
     container_name: sovereign-dns-unbound
     restart: unless-stopped
-    volumes:
-      # The stock image ships an active `forward-zone: "."` sending every
-      # query to Cloudflare over DoT, which would make this stack a Cloudflare
-      # client rather than a resolver. Overriding that file with an empty one
-      # restores real recursion from the root servers. See the file itself.
-      - ./unbound/forward-records.conf:/opt/unbound/etc/unbound/forward-records.conf:ro
     networks:
       dns-internal:
         ipv4_address: 172.28.53.11
     healthcheck:
-      test: ["CMD-SHELL", "drill @127.0.0.1 cloudflare.com >/dev/null 2>&1 || dig @127.0.0.1 cloudflare.com >/dev/null 2>&1"]
+      # Resolves a never-before-seen name every run, so it fails as soon as
+      # recursion breaks instead of answering from cache. See the script.
+      test: ["CMD", "/usr/local/bin/healthcheck.sh"]
       interval: 30s
       timeout: 10s
-      retries: 5
+      retries: 3
+      start_period: 20s
 
   # Landing page: what's running, the real URLs with the mesh IP filled in,
   # and the invite command that otherwise only exists in `docker compose logs`.

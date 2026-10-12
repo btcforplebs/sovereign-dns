@@ -413,6 +413,22 @@ for df in $dockerfiles; do
           pinned_ref "$a" || fail "$df unpinned ref in: $cmd"
         done
         [[ "${words[1]}" == fetch && "$refs" == 0 ]] && fail "$df git fetch names no commit: $cmd" ;;
+      # apk installs from the repositories the digest-pinned base image names,
+      # so the base pins the Alpine branch; each package must also be pinned
+      # to its exact version and revision (name=1.2.3-r0). A bare name, ~, <
+      # or > lets a rebuild install whatever that branch carries that day.
+      # When Alpine retires a pinned revision the build fails rather than
+      # drifting. Flags are an allowlist: --repository or -X adds a source.
+      apk\ add\ *)
+        flags_allowed "$cmd" --no-cache
+        read -ra words <<<"$cmd"; pkgs=0
+        for a in "${words[@]:2}"; do
+          case "$a" in -*) continue ;; esac
+          pkgs=$((pkgs+1))
+          grep -Eqx '[a-z0-9][a-z0-9._+-]*=[0-9][0-9A-Za-z._]*-r[0-9]+' <<<"$a" \
+            || fail "$df apk package $a is not pinned to an exact version (name=version-rN): $cmd"
+        done
+        [[ "$pkgs" -gt 0 ]] || fail "$df apk add names no package: $cmd" ;;
       mdbook\ build*|git\ init*|git\ rev-parse*|\
       cd\ *|cp\ *|mv\ *|rm\ *|mkdir\ *|ln\ *|chmod\ *|chown\ *|test\ *|\
       echo\ *|printf\ *|grep\ *|set\ *|exit|exit\ *|fi|true|false|\
@@ -515,9 +531,9 @@ done < <(sed -nE "s/^[[:space:]]*(-[[:space:]]*)?[\"']?(FTLCONF_[A-Za-z0-9_]+).*
 grep -Eq '^[[:space:]]+env_file[[:space:]]*:' "$loaded" && fail "a compose service uses env_file:, whose contents this gate does not read"
 
 # What a service can reach and be reached by is as much a part of the box's
-# exposure as the three FTLCONF values: a bind mount can replace
-# forward-records.conf (the file that stops Unbound forwarding to a third
-# party) or drop config into /etc/dnsmasq.d, a published port lands in the
+# exposure as the three FTLCONF values: a bind mount can drop a forward-zone
+# into /etc/unbound (sending every query to a third party) or config into
+# /etc/dnsmasq.d, a published port lands in the
 # host netns where the listener inventory never looks, and network_mode or a
 # new network moves a service out of, or adds an interface to, nvpn's netns.
 # Default-deny, like RUN commands: every service, every service key, every
@@ -583,8 +599,6 @@ pihole	cap_add	NET_BIND_SERVICE
 pihole	volumes	source=pihole-config;target=/etc/pihole;type=volume;volume={}
 pihole	volumes	pihole-config:/etc/pihole
 unbound	networks	dns-internal
-unbound	volumes	read_only=true;source=./unbound/forward-records.conf;target=/opt/unbound/etc/unbound/forward-records.conf;type=bind
-unbound	volumes	./unbound/forward-records.conf:/opt/unbound/etc/unbound/forward-records.conf:ro
 ALLOW
 )
 surface_files="$loaded"
