@@ -15,6 +15,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -40,6 +42,8 @@ type config struct {
 	piholeWebURL string // what the browser should open, filled with the mesh IP
 	docsURL      string // what the browser should open
 	envSettings  []setting
+	mock         string // HUB_MOCK: render a canned state instead of probing (screenshots, demos)
+	checkName    string // unique name a device can look up to prove it resolves through Pi-hole
 }
 
 type setting struct {
@@ -112,31 +116,21 @@ type page struct {
 	OverrideState string
 	Error         string
 	GeneratedAt   string
+
+	// Raw facts behind the tiles. The setup wizard (wizard.go) decides which
+	// step a newcomer is on from these, so it never re-probes anything.
+	DaemonUp  bool
+	PanelUp   bool
+	PiholeUp  bool
+	UnboundUp bool
+	Covered   int // devices that actually get DNS through this box
+	CheckName string
+	FirstRun  bool // no device besides this box has ever joined
 }
 
 func main() {
 	cfg := loadConfig()
-	tmpl := template.Must(template.New("page").Parse(pageHTML))
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/status", func(w http.ResponseWriter, r *http.Request) {
-		data := cfg.buildPage(r.Context())
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(data); err != nil {
-			log.Printf("hub: encoding status: %v", err)
-		}
-	})
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/" {
-			http.NotFound(w, r)
-			return
-		}
-		data := cfg.buildPage(r.Context())
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		if err := tmpl.Execute(w, data); err != nil {
-			log.Printf("hub: rendering page: %v", err)
-		}
-	})
+	mux := newMux(cfg)
 
 	log.Printf("hub: listening on %s", cfg.listen)
 	server := &http.Server{
@@ -147,11 +141,55 @@ func main() {
 	log.Fatal(server.ListenAndServe())
 }
 
+// newMux wires the routes. Split from main so tests can serve a request
+// against a config whose probes point at nothing.
+func newMux(cfg config) *http.ServeMux {
+	tmpl := template.Must(template.New("page").Parse(pageHTML))
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/status", func(w http.ResponseWriter, r *http.Request) {
+		data := cfg.buildPage(r.Context())
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(data); err != nil {
+			log.Printf("hub: encoding status: %v", err)
+		}
+	})
+	// The dashboard, always. "/" also lands here once at least one device has
+	// joined; before that it sends a newcomer to the wizard, because a status
+	// grid means nothing to someone who has not added a device yet.
+	mux.HandleFunc("/dashboard", func(w http.ResponseWriter, r *http.Request) {
+		data := cfg.buildPage(r.Context())
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		if err := tmpl.Execute(w, data); err != nil {
+			log.Printf("hub: rendering page: %v", err)
+		}
+	})
+	mux.HandleFunc("/setup", cfg.serveWizard)
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		data := cfg.buildPage(r.Context())
+		if data.FirstRun {
+			http.Redirect(w, r, "/setup", http.StatusFound)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		if err := tmpl.Execute(w, data); err != nil {
+			log.Printf("hub: rendering page: %v", err)
+		}
+	})
+	return mux
+}
+
 func loadConfig() config {
 	webPort := env("WEB_UI_PORT", "8082")
 	docsPort := env("DOCS_PORT", "8081")
 	piholePort := env("PIHOLE_WEB_PORT", "80")
 	return config{
+		mock:        env("HUB_MOCK", ""),
+		checkName:   newCheckName(),
 		listen:      env("HUB_LISTEN", ":8080"),
 		panelURL:    fmt.Sprintf("http://localhost:%s", webPort),
 		panelAPI:    env("PANEL_API", "http://sovereign-dns-web:8081"),
@@ -189,18 +227,35 @@ func (c config) buildPage(ctx context.Context) page {
 		panelUp                     bool
 	)
 
-	wg.Add(5)
-	go func() { defer wg.Done(); state, tickErr = c.fetchTick(ctx) }()
-	go func() { defer wg.Done(); panelUp = probeHTTP(ctx, c.panelAPI+"/api/health") }()
-	go func() { defer wg.Done(); piholeUp = probeHTTP(ctx, "http://"+c.piholeAddr+"/admin/login") }()
-	go func() { defer wg.Done(); docsUp = probeHTTP(ctx, "http://"+c.docsAddr+"/") }()
-	go func() { defer wg.Done(); unboundUp = probeDNS(ctx, c.unboundAddr) }()
-	wg.Wait()
+	if c.mock != "" {
+		m := mockState(c.mock)
+		state, tickErr = m.tick, m.tickErr
+		panelUp, piholeUp, docsUp, unboundUp = m.panelUp, m.piholeUp, m.docsUp, m.unboundUp
+	} else {
+		wg.Add(5)
+		go func() { defer wg.Done(); state, tickErr = c.fetchTick(ctx) }()
+		go func() { defer wg.Done(); panelUp = probeHTTP(ctx, c.panelAPI+"/api/health") }()
+		go func() { defer wg.Done(); piholeUp = probeHTTP(ctx, "http://"+c.piholeAddr+"/admin/login") }()
+		go func() { defer wg.Done(); docsUp = probeHTTP(ctx, "http://"+c.docsAddr+"/") }()
+		go func() { defer wg.Done(); unboundUp = probeDNS(ctx, c.unboundAddr) }()
+		wg.Wait()
+	}
 
 	p := page{
 		PanelURL:    c.panelURL,
 		Settings:    c.envSettings,
 		GeneratedAt: time.Now().Format("15:04:05"),
+		DaemonUp:    state.DaemonRunning,
+		PanelUp:     panelUp,
+		PiholeUp:    piholeUp,
+		UnboundUp:   unboundUp,
+		CheckName:   c.checkName,
+		// "No device has joined" is only knowable when the panel answered.
+		// If it did not, this is a box in an unknown state, and the
+		// dashboard (which shows the error) is the right page for that;
+		// sending the reader to the wizard would tell an established box
+		// it is brand new.
+		FirstRun: tickErr == nil,
 	}
 	if tickErr != nil {
 		p.Error = "Can't reach the VPN control panel, so device and network details are unavailable: " + tickErr.Error()
@@ -263,6 +318,8 @@ func (c config) buildPage(ctx context.Context) page {
 			})
 		}
 		total := len(p.Devices)
+		p.Covered = carrying
+		p.FirstRun = total == 0
 		p.MeshSummary = fmt.Sprintf("%d/%d reachable", carrying, total)
 		switch {
 		case total == 0:
@@ -291,6 +348,18 @@ func (c config) buildPage(ctx context.Context) page {
 		p.PiholeURL = fmt.Sprintf("http://%s/admin", meshIP)
 	}
 	return p
+}
+
+// newCheckName is a name nobody else will ever look up, so finding it in
+// Pi-hole's query log proves the device asked this box and not its old
+// resolver. It is fixed for the life of the process so the wizard page can
+// keep showing the same one across refreshes.
+func newCheckName() string {
+	var b [3]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "sovereign-check.test"
+	}
+	return fmt.Sprintf("sovereign-check-%s.test", hex.EncodeToString(b[:]))
 }
 
 func boolTile(name string, ok bool, up, down string) tile {
