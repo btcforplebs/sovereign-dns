@@ -95,6 +95,8 @@ type fakePanel struct {
 	ignore     bool // accept writes without applying them
 	noNode     bool // no DNS device chosen yet
 	decoyFirst bool // list an inactive network before the active one
+	noActive   bool // leave the top-level networkId blank
+	noNetworks bool // answer with an empty networks list
 	writes     []*http.Request
 	bodies     []map[string]any
 }
@@ -118,10 +120,17 @@ func (f *fakePanel) handler() http.Handler {
 				"localIsAdmin": true, "dnsOverride": true,
 			}}, networks...)
 		}
+		active := "9683dbda"
+		if f.noActive {
+			active = ""
+		}
+		if f.noNetworks {
+			networks = []map[string]any{}
+		}
 		return map[string]any{
 			"daemonRunning": true,
 			"ownNpub":       "npub1box",
-			"networkId":     "9683dbda",
+			"networkId":     active,
 			"networks":      networks,
 		}
 	}
@@ -327,5 +336,40 @@ func TestDNSSwitchTargetsActiveNetwork(t *testing.T) {
 	post(newMux(cfg), url.Values{"csrf": {cfg.csrfToken}, "override": {"off"}, "confirm": {"yes"}}, nil)
 	if len(f.bodies) != 1 || f.bodies[0]["networkId"] != "network-1" {
 		t.Fatalf("wrote to %v, want network-1", f.bodies)
+	}
+}
+
+// With several networks and no way to tell which is running, the switch must
+// refuse rather than fall back to the first one listed.
+func TestDNSSwitchRefusesAmbiguousNetwork(t *testing.T) {
+	f := &fakePanel{override: true, decoyFirst: true, noActive: true}
+	cfg := panelConfig(t, f)
+	mux := newMux(cfg)
+	body := get(t, mux, "/dashboard").Body.String()
+	if !strings.Contains(body, `<span class="pill unknown">unknown</span>`) || strings.Contains(body, `action="/dns"`) {
+		t.Fatalf("ambiguous network: switch still offered or state not unknown:\n%s", body)
+	}
+	if !strings.Contains(body, "doesn&#39;t say which one is running") {
+		t.Fatalf("ambiguous network: reason not shown:\n%s", body)
+	}
+	rec := post(mux, url.Values{"csrf": {cfg.csrfToken}, "override": {"off"}, "confirm": {"yes"}}, nil)
+	if rec.Code != http.StatusConflict || len(f.writes) != 0 {
+		t.Fatalf("ambiguous network: POST %d, %d writes (%v); want 409 and none", rec.Code, len(f.writes), f.bodies)
+	}
+}
+
+// A panel that answers with no networks is up; the dashboard must say there is
+// no network rather than blame the panel under a "Control panel: up" tile.
+func TestDNSSwitchNoNetworkDoesNotBlamePanel(t *testing.T) {
+	f := &fakePanel{noNetworks: true}
+	cfg := panelConfig(t, f)
+	mux := newMux(cfg)
+	body := get(t, mux, "/dashboard").Body.String()
+	if strings.Contains(body, "isn&#39;t answering") || !strings.Contains(body, "No network has been joined") {
+		t.Fatalf("no networks: wrong reason on the dashboard:\n%s", body)
+	}
+	rec := post(mux, url.Values{"csrf": {cfg.csrfToken}, "override": {"on"}, "confirm": {"yes"}}, nil)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "No network has been joined") || len(f.writes) != 0 {
+		t.Fatalf("no networks: POST %d, %d writes", rec.Code, len(f.writes))
 	}
 }

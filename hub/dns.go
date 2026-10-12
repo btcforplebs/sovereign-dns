@@ -49,6 +49,9 @@ func buildDNSControl(p page) dnsControl {
 	d := dnsControl{State: p.OverrideState, ResolverUp: p.PiholeUp && p.UnboundUp}
 	net := p.network
 	switch {
+	case net == nil && p.noNetwork != "":
+		d.Blocked = p.noNetwork
+		return d
 	case net == nil:
 		d.Blocked = "The control panel isn't answering, so the current setting is unknown. It can't be changed until the panel is back."
 		return d

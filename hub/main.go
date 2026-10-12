@@ -146,6 +146,9 @@ type page struct {
 
 	network *tickNetwork // the network the DNS switch acts on
 	ownNpub string
+	// Why network is nil although the panel answered. Empty means the panel
+	// itself is the problem.
+	noNetwork string
 }
 
 func main() {
@@ -305,11 +308,17 @@ func (c config) buildPage(ctx context.Context) page {
 	// Unknown until the panel says otherwise: a dead panel must not read as a
 	// default-looking "off".
 	p.OverrideState = "unknown"
+	if tickErr == nil && len(state.Networks) == 0 {
+		p.noNetwork = "No network has been joined or created yet, so there is nothing to switch. Set one up in the control panel first."
+	}
 	if len(state.Networks) > 0 {
-		net := activeNetwork(state)
+		net, matched := activeNetwork(state)
 		p.NetworkName = net.Name
 		p.PendingJoins = len(net.InboundJoinRequests)
-		if tickErr == nil {
+		if tickErr == nil && !matched {
+			p.noNetwork = "The control panel lists more than one network but doesn't say which one is running, so the switch can't tell which to change."
+		}
+		if tickErr == nil && matched {
 			p.network = &net
 			p.ownNpub = state.OwnNpub
 			p.OverrideState = "off"
@@ -400,14 +409,17 @@ func newCheckName() string {
 
 // activeNetwork is the network the daemon is running, which the panel names
 // at the top level of the tick. The DNS switch writes to it, so it must be
-// the one on screen, not whichever happens to be listed first.
-func activeNetwork(state tick) tickNetwork {
+// the one on screen, not whichever happens to be listed first. With several
+// networks and none matching (the top-level id blank or stale), there is no
+// right answer: matched is false and the switch refuses rather than guess.
+// The first network is still returned so the page has something to show.
+func activeNetwork(state tick) (tickNetwork, bool) {
 	for _, n := range state.Networks {
 		if n.NetworkID != "" && n.NetworkID == state.NetworkID {
-			return n
+			return n, true
 		}
 	}
-	return state.Networks[0]
+	return state.Networks[0], len(state.Networks) == 1
 }
 
 // noFraming stops another site from framing a page and steering a click onto
