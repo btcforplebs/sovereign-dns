@@ -489,7 +489,7 @@ fi
 pihole_env=$(awk '/^  pihole:[[:space:]]*$/ { inp = 1; next }
                   inp && /^  [^[:space:]#]/ { inp = 0 }
                   inp' "$loaded")
-for want in 'FTLCONF_dns_listeningMode BIND' 'FTLCONF_ntp_ipv4_active false' 'FTLCONF_ntp_ipv6_active false'; do
+for want in 'FTLCONF_dns_listeningMode BIND' 'FTLCONF_ntp_ipv4_active false' 'FTLCONF_ntp_ipv6_active false' 'FTLCONF_ntp_sync_active false'; do
   read -r key val <<<"$want"
   grep -Eq "^[[:space:]]*(-[[:space:]]*)?${key}[[:space:]]*[:=][[:space:]]*[\"']?${val}[\"']?[[:space:]]*(#.*)?$" <<<"$pihole_env" \
     || fail "pihole must set $key to a literal $val in the compose files the installer loads"
