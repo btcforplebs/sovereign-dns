@@ -123,6 +123,7 @@ func (c config) serveWizard(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, wz.StateKey)
 		return
 	}
+	noFraming(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := wizardTmpl.Execute(w, wz); err != nil {
 		log.Printf("hub: rendering wizard: %v", err)

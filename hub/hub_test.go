@@ -91,25 +91,38 @@ func TestStateKeyTracksPiholeURL(t *testing.T) {
 // applies /api/set_network_dns the way the real route does, recording every
 // write so a test can prove one did or did not happen.
 type fakePanel struct {
-	override bool
-	ignore   bool // accept writes without applying them
-	writes   []*http.Request
-	bodies   []map[string]any
+	override   bool
+	ignore     bool // accept writes without applying them
+	noNode     bool // no DNS device chosen yet
+	decoyFirst bool // list an inactive network before the active one
+	writes     []*http.Request
+	bodies     []map[string]any
 }
 
 func (f *fakePanel) handler() http.Handler {
 	mux := http.NewServeMux()
 	state := func() map[string]any {
+		node := "npub1box"
+		if f.noNode {
+			node = ""
+		}
+		networks := []map[string]any{{
+			"id": "network-1", "name": "home", "networkId": "9683dbda",
+			"localIsAdmin": true, "dnsNodeNpub": node,
+			"dnsOverride": f.override, "localIsDnsNode": !f.noNode,
+			"participants": []map[string]any{{"alias": "laptop", "state": "online", "reachable": true}},
+		}}
+		if f.decoyFirst {
+			networks = append([]map[string]any{{
+				"id": "network-0", "name": "old", "networkId": "11111111",
+				"localIsAdmin": true, "dnsOverride": true,
+			}}, networks...)
+		}
 		return map[string]any{
 			"daemonRunning": true,
 			"ownNpub":       "npub1box",
 			"networkId":     "9683dbda",
-			"networks": []map[string]any{{
-				"id": "network-1", "name": "home", "networkId": "9683dbda",
-				"localIsAdmin": true, "dnsNodeNpub": "npub1box",
-				"dnsOverride": f.override, "localIsDnsNode": true,
-				"participants": []map[string]any{{"alias": "laptop", "state": "online", "reachable": true}},
-			}},
+			"networks":      networks,
 		}
 	}
 	mux.HandleFunc("/api/tick", func(w http.ResponseWriter, r *http.Request) {
@@ -281,5 +294,38 @@ func TestStatusJSONOmitsCSRFToken(t *testing.T) {
 	cfg := panelConfig(t, &fakePanel{override: true})
 	if body := get(t, newMux(cfg), "/api/status").Body.String(); strings.Contains(body, cfg.csrfToken) {
 		t.Fatalf("/api/status leaks the CSRF token")
+	}
+}
+
+// A framed dashboard would let another site steer a click onto the confirm
+// button, which no token or origin check can tell apart from a real one.
+func TestPagesRefuseFraming(t *testing.T) {
+	mux := newMux(panelConfig(t, &fakePanel{override: true}))
+	for _, path := range []string{"/", "/dashboard", "/dashboard?confirm=dns-off", "/setup"} {
+		h := get(t, mux, path).Header()
+		if h.Get("X-Frame-Options") != "DENY" || !strings.Contains(h.Get("Content-Security-Policy"), "frame-ancestors 'none'") {
+			t.Errorf("%s can be framed: %v", path, h)
+		}
+	}
+}
+
+// Turning off must not quietly pick a DNS device the reader never chose.
+func TestDNSOffKeepsUnsetNode(t *testing.T) {
+	f := &fakePanel{override: true, noNode: true}
+	cfg := panelConfig(t, f)
+	post(newMux(cfg), url.Values{"csrf": {cfg.csrfToken}, "override": {"off"}, "confirm": {"yes"}}, nil)
+	if len(f.bodies) != 1 || f.bodies[0]["npub"] != "" {
+		t.Fatalf("off with no DNS node sent %v, want npub \"\"", f.bodies)
+	}
+}
+
+// The switch writes to the network the daemon is running, not whichever the
+// panel lists first.
+func TestDNSSwitchTargetsActiveNetwork(t *testing.T) {
+	f := &fakePanel{override: true, decoyFirst: true}
+	cfg := panelConfig(t, f)
+	post(newMux(cfg), url.Values{"csrf": {cfg.csrfToken}, "override": {"off"}, "confirm": {"yes"}}, nil)
+	if len(f.bodies) != 1 || f.bodies[0]["networkId"] != "network-1" {
+		t.Fatalf("wrote to %v, want network-1", f.bodies)
 	}
 }

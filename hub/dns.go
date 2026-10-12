@@ -77,7 +77,7 @@ func (p page) ConfirmingDNS() string {
 	switch {
 	case p.Confirm == "dns-off" && p.DNS.State == "on":
 		return "off"
-	case p.Confirm == "dns-on" && p.DNS.State != "on":
+	case p.Confirm == "dns-on" && p.DNS.State != "on" && !p.DNS.ResolverUp:
 		return "on"
 	}
 	return ""
@@ -143,11 +143,18 @@ func (c config) serveDNS(tmpl *template.Template) http.HandlerFunc {
 			return
 		}
 
+		// Turning on with no DNS device chosen makes this box the DNS device,
+		// which is what the entrypoint does on a fresh install. Turning off
+		// leaves the choice exactly as it was.
 		node := p.network.DNSNodeNpub
-		if node == "" {
+		if node == "" && want == "on" {
 			node = p.ownNpub
 		}
-		if err := c.setNetworkDNS(r.Context(), p.network.ID, node, want == "on"); err != nil {
+		// Not tied to the browser: if the tab closes during the reload, the
+		// panel may still apply the change, and the log must say what the
+		// panel answered rather than "cancelled".
+		ctx := context.WithoutCancel(r.Context())
+		if err := c.setNetworkDNS(ctx, p.network.ID, node, want == "on"); err != nil {
 			log.Printf("hub: turning network DNS %s: %v", want, err)
 			p = c.buildPage(r.Context())
 			p.CSRF = c.csrfToken
@@ -168,6 +175,7 @@ func needsConfirm(want string, d dnsControl) bool {
 }
 
 func render(w http.ResponseWriter, tmpl *template.Template, p page, status int) {
+	noFraming(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
 	if err := tmpl.Execute(w, p); err != nil {

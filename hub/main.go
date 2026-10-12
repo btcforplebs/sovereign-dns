@@ -181,6 +181,7 @@ func newMux(cfg config) *http.ServeMux {
 		data := cfg.buildPage(r.Context())
 		data.CSRF = cfg.csrfToken
 		data.Confirm = r.URL.Query().Get("confirm")
+		noFraming(w)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		if err := tmpl.Execute(w, data); err != nil {
 			log.Printf("hub: rendering page: %v", err)
@@ -199,6 +200,7 @@ func newMux(cfg config) *http.ServeMux {
 			return
 		}
 		data.CSRF = cfg.csrfToken
+		noFraming(w)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		if err := tmpl.Execute(w, data); err != nil {
 			log.Printf("hub: rendering page: %v", err)
@@ -304,7 +306,7 @@ func (c config) buildPage(ctx context.Context) page {
 	// default-looking "off".
 	p.OverrideState = "unknown"
 	if len(state.Networks) > 0 {
-		net := state.Networks[0]
+		net := activeNetwork(state)
 		p.NetworkName = net.Name
 		p.PendingJoins = len(net.InboundJoinRequests)
 		if tickErr == nil {
@@ -394,6 +396,26 @@ func newCheckName() string {
 		return "sovereign-check.test"
 	}
 	return fmt.Sprintf("sovereign-check-%s.test", hex.EncodeToString(b[:]))
+}
+
+// activeNetwork is the network the daemon is running, which the panel names
+// at the top level of the tick. The DNS switch writes to it, so it must be
+// the one on screen, not whichever happens to be listed first.
+func activeNetwork(state tick) tickNetwork {
+	for _, n := range state.Networks {
+		if n.NetworkID != "" && n.NetworkID == state.NetworkID {
+			return n
+		}
+	}
+	return state.Networks[0]
+}
+
+// noFraming stops another site from framing a page and steering a click onto
+// one of its buttons. The tokens and origin checks cannot catch that: the
+// click really does come from this page.
+func noFraming(w http.ResponseWriter) {
+	w.Header().Set("X-Frame-Options", "DENY")
+	w.Header().Set("Content-Security-Policy", "frame-ancestors 'none'")
 }
 
 func boolTile(name string, ok bool, up, down string) tile {
