@@ -113,8 +113,20 @@ HUB_PORT=8080
 DOCS_PORT=8081
 WEB_UI_PORT=8082
 NVPN_TUN_IFACE=utun100
-RUST_LOG=info
+SOVEREIGN_DNS_LOG=info
 ENV
+fi
+
+# Older installs wrote RUST_LOG here. The stack now reads SOVEREIGN_DNS_LOG,
+# because compose lets a RUST_LOG in the caller's shell override .env. Carry
+# the value over so a deliberate setting survives, unless one is already set.
+if grep -q '^RUST_LOG=' .env; then
+  if grep -q '^SOVEREIGN_DNS_LOG=' .env; then
+    (umask 077; grep -v '^RUST_LOG=' .env > .env.tmp || true) && cat .env.tmp > .env && rm -f .env.tmp
+  else
+    (umask 077; sed 's/^RUST_LOG=/SOVEREIGN_DNS_LOG=/' .env > .env.tmp) && cat .env.tmp > .env && rm -f .env.tmp
+  fi
+  echo "Replaced RUST_LOG in .env with SOVEREIGN_DNS_LOG, so your shell's RUST_LOG cannot change the stack's logging."
 fi
 
 # Older installs wrote NVPN_REF, NVPN_REPO or NVPN_COMMIT here. Nothing reads
