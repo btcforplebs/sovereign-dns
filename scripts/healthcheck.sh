@@ -37,6 +37,19 @@ head_() { printf '\n\033[1m%s\033[0m\n' "$1"; }
 # real mesh client.
 dig_() { docker exec "$NVPN" dig "$@" 2>/dev/null; }
 
+# Runs a command with a deadline, so a stuck `docker exec` fails the check
+# instead of hanging it. macOS has no coreutils `timeout`; perl's alarm does
+# the same job there. Neither present means the command cannot run, which the
+# caller reports as a failure.
+with_timeout() {
+  local secs=$1; shift
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$secs" "$@"
+  else
+    perl -e 'alarm shift; exec @ARGV' "$secs" "$@"
+  fi
+}
+
 # Recursing from the root on a cold cache can take longer than dig's default
 # timeout, so a freshly restarted Unbound will fail a single-shot query even
 # though it is perfectly healthy. Retry before calling it a failure.
@@ -69,19 +82,33 @@ head_ "Layer 1 — Unbound: recursion, not forwarding"
 # The whole sovereignty claim. A `forward-zone` or `stub-zone` anywhere in
 # Unbound's config (a base image change, a stray mount, an edit) sends every
 # query to a third party while everything else still looks perfectly healthy.
-# Unbound's keywords are case-insensitive, so the match is too. Read the whole
-# config directory, not one name, and refuse an include: that points outside
-# it, since that file would forward just the same without being read here. The
-# include path itself stays case-sensitive: /ETC/UNBOUND is a different place.
-# Fails closed: stderr is kept, so a container that cannot exec or a grep that
-# cannot read reports as a failure rather than as "no forwarder found".
-forwarders=$(docker exec "$UNBOUND" sh -c '
-  test -r /etc/unbound/unbound.conf || { echo "cannot read /etc/unbound/unbound.conf"; exit; }
-  grep -rhiE "^[[:space:]]*(forward|stub)-(zone|addr|host):" /etc/unbound/; [ $? -le 1 ] || echo "grep could not read /etc/unbound"
-  grep -rhiE "^[[:space:]]*include(-toplevel)?:" /etc/unbound/ | grep -vE "[Ii][Nn][Cc][Ll][Uu][Dd][Ee](-[Tt][Oo][Pp][Ll][Ee][Vv][Ee][Ll])?:[[:space:]]*\"?/etc/unbound/"
+# So does a `root-hints:` file: our config uses Unbound's built-in hints, and
+# any other file means recursing down from someone else's roots. Unbound's
+# keywords are case-insensitive, so the match is too. Read the whole config
+# directory, not one name, and refuse an include: that points outside it, since
+# that file would forward just the same without being read here. The include
+# path itself stays case-sensitive: /ETC/UNBOUND is a different place.
+# Any symlink under /etc/unbound fails outright: a symlinked directory makes an
+# include look inside while the file lives anywhere. The symlink check runs
+# first so the dereferencing grep -R below can never meet a loop, and -R stays
+# so a loosened symlink check still cannot hide a file from the grep.
+# Fails closed: stderr is kept, the inner script must exit 0, and a timeout
+# bounds the exec, so a container that cannot exec, a grep that cannot read or
+# an exec that hangs reports as a failure rather than as "no forwarder found".
+forwarders=$(with_timeout 20 docker exec "$UNBOUND" sh -c '
+  test -r /etc/unbound/unbound.conf || { echo "cannot read /etc/unbound/unbound.conf"; exit 0; }
+  links=$(find /etc/unbound -type l 2>&1) || { echo "find could not read /etc/unbound: $links"; exit 0; }
+  [ -z "$links" ] || { echo "symlink in /etc/unbound:" $links; exit 0; }
+  grep -RhiE "^[[:space:]]*((forward|stub)-(zone|addr|host)|root-hints):" /etc/unbound/; [ $? -le 1 ] || echo "grep could not read /etc/unbound"
+  grep -RhiE "^[[:space:]]*include(-toplevel)?:" /etc/unbound/ | grep -vE "[Ii][Nn][Cc][Ll][Uu][Dd][Ee](-[Tt][Oo][Pp][Ll][Ee][Vv][Ee][Ll])?:[[:space:]]*\"?/etc/unbound/"
+  exit 0
   ' 2>&1)
-if [[ -z "$forwarders" ]]; then
-  ok "no forward-zone configured (Unbound recurses from the root)"
+rc=$?
+if [[ $rc -ne 0 ]]; then
+  bad "could not inspect Unbound's config (exit $rc — timed out or exec failed)" \
+      "$(echo "$forwarders" | tr '\n' ' ')"
+elif [[ -z "$forwarders" ]]; then
+  ok "no forward-zone, stub-zone or root-hints configured (Unbound recurses from the root)"
 else
   bad "Unbound is FORWARDING, not recursing — queries are going to a third party" \
       "$(echo "$forwarders" | tr '\n' ' ')"
