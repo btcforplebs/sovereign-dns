@@ -119,6 +119,12 @@ services:
       FTLCONF_dns_interface: ${NVPN_TUN_IFACE:-utun100}
       FTLCONF_dns_listeningMode: BIND
       FTLCONF_dns_dnssec: "true"
+      # Per-client rate limit, raised from FTL's 1000 a minute. Every device on
+      # the mesh is one client, and the busiest one already peaks near 833 a
+      # minute. Raised, not turned off: it is the only brake if a mesh peer
+      # floods the resolver. scripts/check-pins.sh fails if either value moves.
+      FTLCONF_dns_rateLimit_count: "5000"
+      FTLCONF_dns_rateLimit_interval: "60"
       # No NTP server. Stock FTL listens on 0.0.0.0:123 and [::]:123, which
       # serves time to every mesh device; the box has no reason to. One line
       # per address family: each closes only its own socket.

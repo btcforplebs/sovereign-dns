@@ -489,7 +489,7 @@ fi
 pihole_env=$(awk '/^  pihole:[[:space:]]*$/ { inp = 1; next }
                   inp && /^  [^[:space:]#]/ { inp = 0 }
                   inp' "$loaded")
-for want in 'FTLCONF_dns_listeningMode BIND' 'FTLCONF_ntp_ipv4_active false' 'FTLCONF_ntp_ipv6_active false' 'FTLCONF_ntp_sync_active false'; do
+for want in 'FTLCONF_dns_listeningMode BIND' 'FTLCONF_ntp_ipv4_active false' 'FTLCONF_ntp_ipv6_active false' 'FTLCONF_ntp_sync_active false' 'FTLCONF_dns_rateLimit_count 5000' 'FTLCONF_dns_rateLimit_interval 60'; do
   read -r key val <<<"$want"
   grep -Eq "^[[:space:]]*(-[[:space:]]*)?${key}[[:space:]]*[:=][[:space:]]*[\"']?${val}[\"']?[[:space:]]*(#.*)?$" <<<"$pihole_env" \
     || fail "pihole must set $key to a literal $val in the compose files the installer loads"
@@ -511,7 +511,7 @@ if [[ "$mode" == raw ]]; then
   [[ "$n" -le 1 ]] || fail "more than one auto-loaded compose file is tracked and this gate cannot tell which one compose would load without the compose CLI"
 fi
 
-# The three values above are pinned; the rest of the FTLCONF namespace is not,
+# The values above are pinned; the rest of the FTLCONF namespace is not,
 # and FTL has settings that open a listener or move upstreams just as well.
 # FTLCONF_misc_dnsmasq_lines passes dnsmasq config straight through. Allow the
 # keys this stack sets and fail the rest, the way RUN commands are handled.
@@ -521,7 +521,8 @@ while IFS= read -r k; do
   case "$k" in
     FTLCONF_webserver_api_password|FTLCONF_dns_upstreams|FTLCONF_dns_interface|\
     FTLCONF_dns_listeningMode|FTLCONF_dns_dnssec|FTLCONF_ntp_ipv4_active|\
-    FTLCONF_ntp_ipv6_active|FTLCONF_ntp_sync_active|FTLCONF_webserver_port) ;;
+    FTLCONF_ntp_ipv6_active|FTLCONF_ntp_sync_active|FTLCONF_dns_rateLimit_count|\
+    FTLCONF_dns_rateLimit_interval|FTLCONF_webserver_port) ;;
     *) fail "pihole sets $k, an FTL setting this gate has no rule for (add one if it is safe)" ;;
   esac
 done < <(sed -nE "s/^[[:space:]]*(-[[:space:]]*)?[\"']?(FTLCONF_[A-Za-z0-9_]+).*/\\2/p" "$loaded" | sort -u)
