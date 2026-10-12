@@ -83,7 +83,10 @@ head_ "Layer 1 — Unbound: recursion, not forwarding"
 # Unbound's config (a base image change, a stray mount, an edit) sends every
 # query to a third party while everything else still looks perfectly healthy.
 # So does a `root-hints:` file: our config uses Unbound's built-in hints, and
-# any other file means recursing down from someone else's roots. Unbound's
+# any other file means recursing down from someone else's roots. Recursion can
+# stay genuine and still leak: `dnstap-enable`/`dnstap-ip` stream every query
+# name in cleartext to a collector, and `redis-server-host` points the cache at
+# another machine. Neither belongs in this config, so both are red. Unbound's
 # keywords are case-insensitive, so the match is too. Read the whole config
 # directory, not one name, and refuse an include: that points outside it, since
 # that file would forward just the same without being read here. The include
@@ -99,7 +102,7 @@ forwarders=$(with_timeout 20 docker exec "$UNBOUND" sh -c '
   test -r /etc/unbound/unbound.conf || { echo "cannot read /etc/unbound/unbound.conf"; exit 0; }
   links=$(find /etc/unbound -type l 2>&1) || { echo "find could not read /etc/unbound: $links"; exit 0; }
   [ -z "$links" ] || { echo "symlink in /etc/unbound:" $links; exit 0; }
-  grep -RhiE "^[[:space:]]*((forward|stub)-(zone|addr|host)|root-hints):" /etc/unbound/; [ $? -le 1 ] || echo "grep could not read /etc/unbound"
+  grep -RhiE "^[[:space:]]*((forward|stub)-(zone|addr|host)|root-hints|dnstap-(enable|ip)|redis-server-host):" /etc/unbound/; [ $? -le 1 ] || echo "grep could not read /etc/unbound"
   grep -RhiE "^[[:space:]]*include(-toplevel)?:" /etc/unbound/ | grep -vE "[Ii][Nn][Cc][Ll][Uu][Dd][Ee](-[Tt][Oo][Pp][Ll][Ee][Vv][Ee][Ll])?:[[:space:]]*\"?/etc/unbound/"
   exit 0
   ' 2>&1)
@@ -108,9 +111,9 @@ if [[ $rc -ne 0 ]]; then
   bad "could not inspect Unbound's config (exit $rc — timed out or exec failed)" \
       "$(echo "$forwarders" | tr '\n' ' ')"
 elif [[ -z "$forwarders" ]]; then
-  ok "no forward-zone, stub-zone or root-hints configured (Unbound recurses from the root)"
+  ok "no forward-zone, stub-zone, root-hints, dnstap or redis cache configured (Unbound recurses from the root)"
 else
-  bad "Unbound is FORWARDING, not recursing — queries are going to a third party" \
+  bad "Unbound config sends lookups off the box (forwarder, foreign roots, dnstap or remote cache)" \
       "$(echo "$forwarders" | tr '\n' ' ')"
 fi
 
