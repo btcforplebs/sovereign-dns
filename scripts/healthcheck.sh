@@ -62,17 +62,47 @@ resolves_() {
   return 1
 }
 
+# A fixed name proves nothing about recursion: with serve-expired on, Unbound
+# keeps handing out expired answers for up to an hour after it loses the root
+# servers, so example.com stays green while every new lookup fails. A random
+# label under .com has never been cached, so it needs a real round trip to the
+# .com servers (NSEC3-signed, so no answer can be synthesized locally either).
+# NXDOMAIN or NOERROR passes; SERVFAIL or a timeout fails. Same idea as
+# unbound/healthcheck.sh, with a fresh label on each retry.
+fresh_() {
+  local server=$1 label
+  for _ in 1 2 3; do
+    label=$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')
+    dig_ +time=5 +tries=1 "@$server" "hc-$label.com" A | grep -qE 'status: (NXDOMAIN|NOERROR)' && return 0
+    sleep 2
+  done
+  return 1
+}
+
 head_ "Containers"
+# Running is not enough: a container whose own health check has gone red is
+# still "running". Containers without a health check (the panel) only need to
+# be up. A container that is down skips the behavioural checks below; one that
+# is up but not healthy fails here and the checks below still run, to say why.
+DOWN=0
 for c in "$NVPN" "$WEB" "$PIHOLE" "$UNBOUND"; do
-  state=$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null)
-  if [[ "$state" == "running" ]]; then
-    ok "$c is running"
-  else
+  read -r state health < <(docker inspect -f \
+    '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$c" 2>/dev/null)
+  if [[ "${state:-}" != "running" ]]; then
     bad "$c is not running" "state: ${state:-not found}"
+    DOWN=$((DOWN + 1))
+  elif [[ "$health" == "healthy" ]]; then
+    ok "$c is running and healthy"
+  elif [[ "$health" == "none" ]]; then
+    ok "$c is running (it has no health check)"
+  else
+    hint=""
+    [[ "$health" == "starting" ]] && hint="it has not passed its first check yet; wait and run this again"
+    bad "$c is running but its health check says: ${health:-unknown}" "$hint"
   fi
 done
 
-if [[ $FAIL -gt 0 ]]; then
+if [[ $DOWN -gt 0 ]]; then
   printf '\nStack is not up; skipping the behavioural checks.\n'
   exit 1
 fi
@@ -134,6 +164,13 @@ else
   bad "Unbound did not resolve example.com"
 fi
 
+if fresh_ "$UNBOUND_IP"; then
+  ok "Unbound resolves a never-seen name (a live lookup, not the cache)"
+else
+  bad "Unbound cannot resolve a never-seen name — recursion is broken" \
+      "cached names can still answer for up to an hour (serve-expired)"
+fi
+
 head_ "Layer 1 — DNSSEC validation"
 
 if dig_ +dnssec "@$UNBOUND_IP" cloudflare.com A | grep -q 'flags:.* ad'; then
@@ -180,6 +217,13 @@ if [[ -n "$MESH_IP" ]]; then
     ok "Pi-hole answers on the mesh address"
   else
     bad "Pi-hole did not answer on $MESH_IP — mesh clients cannot resolve"
+  fi
+
+  if fresh_ "$MESH_IP"; then
+    ok "a never-seen name resolves through the mesh address"
+  else
+    bad "a never-seen name does not resolve through $MESH_IP" \
+        "cached names can still answer for up to an hour (serve-expired)"
   fi
 
   blocked=$(dig_ +short "@$MESH_IP" doubleclick.net A | head -1)
