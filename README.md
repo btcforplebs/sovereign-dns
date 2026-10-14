@@ -59,19 +59,35 @@ The container prints its npub and a ready-made invite on first start:
 docker compose logs nvpn | grep -A8 'to add another device'
 ```
 
-On each phone/laptop, run the printed `nvpn join-manual ...` command —
-that queues a join request. Then approve it in the **control panel** at
-`http://localhost:8082` on the docker host (or via
-`docker exec sovereign-dns-nvpn nvpn add-device --device <joiner-npub> --publish`).
-Approval is deliberately manual: the invite is plain text, so auto-accepting
+To add a phone or laptop, open the hub at `http://localhost:8080` and use
+**Add a device**:
+
+1. **On the new device, make a join link.** Phone: open Nostr VPN, go to
+   *Join Network*, tap *Share* and AirDrop it to the box (no AirDrop: *Copy
+   Request* and get it across by cable or by typing it). Computer: run
+   `nvpn join-request --no-qr`. The link starts with `nvpn://join-request/`.
+   Treat it like a one-time password, not something to send through chat or
+   email. On its own it changes nothing on the box.
+2. **On the box, paste it** into *Add a device*. On a computer with a camera,
+   in Chrome or Edge, *Scan its QR code* reads the QR the phone shows instead.
+3. **Check the device ID and press Add.** The hub shows the device's name and
+   ID and does nothing until you press Add, which hands the link to the
+   control panel's own import route. The device is on the mesh a few
+   seconds later.
+
+Approval is deliberately manual: the link is plain text, so auto-accepting
 anyone holding it would remove the only access control the network has.
+Pressing Add is that approval. The old terminal path still works: on the
+device, run the `nvpn join-manual ...` command from
+`docker compose logs nvpn`, then on the box run
+`docker exec sovereign-dns-nvpn nvpn add-device --device <joiner-npub> --publish`.
 
 ### 2. Manage the mesh — browser, not terminal
 
 The `web` service runs NostrVPN's own control panel (`nvpn-web`, the same
 one the upstream Umbrel package ships) against the same config volume as
 the daemon: approve/reject join requests, add or remove devices and
-admins, rename networks, QR pairing codes. It has **no login of its own**,
+admins, rename networks. It has **no login of its own**,
 so compose publishes it only to the host's loopback
 (`127.0.0.1:${WEB_UI_PORT:-8082}`) — do not re-publish it to the LAN or
 the mesh.

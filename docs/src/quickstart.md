@@ -239,36 +239,39 @@ latest. If a tile stays red, see
 Adding a device takes three steps. You do the first on the new device,
 and the other two on the box.
 
-1. **Ask to join.** Under *Bring another device onto the mesh*, the
-   dashboard shows an invite: a command to run on the device you want to
-   add (see below for each kind of device). This only *asks* to join.
-   The device isn't on your network yet.
-2. **Approve it.** Back on the box, the dashboard shows
-   *"1 device(s) waiting to join — approve"*. Click it. That opens the
-   **Control Panel** (`http://localhost:8082`). Accept the request, but
-   only if you recognise the device.
+1. **Make a join link on the new device.**
+   - **iPhone, iPad or Android:** install Nostr VPN, open it, and go to
+     *Join Network*. It shows a QR code with *Copy Request* and *Share*
+     under it. Tap **Share** and AirDrop it to the box's computer. No
+     AirDrop? Tap **Copy Request** and get it across directly, by cable or
+     by typing it.
+   - **Mac, Windows or Linux:** install Nostr VPN, open a terminal and run
+     `nvpn join-request --no-qr`. Copy the line it prints.
 
-   Approval is never automatic, on purpose. The invite is plain text that
-   could be forwarded to anyone, so approving each device by hand is what
-   keeps strangers off your network.
-3. **Check it's connected.** Reload the dashboard. The device appears
-   under *Devices on this network*. If it says **"not covered by this
-   resolver"**, it's approved but can't reach the box yet; give it a
-   minute and reload.
+   The link starts with `nvpn://join-request/`. The device isn't on your
+   network yet. Treat the link like a one-time password: it carries a
+   secret the device uses to accept its approval, so don't send it through
+   chat or email. On its own it changes nothing on the box.
+2. **Paste it on the box.** On the dashboard (or step 2 of the setup
+   guide), paste the link into **Add a device**. If the box's computer has
+   a camera and you use Chrome or Edge, you can press **Scan its QR code**
+   and hold the phone's QR code up to it instead. The hub shows the
+   device's name and its device ID. Press **Add device**, but only if you
+   recognise it. The ID should match the one on the device: in the app it's
+   under *Join Network* → *Manual join*, on a computer it's the `device_id`
+   line of `nvpn status`.
 
-### Getting the invite onto each kind of device
+   Adding is never automatic, on purpose. The link is plain text that
+   could be forwarded to anyone, so pressing Add yourself is what keeps
+   strangers off your network.
+3. **Check it's connected.** The device appears under *Devices on this
+   network*. If it says **"not covered by this resolver"**, it's added
+   but can't reach the box yet. Make sure Nostr VPN is connected on the
+   device, give it a minute and reload.
 
-> **Placeholder: these steps are still being decided.** How each kind of
-> device joins (which app to install, and whether you scan a QR code or
-> paste the invite) is being tested on real phones and computers right
-> now. This section will give exact steps for each one once that's
-> settled.
->
-> - **iPhone and iPad:** *placeholder*
-> - **Android:** *placeholder*
-> - **Mac:** *placeholder*
-> - **Windows:** *placeholder*
-> - **Linux:** *placeholder*
+> **Phones join, but iPhones and iPads don't use the box for DNS yet.**
+> The Worth knowing section on the dashboard has the details. Step 7 shows
+> you whether a device's lookups really reach the box.
 
 ## Step 7: See the ads disappear
 

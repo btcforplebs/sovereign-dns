@@ -5,14 +5,14 @@ package main
 // answer and the single thing to do next:
 //
 //   1. Is everything running?        (Unbound, Pi-hole, VPN, control panel)
-//   2. Add your first device.        (invite command; phones are a placeholder)
-//   3. Approve it.                   (join request -> admin panel)
+//   2. Add your first device.        (paste or scan its join link)
+//   3. Approve it.                   (the review page Add button -> control panel)
 //   4. Does it really use the Pi-hole? (reachability + a name only it would ask)
 //
 // It is a view over the same page struct the dashboard renders from, so it
 // never probes anything itself and cannot disagree with the dashboard. Like
-// the rest of the hub it is read-only: every click that changes something
-// goes to the control panel or Pi-hole, which already own that change.
+// the rest of the hub it changes nothing itself: adding a device goes through
+// join.go to the control panel, which owns that change.
 
 import (
 	"fmt"
@@ -110,12 +110,14 @@ func buildWizard(p page, want int) wizardPage {
 func stateKey(p page) string {
 	return fmt.Sprintf("%t%t%t%t-%d-%d-%d-%t%t",
 		p.DaemonUp, p.PanelUp, p.PiholeUp, p.UnboundUp,
-		p.PendingJoins, len(p.Devices), p.Covered, p.InviteCommand != "", p.PiholeURL != "")
+		p.PendingJoins, len(p.Devices), p.Covered, p.AddReady, p.PiholeURL != "")
 }
 
 func (c config) serveWizard(w http.ResponseWriter, r *http.Request) {
 	data := c.buildPage(r.Context())
 	want, _ := strconv.Atoi(r.URL.Query().Get("step"))
+	data.CSRF = c.csrfToken
+	data.AddFrom = "setup"
 	wz := buildWizard(data, want)
 	if r.URL.Query().Get("format") == "key" {
 		// The page polls this. Plain text, one line, cheap.
@@ -130,7 +132,7 @@ func (c config) serveWizard(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-var wizardTmpl = template.Must(template.New("wizard").Parse(wizardHTML))
+var wizardTmpl = template.Must(template.Must(template.New("wizard").Parse(wizardHTML)).Parse(addCardHTML))
 
 const wizardHTML = `<!doctype html>
 <html lang="en">
@@ -205,6 +207,7 @@ const wizardHTML = `<!doctype html>
   nav.steps a.prev:hover { color: var(--ink); }
   nav.steps .spacer { flex: 1; }
   footer { color: var(--dim); font-size: 12px; margin-top: 30px; }
+{{template "addcss"}}
 </style>
 </head>
 <body>
@@ -278,32 +281,14 @@ const wizardHTML = `<!doctype html>
   {{/* ───────────────────────── STEP 2 ───────────────────────── */}}
   {{if eq .Step 2}}
   <h1>Add your first device</h1>
-  <p class="lede">A device joins by asking. It gets nothing until you approve it in the next step.</p>
+  <p class="lede">The new device makes a join link. Bring it here and you'll be asked to approve it.</p>
 
-  <div class="card">
-    <p class="kind">On a Mac, Windows or Linux computer</p>
-    {{if .InviteCommand}}
-    <ol class="todo">
-      <li>On that computer, install NostrVPN (the same app this box runs inside).</li>
-      <li>Open a terminal there and paste this, exactly:
-        <pre>{{.InviteCommand}}</pre>
-      </li>
-      <li>Come back here. The request shows up in the next step within a few seconds.</li>
-    </ol>
-    <p class="fine" style="color:var(--dim);font-size:14px;margin:14px 0 0">
-      The long code is this box's public identity and the short one is your network's name. Together they tell the device whom to ask. Neither is a secret; what matters is your approval.
-    </p>
+  <div class="card" id="add-device">
+    {{if .AddReady}}
+    {{template "addcard" .}}
     {{else}}
-    <p>Waiting for the VPN to start before an invite can be written. Go back to step 1 if this takes more than a minute.</p>
+    <p>Waiting for the VPN to start before a device can be added. Go back to step 1 if this takes more than a minute.</p>
     {{end}}
-  </div>
-
-  <div class="card">
-    <p class="kind">On an iPhone or Android phone</p>
-    <div class="placeholder">
-      <strong>Phones: coming, not here yet.</strong><br>
-      How a phone joins is still being decided. The method that lands here will be the one that passed a real test: a name looked up on the phone shows up in this box's log. Until then, start with a computer.
-    </div>
   </div>
 
   {{if .StepDone}}
@@ -340,7 +325,7 @@ const wizardHTML = `<!doctype html>
     <div class="row warn">
       <span class="dot"></span>
       <span><span class="name">No request yet</span><br>
-        <span class="what">Once the device runs the command from step 2, its request appears here within a few seconds. This page is watching.</span></span>
+        <span class="what">Paste the device's join link in step 2. You'll see which device it is and approve it with one click.</span></span>
     </div>
     {{end}}
   </div>

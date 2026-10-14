@@ -2,13 +2,14 @@
 // reach it, and how to add a device — the things that otherwise require
 // reading `docker compose logs` and knowing which container to exec into.
 //
-// It is read-only with one exception. Every mutable setting in this stack
+// It is read-only with two exceptions. Every mutable setting in this stack
 // already has an owner with a UI (devices in the control panel, blocklists in
 // Pi-hole, the rest in .env), so the hub launches those rather than
-// re-implementing them badly. The exception is the network DNS override, the
-// one setting this stack exists for: dns.go switches it through the control
-// panel's own API, behind the guards described there. The hub holds no
-// credentials and never touches the Docker socket: status comes from probing
+// re-implementing them badly. The exceptions both go through the control
+// panel's own API, behind the guards described in their files: the network
+// DNS override, the one setting this stack exists for (dns.go), and adding a
+// device from its join link (join.go), so a phone joins without a terminal.
+// The hub holds no credentials and never touches the Docker socket: status comes from probing
 // the services the same way a user would.
 //
 // Standard library only, on purpose. This page fronts an unauthenticated
@@ -119,7 +120,7 @@ type page struct {
 	OwnNpub       string
 	NetworkID     string
 	NetworkName   string
-	InviteCommand string
+	AddReady      bool // gates the Add-a-device card: this box knows its own device ID and network
 	Devices       []device
 	MeshSummary   string
 	MeshState     string
@@ -143,6 +144,7 @@ type page struct {
 	// confirmation (if any) the dashboard is asking for.
 	CSRF    string `json:"-"`
 	Confirm string `json:"-"`
+	AddFrom string `json:"-"` // where the add-device form returns to ("setup" or the dashboard)
 
 	network *tickNetwork // the network the DNS switch acts on
 	ownNpub string
@@ -167,7 +169,7 @@ func main() {
 // newMux wires the routes. Split from main so tests can serve a request
 // against a config whose probes point at nothing.
 func newMux(cfg config) *http.ServeMux {
-	tmpl := template.Must(template.New("page").Parse(pageHTML))
+	tmpl := template.Must(template.Must(template.New("page").Parse(pageHTML)).Parse(addCardHTML))
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/status", func(w http.ResponseWriter, r *http.Request) {
@@ -192,6 +194,7 @@ func newMux(cfg config) *http.ServeMux {
 	})
 	mux.HandleFunc("/setup", cfg.serveWizard)
 	mux.HandleFunc("/dns", cfg.serveDNS(tmpl))
+	mux.HandleFunc("/devices/add", cfg.serveAddDevice)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
@@ -332,7 +335,10 @@ func (c config) buildPage(ctx context.Context) page {
 
 		carrying := 0
 		for _, participant := range net.Participants {
-			if participant.State == "local" {
+			// This box itself. Its state only reads "local" once the daemon
+			// has settled; in the first seconds it can be anything, and
+			// counting it then tells the wizard a device has joined.
+			if participant.State == "local" || (participant.Npub != "" && participant.Npub == state.OwnNpub) {
 				continue
 			}
 			// A device only actually gets sovereign DNS if packets reach it,
@@ -375,10 +381,7 @@ func (c config) buildPage(ctx context.Context) page {
 		}
 		p.Tiles = append(p.Tiles, tile{Name: "Mesh devices", State: p.MeshState, Detail: p.MeshSummary})
 
-		if p.OwnNpub != "" && p.NetworkID != "" {
-			p.InviteCommand = fmt.Sprintf(
-				"nvpn join-manual --admin-device-id %s --network-id %s", p.OwnNpub, p.NetworkID)
-		}
+		p.AddReady = p.OwnNpub != "" && p.NetworkID != ""
 	}
 
 	p.DNS = buildDNSControl(p)

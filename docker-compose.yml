@@ -197,9 +197,9 @@ services:
 
   # Landing page: what's running, the real URLs with the mesh IP filled in,
   # and the invite command that otherwise only exists in `docker compose logs`.
-  # Read-only by design, with one exception: the network DNS on/off switch,
-  # which it changes through the control panel's API (hub/dns.go), never by
-  # itself. It launches the other UIs rather than duplicating them, holds no
+  # Read-only by design, with two exceptions, both made through the control
+  # panel's API and never by itself: the network DNS on/off switch
+  # (hub/dns.go) and adding a device from its join link (hub/join.go). It launches the other UIs rather than duplicating them, holds no
   # credentials, and gets no docker.sock (a web-facing container with the
   # socket is root on the host). Joined to dns-internal so
   # it can probe Pi-hole and Unbound, which the browser cannot reach.
