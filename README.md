@@ -63,9 +63,11 @@ To add a phone or laptop, open the hub at `http://localhost:8080` and use
 **Add a device**:
 
 1. **On the new device, make a join link.** Phone: open Nostr VPN, go to
-   *Join Network*, tap *Share* and AirDrop it to the box (or *Copy Request*
-   and send it to yourself). Computer: run `nvpn join-request --no-qr`.
-   The link starts with `nvpn://join-request/`.
+   *Join Network*, tap *Share* and AirDrop it to the box (no AirDrop: *Copy
+   Request* and get it across by cable or by typing it). Computer: run
+   `nvpn join-request --no-qr`. The link starts with `nvpn://join-request/`.
+   Treat it like a one-time password, not something to send through chat or
+   email. On its own it changes nothing on the box.
 2. **On the box, paste it** into *Add a device*. On a computer with a camera,
    in Chrome or Edge, *Scan its QR code* reads the QR the phone shows instead.
 3. **Check the device ID and press Add.** The hub shows the device's name and
