@@ -1,13 +1,87 @@
 # Sovereign DNS
 
-Self-hosted, ad-filtered, DNSSEC-validated DNS for **every device on your
-NostrVPN mesh** — one `docker compose up`, one admin command, zero per-device
-configuration, zero third-party control plane.
+**Your own private, ad-blocking internet "phone book" for all your devices — at home and on the go.**
 
-**New to this project?** `docker compose up -d` also stands up a
-self-hosted docs site at `http://localhost:8081` (plain-language overview,
-step-by-step quickstart, per-layer technical detail, and a
-troubleshooting/gotchas page) — see [`docs/`](docs/).
+Every time your phone or laptop opens a website, it first asks a DNS server
+"where is this site?". Normally that question goes to your internet provider,
+Google, or Cloudflare, and they see every site you visit.
+
+Sovereign DNS moves that job onto a small computer you own (a Raspberry Pi
+works great). Once it's running:
+
+- **Ads and trackers are blocked** on every device, inside apps too.
+- **Nobody else sees your lookups.** Your box asks the internet's root servers
+  directly, with no Google or Cloudflare in the middle.
+- **It follows you.** Your phone and laptop connect back to your box through a
+  private, encrypted link, so you're protected on café or hotel Wi-Fi too.
+
+## What you need
+
+- **A computer that stays on.** A Raspberry Pi 4 or 5 with 2 GB of memory or
+  more is ideal. Any Linux machine works. A Mac or Windows PC works too, but
+  needs about 4 GB of free memory.
+- **Docker** installed and running. ([How to get Docker](https://docs.docker.com/get-docker/))
+- **About 8 GB of free disk space.**
+- **The Nostr VPN app** on each phone or laptop you want to protect.
+
+## Install
+
+Open a Terminal on the box and paste this one line:
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/btcforplebs/sovereign-dns/main/scripts/install.sh && bash install.sh
+```
+
+It will ask you to pick a password (for the ad-blocking dashboard), then build
+everything. **The first install takes a while:** about 10–15 minutes on a
+normal computer, 20–40 minutes on a Raspberry Pi. Let it run.
+
+When it says **Done**, open a web browser **on that same box** and go to:
+
+**http://localhost:8080**
+
+> The dashboard only opens on the box itself, not from another computer.
+> That's on purpose: it keeps strangers on your network out of it.
+
+## Add your phone or laptop
+
+On the dashboard, click **Add a device**, then:
+
+1. **On your phone:** open the Nostr VPN app → *Join Network* → *Share*, and
+   send the link to the box (AirDrop works). No AirDrop? Tap *Copy Request*
+   and get it to the box another way.
+   **On a computer:** run `nvpn join-request --no-qr` and copy the link.
+2. **On the box:** paste the link into *Add a device*.
+3. **Check the device name and press Add.** A few seconds later, that device
+   is protected.
+
+Treat that link like a one-time password: don't post it in a group chat.
+Nothing gets added until you press Add.
+
+## Everyday use
+
+- **See what's being blocked:** open the dashboard and click the ad-blocker
+  (Pi-hole). You'll see every blocked ad and tracker, per device.
+- **A site is broken?** In Pi-hole, add it to the allow list.
+- **Read the guide:** a plain-language guide is built in at
+  **http://localhost:8081** on the box.
+
+## Good to know
+
+- **If the box is off, your devices can't look up websites.** That's
+  deliberate: rather than quietly falling back to someone else's DNS, it stops.
+  Keep the box plugged in, or turn off the VPN on your phone until
+  it's back.
+- **Each device's owner is in charge of that device.** Someone can turn this
+  off on their own phone. It protects people who want it; it doesn't police them.
+- **Something not working?** Run `bash sovereign-dns/scripts/healthcheck.sh`
+  on the box and it will tell you what's down.
+
+---
+
+## For the technically curious
+
+### How it fits together
 
 ```
 ┌────────────────────────── docker compose ──────────────────────────┐
@@ -35,7 +109,14 @@ leaking queries to the local network.
 Unbound (recursive, straight from the root servers, DNSSEC-validated). No
 Google, no Cloudflare, no Tailscale coordination server.
 
-## Quickstart
+### What's inside
+
+- **Nostr VPN** — the private, encrypted link between your devices and the box.
+- **Pi-hole** — blocks ads and trackers, and shows you stats.
+- **Unbound** — looks sites up straight from the internet's root servers and
+  checks they haven't been tampered with (DNSSEC).
+
+### Manual install (with git)
 
 Prereqs: Docker with the compose plugin and a Linux host (or anything with
 `/dev/net/tun`). No pre-existing NostrVPN network needed — on first start
@@ -43,46 +124,23 @@ the container founds its own network with itself as admin and DNS node,
 override already on.
 
 ```bash
-git clone <this-repo> sovereign-dns && cd sovereign-dns
+git clone https://github.com/btcforplebs/sovereign-dns.git && cd sovereign-dns
 cp .env.example .env          # set PIHOLE_PASSWORD at minimum
-docker compose up -d --build  # first build compiles nvpn + web panel (~10-15 min)
+docker compose up -d --build  # first build compiles nvpn + web panel
 ```
-
-(Or, without git: run [`scripts/install.sh`](scripts/install.sh), which
-writes the same stack and walks you through it.)
-
-### 1. Add your devices
 
 The container prints its npub and a ready-made invite on first start:
-
-```bash
-docker compose logs nvpn | grep -A8 'to add another device'
-```
-
-To add a phone or laptop, open the hub at `http://localhost:8080` and use
-**Add a device**:
-
-1. **On the new device, make a join link.** Phone: open Nostr VPN, go to
-   *Join Network*, tap *Share* and AirDrop it to the box (no AirDrop: *Copy
-   Request* and get it across by cable or by typing it). Computer: run
-   `nvpn join-request --no-qr`. The link starts with `nvpn://join-request/`.
-   Treat it like a one-time password, not something to send through chat or
-   email. On its own it changes nothing on the box.
-2. **On the box, paste it** into *Add a device*. On a computer with a camera,
-   in Chrome or Edge, *Scan its QR code* reads the QR the phone shows instead.
-3. **Check the device ID and press Add.** The hub shows the device's name and
-   ID and does nothing until you press Add, which hands the link to the
-   control panel's own import route. The device is on the mesh a few
-   seconds later.
-
-Approval is deliberately manual: the link is plain text, so auto-accepting
-anyone holding it would remove the only access control the network has.
-Pressing Add is that approval. The old terminal path still works: on the
-device, run the `nvpn join-manual ...` command from
-`docker compose logs nvpn`, then on the box run
+`docker compose logs nvpn | grep -A8 'to add another device'`. The old
+terminal path for adding a device still works: on the device, run the
+`nvpn join-manual ...` command from `docker compose logs nvpn`, then on the
+box run
 `docker exec sovereign-dns-nvpn nvpn add-device --device <joiner-npub> --publish`.
 
-### 2. Manage the mesh — browser, not terminal
+Approval is deliberately manual: the join link is plain text, so
+auto-accepting anyone holding it would remove the only access control the
+network has. Pressing Add is that approval.
+
+### The VPN control panel
 
 The `web` service runs NostrVPN's own control panel (`nvpn-web`, the same
 one the upstream Umbrel package ships) against the same config volume as
@@ -92,13 +150,12 @@ so compose publishes it only to the host's loopback
 (`127.0.0.1:${WEB_UI_PORT:-8082}`) — do not re-publish it to the LAN or
 the mesh.
 
-### 3. Manage Pi-hole
+### Pi-hole on the mesh
 
-The admin UI is served on the mesh at `http://<container-mesh-ip>/admin`
-(password from `.env`). Blocklists, per-client rules, and query stats all
-work as usual — for your entire device fleet.
+The Pi-hole admin UI is also served on the mesh at
+`http://<container-mesh-ip>/admin` (password from `.env`).
 
-## Design notes
+### Design notes
 
 - **Pi-hole shares the nvpn container's network namespace** and binds *only*
   the mesh tunnel interface (`FTLCONF_dns_listeningMode=BIND` on `utun100`).
@@ -116,7 +173,7 @@ work as usual — for your entire device fleet.
   cause is visible at a glance. Turn the override off from the admin device
   to restore local DNS instantly.
 
-## Honest caveats
+### Honest caveats
 
 - The override is **policy, not containment**: a device's owner can edit
   their local nvpn config to opt out. It's a sovereignty tool — every device
