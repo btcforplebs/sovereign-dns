@@ -103,7 +103,12 @@ const pageHTML = `<!doctype html>
   </div>
   {{if .PendingJoins}}
   <p style="margin-top:14px">
+    {{if .Remote}}
+    <span class="badge">{{.PendingJoins}} device(s) waiting to join</span>
+    Approve in the control panel on the box itself, or add the device here with its join link (below).
+    {{else}}
     <a href="{{.PanelURL}}" class="badge">{{.PendingJoins}} device(s) waiting to join — approve</a>
+    {{end}}
   </p>
   {{end}}
 
@@ -183,10 +188,17 @@ const pageHTML = `<!doctype html>
       <span class="name">Setup guide</span><br>
       <span class="detail">Add a device, approve it, check it really uses this box.</span>
     </a>
+    {{if .Remote}}
+    <div class="card">
+      <span class="name">Control Panel</span><br>
+      <span class="detail">Rename or remove devices, network settings. Opens only on the box itself, at localhost:8082: it has no password of its own.</span>
+    </div>
+    {{else}}
     <a class="card" href="{{.PanelURL}}">
       <span class="name">Control Panel</span><br>
       <span class="detail">Rename or remove devices, network settings.</span>
     </a>
+    {{end}}
     {{if .PiholeURL}}
     <a class="card" href="{{.PiholeURL}}">
       <span class="name">Pi-hole</span><br>
@@ -254,7 +266,8 @@ const pageHTML = `<!doctype html>
     their own NostrVPN config.
   </p>
 
-  <footer>Checked at {{.GeneratedAt}} · this page is served only to this computer.</footer>
+  <footer>Checked at {{.GeneratedAt}} · {{if .Login}}this page is open to your home network, behind the dashboard password.
+    <form method="post" action="/logout" style="display:inline"><button type="submit">Sign out</button></form>{{else}}this page is served only to this computer.{{end}}</footer>
 </main>
 </body>
 </html>

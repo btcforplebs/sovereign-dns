@@ -109,7 +109,7 @@ func (c config) serveDNS(tmpl *template.Template) http.HandlerFunc {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		if !loopbackHost(r.Host) || !sameOrigin(r) {
+		if !c.hostAllowed(r.Host) || !sameOrigin(r) {
 			http.Error(w, "cross-origin request rejected", http.StatusForbidden)
 			return
 		}
@@ -132,6 +132,7 @@ func (c config) serveDNS(tmpl *template.Template) http.HandlerFunc {
 		// was rendered.
 		p := c.buildPage(r.Context())
 		p.CSRF = c.csrfToken
+		c.viewer(&p, r)
 		if !p.DNS.CanSwitch {
 			p.Error = "Nothing was changed. " + p.DNS.Blocked
 			render(w, tmpl, p, http.StatusConflict)
@@ -161,6 +162,7 @@ func (c config) serveDNS(tmpl *template.Template) http.HandlerFunc {
 			log.Printf("hub: turning network DNS %s: %v", want, err)
 			p = c.buildPage(r.Context())
 			p.CSRF = c.csrfToken
+			c.viewer(&p, r)
 			p.Error = fmt.Sprintf("Couldn't turn network DNS %s: %v", want, err)
 			render(w, tmpl, p, http.StatusBadGateway)
 			return

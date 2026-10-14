@@ -117,6 +117,7 @@ func (c config) serveWizard(w http.ResponseWriter, r *http.Request) {
 	data := c.buildPage(r.Context())
 	want, _ := strconv.Atoi(r.URL.Query().Get("step"))
 	data.CSRF = c.csrfToken
+	c.viewer(&data, r)
 	data.AddFrom = "setup"
 	wz := buildWizard(data, want)
 	if r.URL.Query().Get("format") == "key" {
@@ -252,7 +253,7 @@ const wizardHTML = `<!doctype html>
     <div class="row {{if .PanelUp}}up{{else}}down{{end}}">
       <span class="dot"></span>
       <span><span class="name">Admin panel</span> — where you say yes<br>
-        <span class="what">The page at <code>localhost:8082</code> where devices get approved. Only this computer can open it.</span></span>
+        <span class="what">The page at <code>localhost:8082</code> where devices get approved. Only the box itself can open it.</span></span>
       <span class="state">{{if .PanelUp}}Running{{else}}Not yet{{end}}</span>
     </div>
   </div>
@@ -308,7 +309,12 @@ const wizardHTML = `<!doctype html>
     {{if .PendingJoins}}
     <p><span class="badge">{{.PendingJoins}} device{{if gt .PendingJoins 1}}s{{end}} waiting</span></p>
     <ol class="todo">
+      {{if .Remote}}
+      <li>Easiest from here: go back to step 2 and paste the device's join link. That adds it in one click.</li>
+      <li>Or, on the box itself, open the admin panel at <code>localhost:8082</code>.</li>
+      {{else}}
       <li>Open the admin panel: <a class="big" href="{{.PanelURL}}" target="_blank" rel="noopener">Open localhost:8082 →</a></li>
+      {{end}}
       <li>Find <strong>Join requests</strong>. You should see one request: the device from step 2.</li>
       <li>Click <strong>Approve</strong>. Come back here. This page notices on its own.</li>
     </ol>
@@ -396,7 +402,7 @@ const wizardHTML = `<!doctype html>
     {{else}}<a class="next soft" href="/setup?step=2">Add another device</a>{{end}}
   </nav>
 
-  <footer>Checked at {{.GeneratedAt}} · updates on its own · served only to this computer.</footer>
+  <footer>Checked at {{.GeneratedAt}} · updates on its own · {{if .Login}}open to your home network, behind the dashboard password{{else}}served only to this computer{{end}}.</footer>
 </main>
 <script>
   // Reload when the facts on this page change, and only then. Polling a

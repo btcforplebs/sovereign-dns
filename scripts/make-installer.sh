@@ -174,6 +174,33 @@ if [[ "${SOVEREIGN_DNS_EXTRACT_ONLY:-0}" == "1" ]]; then
   exit 0
 fi
 
+# The dashboard opens at localhost, on this computer only. A box with no
+# screen (a Raspberry Pi set up over SSH) has nobody at that computer, so offer
+# to open it to the home network instead, behind a password
+# (scripts/hub-lan.sh, hub/auth.go). Asked once: the answer lands in .env as
+# HUB_BIND, and runs after that keep it. SOVEREIGN_DNS_HUB_LAN=1 or 0 answers
+# without asking, on any computer.
+if ! grep -q '^HUB_BIND=' .env; then
+  hub_lan=${SOVEREIGN_DNS_HUB_LAN:-}
+  no_desktop=0
+  case "$(uname -s)" in
+    Linux) [[ -z "${DISPLAY:-}" && -z "${WAYLAND_DISPLAY:-}" ]] && no_desktop=1 ;;
+    Darwin) [[ -n "${SSH_CONNECTION:-}" ]] && no_desktop=1 ;;
+  esac
+  if [[ -z "$hub_lan" && "$no_desktop" == "1" && -t 0 ]]; then
+    echo
+    echo "This computer has no screen to open the dashboard on. Open it from another"
+    echo "computer on your home network instead? It will ask for a password you pick now."
+    printf 'Open the dashboard to your home network? [Y/n] '
+    read -r answer
+    case "$answer" in [Nn]*) hub_lan=0 ;; *) hub_lan=1 ;; esac
+  fi
+  case "$hub_lan" in
+    1) bash scripts/hub-lan.sh on --no-restart ;;
+    0) bash scripts/hub-lan.sh off --no-restart >/dev/null ;;
+  esac
+fi
+
 # Fast path: download the ready-made NostrVPN image instead of compiling nvpn
 # here (about 35 minutes on a Raspberry Pi 4). docker-compose.prebuilt.yml
 # pins it by digest, so Docker checks every byte it downloads against the pin.
@@ -246,6 +273,10 @@ fi
 echo
 echo "    http://localhost:${HUB_PORT}"
 echo
+if grep -q '^HUB_BIND=0.0.0.0$' .env; then
+  bash scripts/hub-lan.sh url
+  echo
+fi
 echo "Everything lives there: what's running, this device's ID, the invite"
 echo "command for adding your phone or laptop, the VPN control panel, the"
 echo "Pi-hole ad-block dashboard, and the docs."
