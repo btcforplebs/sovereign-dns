@@ -192,7 +192,7 @@ if ! grep -q '^HUB_BIND=' .env; then
     echo "This computer has no screen to open the dashboard on. Open it from another"
     echo "computer on your home network instead? It will ask for a password you pick now."
     printf 'Open the dashboard to your home network? [Y/n] '
-    read -r answer
+    read -r answer || answer=n   # Ctrl-D: no
     case "$answer" in [Nn]*) hub_lan=0 ;; *) hub_lan=1 ;; esac
   fi
   case "$hub_lan" in

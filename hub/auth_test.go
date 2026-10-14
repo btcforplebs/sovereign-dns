@@ -1,12 +1,14 @@
 package main
 
 import (
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
 
 const testPassword = "correct horse"
@@ -204,5 +206,41 @@ func TestLoginRejectsCrossSitePost(t *testing.T) {
 	r.Header.Set("Origin", "http://evil.example")
 	if rec := serve(h, r); rec.Code != http.StatusForbidden {
 		t.Fatalf("cross-site login POST: status %d, want 403", rec.Code)
+	}
+}
+
+// The lockout table is bounded: wrong passwords from ever more addresses
+// cannot grow it past maxTracked, and a locked-out address is kept over
+// addresses that are only partway there, and over expired ones.
+func TestFailureTableIsBounded(t *testing.T) {
+	a, err := newAuth("0.0.0.0", testPassword)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < maxFailures; i++ {
+		a.recordFailure("192.168.4.99")
+	}
+	for i := 0; i < maxTracked+500; i++ {
+		a.recordFailure(fmt.Sprintf("10.%d.%d.%d", i>>16&255, i>>8&255, i&255))
+	}
+	if n := len(a.failures); n > maxTracked {
+		t.Fatalf("failure table holds %d addresses, cap is %d", n, maxTracked)
+	}
+	if !a.lockedOut("192.168.4.99") {
+		t.Fatal("a flood of one-guess addresses freed a locked-out one")
+	}
+	// Expired entries go first.
+	a.mu.Lock()
+	for _, f := range a.failures {
+		f.until = time.Now().Add(-time.Second)
+	}
+	a.failures["192.168.4.99"].until = time.Now().Add(lockout)
+	a.mu.Unlock()
+	a.recordFailure("172.16.0.1")
+	if !a.lockedOut("192.168.4.99") {
+		t.Fatal("a locked-out address was forgotten while expired ones were kept")
+	}
+	if n := len(a.failures); n != 2 {
+		t.Fatalf("after pruning, %d addresses tracked; want 2 (the live lockout and the new one)", n)
 	}
 }

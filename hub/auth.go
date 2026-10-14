@@ -21,7 +21,10 @@ package main
 //     login page and nothing else.
 //   - Only private addresses are served (home networks, loopback, Docker's own
 //     bridge). A box with a public address answers the internet with 403,
-//     login or not. Tailscale-style 100.64.0.0/10 addresses are refused too:
+//     login or not. That needs Docker to hand over the client's own address,
+//     which Linux's published ports do. Docker Desktop (macOS, Windows) shows
+//     every client as its VM's private gateway, so there the password is the
+//     only guard; scripts/hub-lan.sh says so when it turns this on. Tailscale-style 100.64.0.0/10 addresses are refused too:
 //     "the home network" is what was asked for, not every network the box
 //     happens to be on.
 //
@@ -49,8 +52,13 @@ const (
 	sessionCookie = "sdns_hub_session"
 	sessionTTL    = 30 * 24 * time.Hour
 	// Wrong passwords from one address before it has to wait, and how long.
-	maxFailures  = 5
-	lockout      = 5 * time.Minute
+	maxFailures = 5
+	lockout     = 5 * time.Minute
+	// Addresses remembered for lockout at once. Every wrong password from a
+	// new address adds one. When full, expired entries go first, then ones
+	// still short of a lockout, and only then the oldest lockout, so a flood
+	// of fresh addresses can neither grow memory nor free a locked-out one.
+	maxTracked   = 4096
 	minPassword  = 8
 	failureDelay = 500 * time.Millisecond
 )
@@ -188,13 +196,38 @@ func (a *auth) lockedOut(ip string) bool {
 func (a *auth) recordFailure(ip string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	now := time.Now()
+	if _, known := a.failures[ip]; !known && len(a.failures) >= maxTracked {
+		for k, f := range a.failures {
+			if now.After(f.until) {
+				delete(a.failures, k)
+			}
+		}
+		for k, f := range a.failures {
+			if len(a.failures) < maxTracked {
+				break
+			}
+			if f.n < maxFailures {
+				delete(a.failures, k)
+			}
+		}
+		for len(a.failures) >= maxTracked {
+			oldest := ""
+			for k, f := range a.failures {
+				if oldest == "" || f.until.Before(a.failures[oldest].until) {
+					oldest = k
+				}
+			}
+			delete(a.failures, oldest)
+		}
+	}
 	f := a.failures[ip]
-	if f == nil || time.Now().After(f.until) {
+	if f == nil || now.After(f.until) {
 		f = &failCount{}
 		a.failures[ip] = f
 	}
 	f.n++
-	f.until = time.Now().Add(lockout)
+	f.until = now.Add(lockout)
 }
 
 func (a *auth) newSession() string {

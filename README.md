@@ -68,9 +68,11 @@ and sign in with the dashboard password.
 ```
 
 (Your numbers will differ.) Every page asks for that password, because the
-dashboard can add devices to your network. It is never opened to the
-internet: a request from outside your home network is refused even with the
-password.
+dashboard can add devices to your network. On Linux (a Raspberry Pi, a Linux
+server) it also refuses any request from outside your home network, even with
+the password. On Docker Desktop (a Mac or Windows box) it can't tell where a
+request came from, so the password is the only guard there. Pick a long one,
+and never forward the dashboard's port on your router.
 
 To change your mind later, run one of these inside the `sovereign-dns` folder:
 

@@ -143,12 +143,12 @@ type page struct {
 
 	// Request-scoped, never part of /api/status: the form token, and which
 	// confirmation (if any) the dashboard is asking for.
-	CSRF    string `json:"-"`
+	CSRF string `json:"-"`
 	// Remote: the reader addressed the hub by a non-loopback name, so links
 	// to services published on the box's loopback (the control panel) cannot
 	// open for them. Login: pages are behind the hub password (auth.go).
-	Remote bool `json:"-"`
-	Login  bool `json:"-"`
+	Remote  bool   `json:"-"`
+	Login   bool   `json:"-"`
 	Confirm string `json:"-"`
 	AddFrom string `json:"-"` // where the add-device form returns to ("setup" or the dashboard)
 

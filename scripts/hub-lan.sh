@@ -68,6 +68,25 @@ set_env() {
   chmod 600 .env
 }
 
+# Docker Desktop (macOS, Windows) hands the hub every connection from its own
+# VM's private address, so the hub's home-network-only check cannot tell a
+# neighbour from the internet. There the password is the only guard.
+docker_desktop_note() {
+  if docker info --format '{{.OperatingSystem}}' 2>/dev/null | grep -q 'Docker Desktop'; then
+    echo
+    echo "Note: this is Docker Desktop, so the dashboard cannot tell your home network"
+    echo "from anywhere else. The password is the only thing guarding it: pick a long"
+    echo "one, and don't forward port $(hub_port) on your router."
+  fi
+}
+
+no_password() {
+  echo "No password given, so the dashboard stays on this computer only."
+  echo "Run 'bash scripts/hub-lan.sh on' in the sovereign-dns folder to try again."
+  set_env "HUB_BIND=127.0.0.1"
+  restart_hub
+}
+
 restart_hub() {
   [[ "$restart" == 1 ]] || return 0
   echo "Restarting the dashboard..."
@@ -81,9 +100,13 @@ case "$mode" in
       [[ -t 0 ]] || die "No terminal to ask for a password. Set SOVEREIGN_DNS_HUB_PASSWORD and run again."
       while :; do
         echo "Pick a password for the dashboard, at least 8 characters (typing is hidden):"
-        read -rs pw; echo
+        # Ctrl-D (end of input) means "never mind": stay on this computer
+        # only, rather than stopping the install half done.
+        read -rs pw || { echo; no_password; exit 0; }
+        echo
         echo "Type it again:"
-        read -rs pw2; echo
+        read -rs pw2 || { echo; no_password; exit 0; }
+        echo
         if [[ "$pw" != "$pw2" ]]; then echo "Those didn't match. Try again."; continue; fi
         if [[ ${#pw} -lt 8 ]]; then echo "That's shorter than 8 characters. Try again."; continue; fi
         if [[ "$pw" == *"'"* ]]; then echo "Please pick one without a ' (single quote) in it."; continue; fi
@@ -94,15 +117,20 @@ case "$mode" in
     [[ "$pw" != *"'"* && "$pw" != *$'\n'* ]] || die "The dashboard password can't contain a ' or a line break."
     # Single quotes: compose reads the value exactly, with no $ expansion.
     set_env "HUB_BIND=0.0.0.0" "HUB_PASSWORD='${pw}'"
+    docker_desktop_note
     restart_hub
-    # The installer prints the addresses itself once the stack is up.
-    [[ "$restart" == 1 ]] && { echo; print_urls; }
+    # The installer prints the addresses itself once the stack is up. An
+    # `if`, not `[[ ]] &&`: as the last command, a false test would be this
+    # script's exit status, and the installer (set -e) would stop right here.
+    if [[ "$restart" == 1 ]]; then echo; print_urls; fi
     ;;
   off)
     set_env "HUB_BIND=127.0.0.1"
     restart_hub
-    # The installer prints the addresses itself once the stack is up.
-    [[ "$restart" == 1 ]] && { echo; print_urls; }
+    # The installer prints the addresses itself once the stack is up. An
+    # `if`, not `[[ ]] &&`: as the last command, a false test would be this
+    # script's exit status, and the installer (set -e) would stop right here.
+    if [[ "$restart" == 1 ]]; then echo; print_urls; fi
     ;;
   url)
     print_urls
