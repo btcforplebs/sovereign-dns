@@ -221,6 +221,9 @@ if [[ "${1:-}" == "--check" ]]; then
   tail -n +"$line" "$OUT" | b64_decode > "$tmp/payload.tar"
   tar -xf "$tmp/payload.tar" -C "$tmp/tree"
   status=0
+  # Keep this per-file loop even though the byte compare below exists: a file
+  # dropped by a .gitattributes export-ignore is missing from both the shipped
+  # and the rebuilt payload, so only this loop, which reads the tree, sees it.
   while IFS= read -r f; do
     if ! diff -q "$tmp/tree/$f" "$f" >/dev/null 2>&1; then
       echo "drift: $f"
@@ -258,5 +261,8 @@ render_installer > "$OUT.tmp"
 mv "$OUT.tmp" "$OUT"
 chmod +x "$OUT"
 sha256_line "$OUT" > "$SUM"
-echo "wrote $OUT ($(wc -c < "$OUT" | tr -d ' ') bytes, $(payload_files | wc -l | tr -d ' ') files packed)"
+# Count what the archive holds, not what payload_files lists: they differ if
+# git archive leaves a file out (export-ignore), and --check reports that.
+packed=$(tail -n +"$(awk -v m="$MARKER" '$0 == m { print NR + 1; exit }' "$OUT")" "$OUT" | b64_decode | tar -tf - | grep -vc '/$')
+echo "wrote $OUT ($(wc -c < "$OUT" | tr -d ' ') bytes, $packed files packed)"
 echo "wrote $SUM: $(cut -d' ' -f1 "$SUM")"

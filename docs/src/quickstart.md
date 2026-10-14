@@ -105,10 +105,10 @@ at a time:
    It should print `install.sh: OK`. If it prints `FAILED`, stop. Don't
    run the file.
 
-   The fingerprint catches a download that was damaged or swapped on the
-   way to you. It can't catch a swap on the download site itself, because
-   both files come from there. That needs a signature, and releases are
-   not signed yet.
+   The fingerprint catches a download that arrived damaged or truncated.
+   It can't catch a swap on the download site itself, because both files
+   come from there. That needs a signature, and releases are not signed
+   yet. Until then, the check below is the one that does.
 
 3. To read every file before anything starts, unpack without running.
    This writes the files to a `sovereign-dns` folder and stops before
@@ -125,6 +125,35 @@ at a time:
    ```bash
    bash install.sh
    ```
+
+### Optional: rebuild the installer yourself
+
+`install.sh` is built from the source code, and the same code always
+builds the same file, byte for byte. So you can build your own copy and
+check the published fingerprint against it. This still works if the
+download site was tampered with, because your copy never came from
+there. You need git 2.42 or later (`git --version` shows yours).
+
+From your home folder, where you downloaded `install.sh` and
+`install.sh.sha256`:
+
+```bash
+git clone --branch RELEASE-TAG https://REPO-URL/sovereign-dns.git
+cd sovereign-dns
+scripts/make-installer.sh
+cd scripts
+shasum -a 256 -c ~/install.sh.sha256
+```
+
+(On Linux, if `shasum` isn't found, use `sha256sum -c ~/install.sh.sha256`.)
+
+That last line checks the file **you** just built against the published
+fingerprint. It should print `install.sh: OK`. Your download passed the
+same check in step 2, so the two files are identical. If it prints
+`FAILED`, stop. Don't run the download.
+
+> **RELEASE-TAG and REPO-URL are placeholders**, like INSTALLER-URL
+> above, until the release host exists.
 
 ## Step 3: Choose a password
 
