@@ -280,8 +280,10 @@ and run:
 cd ~/sovereign-dns && docker compose up -d
 ```
 
-Then run the health check below. If it says **"Pi-hole is orphaned"**,
-run the command it prints, which is:
+Then wait about 30 seconds and run the health check below. For the first
+20 to 30 seconds after startup it shows red, because each part has not
+passed its first check yet; that is normal. If it says **"Pi-hole is
+orphaned"**, run the command it prints, which is:
 
 ```bash
 cd ~/sovereign-dns && docker compose up -d --force-recreate pihole
@@ -294,7 +296,8 @@ per-device steps.*
 
 **A tile stays red on the dashboard.** Run this on the box. It checks
 each part and marks it PASS, FAIL or SKIP, and says how to fix each
-failure. It doesn't check the Docs tile.
+failure. It doesn't check the Docs tile. Right after the box starts, it
+shows red for the first 20 to 30 seconds; wait and run it again.
 
 ```bash
 bash ~/sovereign-dns/scripts/healthcheck.sh
