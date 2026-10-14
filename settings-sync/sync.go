@@ -125,19 +125,9 @@ func (s *syncer) acceptable(ev *event) error {
 	return s.genuine(ev)
 }
 
-// openList opens a genuine list and checks the date sealed inside it matches
-// the event's. Only the owner can seal, so a box (or anyone) that re-dates
-// a genuine list (the page can't check signatures) is caught here and in
-// the page.
+// openList opens a genuine list sealed to this box.
 func (s *syncer) openList(ev *event) (*settings, error) {
-	got, err := open(ev, s.key, s.owner)
-	if err != nil {
-		return nil, err
-	}
-	if got.At != ev.CreatedAt {
-		return nil, errors.New("the date sealed in the list does not match the event's")
-	}
-	return got, nil
+	return open(ev, s.key, s.owner)
 }
 
 func (s *syncer) pickNewest(evs []*event) *event {

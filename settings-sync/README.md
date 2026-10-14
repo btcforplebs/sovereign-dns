@@ -20,7 +20,8 @@ box is the main one.
   regexes, URL paths and queries, a trailing dot and the dashed `10-0-0-5`
   form included), a reverse-lookup name (`in-addr.arpa`, `ip6.arpa`), a local
   or IP-echo name (`.local`, `.lan`, `.home`, `.internal`, `nip.io`,
-  `sslip.io`, ...), a single-label list host or exact domain, or a URL with a
+  `sslip.io`, ...), a single-label list host or exact domain, a regex anchored at
+  the end whose name is a single label (`(^|\.)home$`), or a URL with a
   password in it. The two copies of this guard (`settings.go`, `page.html`)
   are tested against the same cases. The guard is loose on purpose and a false
   hit only refuses a save: `std::vector` in a comment reads as IPv6, and a
@@ -59,10 +60,13 @@ box is the main one.
 - **The page checks what the box hands it.** Before editing, the page
   recomputes the list's id and checks its author, kind and `d` tag, and it
   opens the list with the owner's own NIP-44 wrap, which only his key can
-  make. It can't check the signature, so the list's date is also sealed
-  inside it (`at`): the page and every box refuse a list whose sealed date
-  differs from the event's, which is what re-dating a genuine list produces.
-  The page shows when the list it is editing was saved.
+  make. It can't check the signature, and every box holds the list's content
+  key, so a box could re-encrypt a different list under that key. Each wrap
+  therefore carries a hash of the encrypted list and the event's
+  `created_at` next to the key, and the page refuses a list that doesn't
+  match the hash in the owner's wrap. A box can't make a new owner's wrap, so
+  it can neither swap the list nor re-date it. Boxes check the hash in their
+  own wrap too. The page shows when the list it is editing was saved.
 - **Saved state is checked again on start.** The applied list in
   `state.json` must still be genuine: kind, `d` tag, author and signature. The
   clock is not checked, so a box that boots with a slow clock keeps its list

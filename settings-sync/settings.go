@@ -17,7 +17,6 @@ import (
 
 type settings struct {
 	V       int      `json:"v"`
-	At      int64    `json:"at"` // the event's created_at, sealed so it can't be changed
 	Boxes   []box    `json:"boxes"`
 	Groups  []group  `json:"groups"`
 	Lists   []list   `json:"lists"`
@@ -74,6 +73,8 @@ var (
 	// :: or seven colons, and at least one hex digit.
 	ipv6Literal = regexp.MustCompile(`([0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}`)
 	hexDigit    = regexp.MustCompile(`[0-9a-f]`)
+	// Regex syntax, dropped so an anchored regex reads as the name it matches.
+	regexSyntax = regexp.MustCompile(`[()\[\]^$|?*+]`)
 	// Tokens: what is left between these. Splits URLs, regexes and prose alike.
 	tokenSplit = regexp.MustCompile(`[\s,;"'()|^\[\]{}<>=&?/:#@!*+$]+`)
 	// A name ending in one of these never resolves on the public internet,
@@ -190,6 +191,10 @@ func (s *settings) validate() error {
 		text("domain", d.Domain) // exact and regex alike
 		if d.Kind == "exact" && singleLabel(d.Domain) {
 			bad("domain %q is a single-label (local) name", d.Domain)
+		}
+		// A regex anchored at the end names a whole zone: (^|\.)home$ is .home.
+		if r := scanForm(d.Domain); d.Kind == "regex" && strings.HasSuffix(r, "$") && singleLabel(regexSyntax.ReplaceAllString(r, "")) {
+			bad("domain %q matches a single-label (local) name", d.Domain)
 		}
 		if seen[d.key()] {
 			bad("domain %q is listed twice", d.Domain)

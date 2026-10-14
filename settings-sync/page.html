@@ -172,18 +172,24 @@ async function readerID(salt, pk) {
   const h = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(D + "|" + salt + "|" + pk)));
   return hex(h.slice(0, 16));
 }
+// Ties the encrypted list to its event's date (binding in seal.go).
+async function binding(env, createdAt) {
+  const t = [D, env.v, env.salt, env.nonce, env.data, createdAt].join("|");
+  return hex(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(t))));
+}
 async function openList(ev, me) {
   const env = JSON.parse(ev.content);
+  if (env.v !== 2) throw new Error(`the list is sealed in an unknown format (v${env.v}); not editing it`);
   const wrapped = env.keys[await readerID(env.salt, me)];
   if (!wrapped) throw new Error("the list is not sealed to this signer's key");
-  const k = unhex(await window.nostr.nip44.decrypt(st.owner, wrapped));
-  const key = await crypto.subtle.importKey("raw", k, "AES-GCM", false, ["decrypt"]);
+  // Every box knows K, so K proves nothing. The hash next to it does: this is
+  // the owner's wrap to himself, which no box can make, so a list re-encrypted
+  // or re-dated by a box doesn't match it.
+  const [khex, sum] = (await window.nostr.nip44.decrypt(st.owner, wrapped)).split("|");
+  if (!/^[0-9a-f]{64}$/.test(khex) || sum !== await binding(env, ev.created_at)) throw new Error("the list or its date does not match what the owner sealed; not editing it");
+  const key = await crypto.subtle.importKey("raw", unhex(khex), "AES-GCM", false, ["decrypt"]);
   const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: unb64(env.nonce) }, key, unb64(env.data));
-  const s = JSON.parse(new TextDecoder().decode(plain));
-  // The page can't check the signature, but only the owner can seal: a list
-  // whose sealed date differs from the event's was re-dated by someone else.
-  if (s.at !== ev.created_at) throw new Error("the list's sealed date does not match its event; not editing it");
-  return s;
+  return JSON.parse(new TextDecoder().decode(plain));
 }
 // The box hands the page its newest list; don't take its word for it. The id
 // must hash from the content, and the author, kind and d tag must be the
@@ -195,13 +201,14 @@ async function checkEvent(ev) {
   const d = (ev.tags || []).find((t) => t[0] === "d");
   if (id !== ev.id || ev.pubkey !== st.owner || ev.kind !== KIND || !d || d[1] !== D) throw new Error("the box offered a list that is not the owner's; not editing it");
 }
-async function sealList(s) {
-  const k = rand(32), salt = b64(rand(16)), iv = rand(12), khex = hex(k);
-  const keys = {};
-  for (const r of [st.owner, ...s.boxes.map((b) => b.pubkey)]) keys[await readerID(salt, r)] = await window.nostr.nip44.encrypt(r, khex);
+async function sealList(s, createdAt) {
+  const k = rand(32), salt = b64(rand(16)), iv = rand(12);
   const key = await crypto.subtle.importKey("raw", k, "AES-GCM", false, ["encrypt"]);
   const data = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(JSON.stringify(s))));
-  return JSON.stringify({ v: 1, salt, keys, nonce: b64(iv), data: b64(data) });
+  const env = { v: 2, salt, keys: {}, nonce: b64(iv), data: b64(data) };
+  const wrap = hex(k) + "|" + await binding(env, createdAt);
+  for (const r of [st.owner, ...s.boxes.map((b) => b.pubkey)]) env.keys[await readerID(salt, r)] = await window.nostr.nip44.encrypt(r, wrap);
+  return JSON.stringify(env);
 }
 
 // --- address guard (mirror of settings.go; TestPageGuardMatchesGo checks they agree) ---
@@ -224,6 +231,7 @@ function addressIn(s) {
   return "";
 }
 const singleLabel = (n) => !scanForm(n).replace(/^\.+|\.+$/g, "").includes(".");
+const REGEX_SYNTAX = /[()\[\]^$|?*+]/g;
 function validateList(s) {
   if (s.v !== 1) return ["unknown list version " + s.v];
   const errs = [], bad = (m) => errs.push(m);
@@ -255,6 +263,8 @@ function validateList(s) {
     if (!String(d.domain || "").trim()) bad("a domain entry is empty");
     text("domain", d.domain);
     if (d.kind === "exact" && singleLabel(d.domain)) bad(`domain "${d.domain}" is a single-label (local) name`);
+    const r = scanForm(d.domain || "");
+    if (d.kind === "regex" && r.endsWith("$") && singleLabel(r.replace(REGEX_SYNTAX, ""))) bad(`domain "${d.domain}" matches a single-label (local) name`);
     const k = `${d.type}/${d.kind} ${d.domain}`; if (seen.has(k)) bad(`domain "${d.domain}" is listed twice`); seen.add(k);
     text("domain comment", d.comment); refs("domain " + d.domain, d.groups);
   }
@@ -386,15 +396,16 @@ async function save(e) {
     if (problems.length) { say("Not saved, and nothing was sent to your signer. Every box would refuse this list: " + problems.join("; ") + ".", "err"); return; }
     say("Asking your signer to seal and sign the list…");
     const created = Math.max(Math.floor(Date.now() / 1000), (st.newest ? st.newest.created_at : 0) + 1);
-    clean.at = created;
-    const ev = await window.nostr.signEvent({ kind: KIND, created_at: created, tags: [["d", D]], content: await sealList(clean) });
+    const ev = await window.nostr.signEvent({ kind: KIND, created_at: created, tags: [["d", D]], content: await sealList(clean, created) });
     if (ev.created_at !== created) { say("Not saved: the signer changed the list's date.", "err"); return; }
     const r = await fetch("api/publish", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ event: ev, base }) });
     const out = await r.json();
     if (!r.ok) { say(out.error || "Save failed.", "err"); return; }
     base = ev.id; $("dirty").textContent = "";
     say(`Saved to ${out.published} of ${out.relays} relays. ` + (out.applied ? "Applied on this box; the others pick it up within a few minutes." : `Not applied here yet: ${out.apply_error}`), out.applied ? "ok" : "warn");
-    await load(); const cur = st.newest || ev; await checkEvent(cur); list = await openList(cur, st.owner); base = cur.id; render();
+    // Saved: from here on a failure is about reloading, not saving.
+    try { await load(); const cur = st.newest || ev; await checkEvent(cur); list = await openList(cur, st.owner); base = cur.id; render(); }
+    catch (err) { say("Saved, but this page could not reload the list: " + (err.message || err) + ". Reload the page before editing again.", "warn"); }
   } catch (err) { say("Not saved: " + (err.message || err), "err"); }
   finally { btn.disabled = false; }
 }
