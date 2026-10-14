@@ -13,9 +13,10 @@
 #
 # The image is built from the nvpn/ folder alone (compose's build context),
 # with the Dockerfile's own ARG defaults, which check-pins.sh holds equal to
-# compose's. So the nvpn commit plus the content of every tracked file under
-# nvpn/ decide every byte of input. Change either and the tag changes, and the
-# pinned image no longer matches the tree.
+# compose's. So the nvpn commit plus every tracked file under nvpn/ (its path,
+# content and mode, since COPY keeps the mode) are the whole build input.
+# Change any of them and the tag changes, and the pinned image no longer
+# matches the tree.
 
 nvpn_image_repo() { echo ghcr.io/btcforplebs/sovereign-dns-nvpn; }
 
@@ -26,14 +27,14 @@ nvpn_image_commit() {
   echo "$c"
 }
 
-# Hash of the build context as it is on disk, not as it is committed: the
-# installer is packed from the working tree, so that is what has to match.
-# One line per tracked file, "<git blob id> <path>", sorted, then sha256.
+# Hash of the build context as the installer packs it (make_payload in
+# make-installer.sh): content from the working tree, mode from the index.
+# One line per tracked file, "<mode> <git blob id> <path>", sorted, then sha256.
 nvpn_image_context() {
   local files f h
   files=$(git ls-files nvpn | LC_ALL=C sort)
   [[ -n "$files" ]] || { echo "no tracked files under nvpn/" >&2; return 1; }
-  h=$(while IFS= read -r f; do printf '%s %s\n' "$(git hash-object -- "$f")" "$f"; done <<<"$files" \
+  h=$(while IFS= read -r f; do printf '%s %s %s\n' "$(git ls-files -s -- "$f" | cut -d' ' -f1)" "$(git hash-object -- "$f")" "$f"; done <<<"$files" \
         | { if command -v sha256sum >/dev/null 2>&1; then sha256sum; else shasum -a 256; fi; })
   echo "${h%% *}"
 }

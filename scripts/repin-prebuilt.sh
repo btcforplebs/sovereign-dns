@@ -11,7 +11,10 @@
 #   - the image index stored under that digest really hashes to it,
 #   - it has a linux/amd64 and a linux/arm64 image,
 #   - the tag this tree builds (scripts/lib/nvpn-image.sh: the nvpn commit
-#     plus a hash of nvpn/) points at that same digest.
+#     plus a hash of nvpn/) points at that same digest,
+#   - GitHub holds a signed build-provenance attestation for that digest,
+#     made by this repo's nvpn-image workflow running on main (needs the gh
+#     CLI, logged in).
 # The tag is what ties the bits to this tree, so a digest published from an
 # older nvpn/ or another commit is refused here and again by check-pins.sh.
 #
@@ -26,6 +29,7 @@ die() { echo "repin-prebuilt: $*" >&2; exit 1; }
 [[ $# -eq 1 && "$1" =~ ^sha256:[0-9a-f]{64}$ ]] || die "usage: $0 sha256:<64 hex>"
 digest=$1
 command -v python3 >/dev/null 2>&1 || die "needs python3 (to read the registry's JSON)"
+command -v gh >/dev/null 2>&1 || die "needs the GitHub CLI, gh (to check the build attestation)"
 
 repo=$(nvpn_image_repo)
 tag=$(nvpn_image_tag)
@@ -63,6 +67,14 @@ live=$(curl -fsSI -H "Authorization: Bearer $token" -H "Accept: $accept" \
        | tr -d '\r' | sed -n 's/^[Dd]ocker-[Cc]ontent-[Dd]igest: //p') || true
 [[ -n "$live" ]] || die "ghcr.io has no tag $tag: this tree's image has not been published (run the nvpn image workflow with publish on)"
 [[ "$live" == "$digest" ]] || die "$repo:$tag points at $live, not $digest. Pin the digest the tag points at, from the run that published this tree"
+
+# Who built it: only a run of this repo's own workflow, from main, can have
+# signed this. A digest pushed by hand, or by a run on another branch, fails.
+gh attestation verify "oci://$repo@$digest" \
+    --repo btcforplebs/sovereign-dns \
+    --signer-workflow btcforplebs/sovereign-dns/.github/workflows/nvpn-image.yml \
+    --source-ref refs/heads/main >/dev/null \
+  || die "no build attestation from the nvpn-image workflow on main for $digest"
 
 ref="$repo:$tag@$digest"
 cat >docker-compose.prebuilt.yml <<EOF

@@ -11,7 +11,9 @@
 # "publish" ticked). Pushes to ghcr.io/btcforplebs/sovereign-dns-nvpn under
 # the tag scripts/lib/nvpn-image.sh names, then prints the digest to repin.
 # The first publish creates the package as private: make it public in the
-# package settings, or installs cannot pull it and fall back to source.
+# package settings, or installs cannot pull it and fall back to source. The
+# index digest gets a signed build-provenance attestation, which
+# scripts/repin-prebuilt.sh checks before pinning.
 name: nvpn image
 
 on:
@@ -100,11 +102,15 @@ jobs:
           docker compose -f docker-compose.yml -f docker-compose.prebuilt.yml config -q
           docker pull "$ref"
           start=$SECONDS
-          out=$(docker compose up -d --build nvpn web 2>&1) || { echo "$out"; exit 1; }
-          echo "$out"
-          if grep -Eiq '(^| )(building|built)( |$)' <<<"$out"; then
-            echo "compose built something on the fast path; it should only have used $ref" >&2; exit 1
-          fi
+          docker compose up -d --build nvpn web
+          # Nothing built: compose tags a build as <project>-<service>, so
+          # neither name may exist. (Its progress output is no evidence either
+          # way: it prints "Building 0.0s (0/0)" when there is nothing to build.)
+          for s in sovereign-dns-nvpn sovereign-dns-web; do
+            if docker image inspect "$s" >/dev/null 2>&1; then
+              echo "compose built $s on the fast path; it should only have used $ref" >&2; exit 1
+            fi
+          done
           for s in sovereign-dns-nvpn sovereign-dns-web; do
             img=$(docker inspect -f '{{.Config.Image}}' "$s")
             [[ "$img" == "$ref" ]] || { echo "$s runs $img, not $ref" >&2; exit 1; }
@@ -155,6 +161,10 @@ jobs:
     permissions:
       contents: read
       packages: write
+      # Signed build provenance for the index digest: repin-prebuilt.sh
+      # refuses a digest this workflow, on main, did not attest.
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -168,6 +178,8 @@ jobs:
           printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
           docker buildx imagetools create -t "$repo:$tag" "$repo:$tag-amd64" "$repo:$tag-arm64"
           digest=$(docker buildx imagetools inspect "$repo:$tag" --format '{{json .Manifest}}' | python3 -c 'import json,sys; print(json.load(sys.stdin)["digest"])')
+          echo "REPO=$repo" >> "$GITHUB_ENV"
+          echo "DIGEST=$digest" >> "$GITHUB_ENV"
           {
             echo "### Published $repo:$tag"
             echo "Digest: \`$digest\`"
@@ -175,3 +187,9 @@ jobs:
             echo "Make the package public (first publish only), then pin it:"
             echo "\`scripts/repin-prebuilt.sh $digest\`"
           } >> "$GITHUB_STEP_SUMMARY"
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.REPO }}
+          subject-digest: ${{ env.DIGEST }}
+          push-to-registry: true

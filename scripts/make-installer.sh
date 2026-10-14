@@ -203,12 +203,25 @@ elif [[ -f docker-compose.prebuilt.yml ]]; then
 fi
 
 echo
+from_source_msg="Building and starting (the first run compiles from source and can take 10-15 minutes, 20-40 on a Raspberry Pi; later runs are fast)..."
 if [[ "$prebuilt" == "1" ]]; then
   echo "Building and starting (a few minutes on a Raspberry Pi; later runs are fast)..."
+  # If the ready-made image downloaded but the stack then fails to start,
+  # leaving COMPOSE_FILE in .env would keep every recovery (`docker compose
+  # up -d`, or running this installer again) on the same broken image. Drop
+  # it and build from source instead, which is what an install did before.
+  if ! docker compose up -d --build; then
+    (umask 077; grep -v '^COMPOSE_FILE=' .env > .env.tmp || true) && cat .env.tmp > .env && rm -f .env.tmp
+    echo
+    echo "The ready-made NostrVPN image did not start, so it will be built from source instead."
+    echo "(To skip the ready-made image next time: SOVEREIGN_DNS_BUILD_FROM_SOURCE=1 bash install.sh)"
+    echo "$from_source_msg"
+    docker compose up -d --build
+  fi
 else
-  echo "Building and starting (the first run compiles from source and can take 10-15 minutes, 20-40 on a Raspberry Pi; later runs are fast)..."
+  echo "$from_source_msg"
+  docker compose up -d --build
 fi
-docker compose up -d --build
 
 echo
 echo "Waiting for your dashboard to come up..."
