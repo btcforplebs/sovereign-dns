@@ -1,5 +1,15 @@
 name: sovereign-dns
 
+# Caps each container's log at 3 x 10 MB. nvpn's entrypoint follows the daemon
+# log into the container log with `tail -F`, and Docker's json-file driver keeps
+# everything by default: on Docker Desktop that fills the VM disk, Pi-hole dies,
+# and every device on the mesh loses DNS. Every service uses this.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   # NostrVPN node. This container is the "DNS device" the network admin
   # selects with `nvpn set --network-dns-node <this device's npub>
@@ -13,8 +23,9 @@ services:
         # A full commit SHA, not a branch: the build checks it out exactly and
         # fails if the fetched commit is anything else. Change the pin here,
         # where it is visible, rather than in .env.
-        NVPN_COMMIT: b16e1f75913308a1e4fd24db7fd49938d3fcd921
+        NVPN_COMMIT: a8ffb3caed1682ab57b1092212e5e368002fe8c5
     container_name: sovereign-dns-nvpn
+    logging: *logging
     restart: unless-stopped
     cap_add:
       - NET_ADMIN
@@ -72,8 +83,9 @@ services:
       context: ./nvpn
       args:
         NVPN_REPO: https://github.com/btcforplebs/nostr-vpn.git
-        NVPN_COMMIT: b16e1f75913308a1e4fd24db7fd49938d3fcd921
+        NVPN_COMMIT: a8ffb3caed1682ab57b1092212e5e368002fe8c5
     container_name: sovereign-dns-web
+    logging: *logging
     restart: unless-stopped
     entrypoint: ["/usr/local/bin/nvpn-web"]
     command:
@@ -105,6 +117,7 @@ services:
     # Bump both together: scripts/check-pins.sh fails on an unpinned image.
     image: pihole/pihole:2026.09.0@sha256:5b9c8cf51de7d6d3f2240dbe72baf5f06e1fd39cb4d77a99fab4fa13e23bd1be
     container_name: sovereign-dns-pihole
+    logging: *logging
     restart: unless-stopped
     network_mode: service:nvpn
     depends_on:
@@ -168,6 +181,7 @@ services:
     build:
       context: ./unbound
     container_name: sovereign-dns-unbound
+    logging: *logging
     restart: unless-stopped
     networks:
       dns-internal:
@@ -194,6 +208,7 @@ services:
     build:
       context: ./hub
     container_name: sovereign-dns-hub
+    logging: *logging
     restart: unless-stopped
     environment:
       TZ: ${TZ:-UTC}
@@ -220,6 +235,7 @@ services:
     build:
       context: ./docs
     container_name: sovereign-dns-docs
+    logging: *logging
     restart: unless-stopped
     ports:
       - "127.0.0.1:${DOCS_PORT:-8081}:80"
