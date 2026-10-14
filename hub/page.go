@@ -81,6 +81,7 @@ const pageHTML = `<!doctype html>
   .confirm h3 { margin: 0 0 6px; font-size: 16px; }
   .confirm p { margin: 0 0 12px; color: var(--dim); font-size: 14px; }
   .confirm .actions { display: flex; gap: 10px; flex-wrap: wrap; }
+{{template "addcss"}}
 </style>
 </head>
 <body>
@@ -184,7 +185,7 @@ const pageHTML = `<!doctype html>
     </a>
     <a class="card" href="{{.PanelURL}}">
       <span class="name">Control Panel</span><br>
-      <span class="detail">Manage devices, approve joins, pair with QR.</span>
+      <span class="detail">Rename or remove devices, network settings.</span>
     </a>
     {{if .PiholeURL}}
     <a class="card" href="{{.PiholeURL}}">
@@ -200,17 +201,12 @@ const pageHTML = `<!doctype html>
     {{end}}
   </div>
 
-  <h2>Bring another device onto the mesh</h2>
+  <h2 id="add-device">Add a device</h2>
   <div class="card">
     {{if .InviteCommand}}
-      <div class="detail">Run this on the new device:</div>
-      <pre>{{.InviteCommand}}</pre>
-      <p class="detail" style="margin:12px 0 0">
-        It only requests to join. Approve it in the
-        <a href="{{.PanelURL}}" style="color:var(--accent)">Control Panel</a>.
-      </p>
+      {{template "addcard" .}}
     {{else}}
-      <div class="detail">Waiting for the daemon before an invite can be generated.</div>
+      <div class="detail">Waiting for the VPN to start before a device can be added.</div>
     {{end}}
   </div>
 

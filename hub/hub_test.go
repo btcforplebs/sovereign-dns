@@ -97,6 +97,10 @@ type fakePanel struct {
 	decoyFirst bool // list an inactive network before the active one
 	noActive   bool // leave the top-level networkId blank
 	noNetworks bool // answer with an empty networks list
+	notAdmin   bool // this box is a member, not an admin
+	dropJoin   bool // accept an import without adding the device
+	selfEarly  bool // list the box itself before its state reads "local"
+	added      []string
 	writes     []*http.Request
 	bodies     []map[string]any
 }
@@ -108,11 +112,18 @@ func (f *fakePanel) handler() http.Handler {
 		if f.noNode {
 			node = ""
 		}
+		participants := []map[string]any{{"alias": "laptop", "state": "online", "reachable": true}}
+		if f.selfEarly {
+			participants = append(participants, map[string]any{"npub": "npub1box", "alias": "self", "state": "offline"})
+		}
+		for _, npub := range f.added {
+			participants = append(participants, map[string]any{"npub": npub, "state": "offline"})
+		}
 		networks := []map[string]any{{
 			"id": "network-1", "name": "home", "networkId": "9683dbda",
-			"localIsAdmin": true, "dnsNodeNpub": node,
+			"localIsAdmin": !f.notAdmin, "dnsNodeNpub": node,
 			"dnsOverride": f.override, "localIsDnsNode": !f.noNode,
-			"participants": []map[string]any{{"alias": "laptop", "state": "online", "reachable": true}},
+			"participants": participants,
 		}}
 		if f.decoyFirst {
 			networks = append([]map[string]any{{
@@ -144,6 +155,18 @@ func (f *fakePanel) handler() http.Handler {
 		f.bodies = append(f.bodies, body)
 		if !f.ignore {
 			f.override = body["dnsOverride"] == true
+		}
+		json.NewEncoder(w).Encode(state())
+	})
+	mux.HandleFunc("/api/import_join_request", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		f.writes = append(f.writes, r)
+		f.bodies = append(f.bodies, body)
+		if !f.dropJoin {
+			// The real panel parses the link; the fake trusts the test's.
+			_, j, _ := parseJoinLink(body["request"].(string))
+			f.added = append(f.added, j.DeviceNpub)
 		}
 		json.NewEncoder(w).Encode(state())
 	})

@@ -3,10 +3,12 @@
 **Status: the day-to-day management half now ships in the stack.** The
 `web` service runs NostrVPN's own browser control panel (`nvpn-web` +
 its Svelte UI, the same one the upstream Umbrel package uses) at
-`http://localhost:8082` on the machine running the containers: approve or
-reject join requests by click, add/remove devices and admins, rename
-networks, QR codes for pairing. It reads the same config volume as the
-`nvpn` daemon, so there is nothing extra to set up. It has no
+`http://localhost:8082` on the machine running the containers: add/remove
+devices and admins, rename networks. Adding a new device happens on the
+hub (`http://localhost:8080`, *Add a device*): paste the device's
+`nvpn://join-request/…` link, check the device ID, press Add. The hub hands
+the link to this panel's `/api/import_join_request`. The panel reads the
+same config volume as the `nvpn` daemon, so there is nothing extra to set up. It has no
 authentication of its own — the compose file publishes it **only to the
 host's loopback**, and it must never be exposed beyond that.
 
