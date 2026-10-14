@@ -7,5 +7,6 @@
 - [Layer 2: Pi-hole](layer-2-pihole.md)
 - [Layer 3: NostrVPN](layer-3-nostrvpn.md)
 - [Layer 4: Setup Wizard](layer-4-wizard.md)
+- [A Second Box](second-box.md)
 - [Gotchas & Troubleshooting](gotchas.md)
 - [Glossary](glossary.md)

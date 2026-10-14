@@ -282,8 +282,10 @@ fi
 
 if grep -q '"role": "nameserver"' <<<"$status"; then
   ok "this node is the network's nameserver"
+elif grep -q '"role": "backup"' <<<"$status"; then
+  ok "this node is a backup nameserver for the network"
 else
-  bad "this node is not the network's DNS node"
+  bad "this node is neither the network's DNS node nor a backup"
 fi
 
 # A device only actually gets sovereign DNS if the mesh can carry packets to

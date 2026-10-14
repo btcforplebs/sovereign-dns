@@ -16,6 +16,20 @@ DAEMON_LOG="${CONFIG_DIR}/daemon.log"
 # that collision.
 rm -f "${CONFIG_DIR}/daemon.pid"
 
+# Second-box mode: a box installed to back up an existing sovereign-dns box
+# joins that box's network instead of founding its own. Both values are
+# printed by the first box at startup (its npub and network ID). A half-set
+# pair is refused rather than guessed at: founding a network by mistake
+# leaves the box serving a network no device uses, with nothing in the logs.
+JOIN_ADMIN="${SOVEREIGN_DNS_JOIN_ADMIN:-}"
+JOIN_NETWORK="${SOVEREIGN_DNS_JOIN_NETWORK:-}"
+if [[ -n "$JOIN_ADMIN" && -z "$JOIN_NETWORK" ]] || [[ -z "$JOIN_ADMIN" && -n "$JOIN_NETWORK" ]]; then
+  echo "sovereign-dns: set both SOVEREIGN_DNS_JOIN_ADMIN and SOVEREIGN_DNS_JOIN_NETWORK, or neither" >&2
+  exit 1
+fi
+# Survives restarts, so a joined box never later prints itself as the admin.
+JOINED_MARKER="${CONFIG_DIR}/sovereign-dns-joined"
+
 FRESH_INIT=0
 if [[ ! -f "$CONFIG_FILE" ]]; then
   echo "sovereign-dns: no config found, creating a fresh NostrVPN identity"
@@ -45,7 +59,18 @@ echo "  npub: ${DEVICE_NPUB}"
 # DNS-override block runs earlier in the same `set` dispatch than the
 # devices-override block, so a single combined call would still see no
 # active network yet.
-if [[ "$FRESH_INIT" == "1" ]]; then
+if [[ "$FRESH_INIT" == "1" && -n "$JOIN_ADMIN" ]]; then
+  echo "sovereign-dns: joining the existing network ${JOIN_NETWORK} as a second DNS box"
+  if ! nvpn join-manual --admin-device-id "$JOIN_ADMIN" --network-id "$JOIN_NETWORK"; then
+    # Leave no config behind, so the next start is a fresh install that tries
+    # the join again, rather than a half-made box that neither joined nor
+    # founded anything. The identity it drops was created seconds ago.
+    rm -f "$CONFIG_FILE"
+    echo "sovereign-dns: could not join network ${JOIN_NETWORK}; will retry on next start" >&2
+    exit 1
+  fi
+  touch "$JOINED_MARKER"
+elif [[ "$FRESH_INIT" == "1" ]]; then
   echo "sovereign-dns: founding a new network on this device"
   nvpn set --device "$DEVICE_NPUB"
   echo "sovereign-dns: turning on the DNS override"
@@ -100,7 +125,20 @@ NETWORK_ID=$(awk '
   in_net && /^network_id[[:space:]]*=/ { print $3 }
 ' "$CONFIG_FILE" | tr -d '"' | head -1)
 
-if [[ -n "$NETWORK_ID" ]]; then
+if [[ -n "$JOIN_ADMIN" && "$FRESH_INIT" == "0" && ! -f "$JOINED_MARKER" ]]; then
+  echo "sovereign-dns: warning: SOVEREIGN_DNS_JOIN_* is set but this box already has its own"
+  echo "  network, so it was ignored. Joining only happens on a fresh install."
+fi
+
+if [[ -f "$JOINED_MARKER" ]]; then
+  echo "sovereign-dns: this box joined another box's network to serve as a backup."
+  echo "  On the FIRST box (the one that founded the network), run:"
+  echo "    1. docker exec sovereign-dns-nvpn nvpn add-device --device ${DEVICE_NPUB} --publish"
+  echo "       (or approve it in that box's control panel)"
+  echo "    2. docker exec sovereign-dns-nvpn nvpn set --network-dns-backup ${DEVICE_NPUB}"
+  echo "  Until step 2, no device sends lookups here. Other devices still join"
+  echo "  through the first box's invite, not this one."
+elif [[ -n "$NETWORK_ID" ]]; then
   echo "sovereign-dns: to add another device to this network:"
   echo "  1. On that device, run:"
   echo "       nvpn join-manual --admin-device-id ${DEVICE_NPUB} --network-id ${NETWORK_ID}"

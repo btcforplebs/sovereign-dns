@@ -50,6 +50,11 @@ services:
       # on: dial nvpn's two built-in public FIPS transit seeds (joins the
       # public FIPS mesh). off: never dial them. See .env.example.
       NVPN_FIPS_BOOTSTRAP: ${NVPN_FIPS_BOOTSTRAP:-on}
+      # Second box only. Set both to join an existing box's network as a
+      # backup DNS box instead of founding a new network. Read on the very
+      # first start only. See docs/src/second-box.md.
+      SOVEREIGN_DNS_JOIN_ADMIN: ${SOVEREIGN_DNS_JOIN_ADMIN:-}
+      SOVEREIGN_DNS_JOIN_NETWORK: ${SOVEREIGN_DNS_JOIN_NETWORK:-}
     # WireGuard underlay. Without this published, the container's only
     # address is the Docker-internal 172.28.53.10, which no other device can
     # reach and which STUN cannot map — peers then show as present (they
