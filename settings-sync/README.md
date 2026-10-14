@@ -67,6 +67,15 @@ box is the main one.
   match the hash in the owner's wrap. A box can't make a new owner's wrap, so
   it can neither swap the list nor re-date it. Boxes check the hash in their
   own wrap too. The page shows when the list it is editing was saved.
+- **The page never locks the owner out.** If the box's newest list can't be
+  opened or trusted (a stripped wrap, an older format, not a list at all),
+  the page says so in red and opens a fresh list from this box's Pi-hole
+  instead. Saving it replaces the shared list, so a box can't keep the owner
+  out of the page he would use to remove it.
+- **The page won't go back either.** It keeps the newest list it has saved
+  or opened in the browser's `localStorage`, per owner. A box that offers an
+  older list (one that might still name a box the owner removed) gets the
+  same red warning and the fresh list, never the old one.
 - **Saved state is checked again on start.** The applied list in
   `state.json` must still be genuine: kind, `d` tag, author and signature. The
   clock is not checked, so a box that boots with a slow clock keeps its list
@@ -155,14 +164,20 @@ address over plain http.
   were on the Pi-hole first survive a list that names them and a later list
   that drops them, across a restart.
 - `TestValidateRefusesAddresses` and `TestPageGuardMatchesGo`: the same cases
-  through `settings.go` and, under node, the page's guard (skipped if node is
-  missing).
+  through `settings.go` and, under node, the page's guard. The page tests
+  fail when node is missing; `SKIP_PAGE_TESTS=1` skips them on purpose.
 - `TestSavedStateIsReverified`: a re-dated or foreign list in `state.json` is
   dropped on start.
 - `TestSavedListSurvivesSlowClock`: a box booting 30 minutes slow keeps its
   saved list and is not rolled back.
-- `TestSealedDateMustMatch`: a genuine list re-dated without the owner is
-  refused.
+- `TestBindingMustMatch`: a list sealed for one date and signed with another
+  is refused.
+- `TestPageRefusesListForgedByBox`: a list a box re-encrypts or re-dates under
+  the content key is refused by the page (its real code, under node).
+- `TestPageEditorOpensWhenListWontOpen`: a stripped owner's wrap, a v1 list or
+  junk still reaches the editor, as a fresh list with a red warning.
+- `TestPageRefusesListOlderThanFloor`: after the page has seen a list, an
+  older one offered by the box is not opened for editing.
 - `TestFetchListsIsCapped`: a relay that streams without end yields 50 events.
 - `TestRelaysDownKeepsLastList`: with every relay down, after a restart, the
   box restores a shared entry that was removed locally.

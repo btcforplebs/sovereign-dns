@@ -568,10 +568,7 @@ func TestValidateRefusesAddresses(t *testing.T) {
 // its copy of the guard (between the markers in page.html) runs under node
 // on the same cases.
 func TestPageGuardMatchesGo(t *testing.T) {
-	node, err := exec.LookPath("node")
-	if err != nil {
-		t.Skip("node not installed; the page guard is not checked")
-	}
+	node := needNode(t)
 	page := string(pageHTML)
 	const begin, end = "// --- address guard", "// --- end address guard ---"
 	i, j := strings.Index(page, begin), strings.Index(page, end)
