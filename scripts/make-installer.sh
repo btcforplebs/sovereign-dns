@@ -6,16 +6,33 @@
 #
 #   scripts/make-installer.sh          regenerate scripts/install.sh
 #   scripts/make-installer.sh --check  fail if install.sh's payload differs
-#                                      from the tree (drift guard)
+#                                      from the tree (drift guard), or if
+#                                      install.sh.sha256 is not its hash
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 OUT="scripts/install.sh"
+# The published fingerprint, served next to install.sh. It cannot live inside
+# anything that ships in the payload (the docs included): writing the hash
+# would change the payload, and so the hash. Same format as `shasum -a 256`,
+# with a bare file name, so `shasum -a 256 -c install.sh.sha256` works in
+# whatever folder the two files were downloaded to.
+SUM="$OUT.sha256"
 MARKER="__PAYLOAD_BELOW__"
 
 payload_files() {
   # .githooks/ is for people working on the repo, not for installs.
-  git ls-files | grep -v -x "$OUT" | grep -v '^\.githooks/'
+  git ls-files | grep -v -x -e "$OUT" -e "$SUM" | grep -v '^\.githooks/'
+}
+
+sha256_line() {
+  local h
+  if command -v sha256sum >/dev/null 2>&1; then
+    h=$(sha256sum < "$1")
+  else
+    h=$(shasum -a 256 < "$1")
+  fi
+  printf '%s  %s\n' "${h%% *}" "$(basename "$1")"
 }
 
 make_payload() {
@@ -50,7 +67,14 @@ if [[ "${1:-}" == "--check" ]]; then
     printf 'drift (packed but no longer in tree): %s\n' $stale
     status=1
   fi
-  [[ "$status" == 0 ]] && echo "install.sh matches the tree"
+  if [[ ! -f "$SUM" ]]; then
+    echo "drift: $SUM does not exist"
+    status=1
+  elif [[ "$(cat "$SUM")" != "$(sha256_line "$OUT")" ]]; then
+    echo "drift: $SUM is not the hash of $OUT"
+    status=1
+  fi
+  [[ "$status" == 0 ]] && echo "install.sh matches the tree and $SUM"
   exit "$status"
 fi
 
@@ -190,4 +214,6 @@ HEADER
 } > "$OUT.tmp"
 mv "$OUT.tmp" "$OUT"
 chmod +x "$OUT"
+sha256_line "$OUT" > "$SUM"
 echo "wrote $OUT ($(wc -c < "$OUT" | tr -d ' ') bytes, $(payload_files | wc -l | tr -d ' ') files packed)"
+echo "wrote $SUM: $(cut -d' ' -f1 "$SUM")"
