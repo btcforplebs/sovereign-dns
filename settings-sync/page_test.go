@@ -436,6 +436,7 @@ type pageFloor struct {
 	CreatedAt int64  `json:"created_at"`
 	ID        string `json:"id"`
 	Boxes     []box  `json:"boxes"`
+	Rules     *int   `json:"rules"`
 }
 
 func floorIn(t *testing.T, store map[string]string, owner *btcec.PrivateKey) *pageFloor {
@@ -498,6 +499,9 @@ func TestPageEditorOpensWhenListWontOpen(t *testing.T) {
 			if len(got.List.Boxes) != wantBoxes {
 				t.Errorf("%s: editor names boxes %+v, want the %d this browser last trusted", name, got.List.Boxes, wantBoxes)
 			}
+			if known && (!strings.Contains(got.Msg, "had 1 rule;") || !strings.Contains(got.Msg, "may be out of date")) {
+				t.Errorf("%s: warning doesn't give the trusted list's rule count or say its boxes may be stale: %q", name, got.Msg)
+			}
 			if !strings.Contains(got.Kind, "err") || !strings.Contains(got.Msg, "failed this page's checks") || !strings.Contains(got.Msg, "come from the box that failed the check") {
 				t.Errorf("%s: no loud warning: %q (%s)", name, got.Msg, got.Kind)
 			}
@@ -549,6 +553,51 @@ func TestPageSaveFromFallbackKeepsBoxesAndNoHostileRule(t *testing.T) {
 	}
 }
 
+// Must-fix (Tron, round 5): a box that reports no list at all must not get
+// the first run's pre-fill once this browser has trusted a list: no rule
+// from its Pi-hole, and every box that list named. It may be honest (relays
+// down at a fresh start), so the warning doesn't accuse it.
+func TestPageNoListAfterTrustedListIsAFallback(t *testing.T) {
+	clock := time.Unix(1_800_000_000, 0)
+	logen := mustKey(t)
+	b := newBox(t, pubHex(logen), newFakeRelays(), &clock)
+	other := box{PubKey: pubHex(mustKey(t)), Name: "Pi 4"}
+	genuine := signed(t, logen, &settings{V: 1, Boxes: []box{b.asBox("pi"), other},
+		Lists:   blocklist("https://lists.example/real.txt"),
+		Domains: []domain{{Domain: "tracker.example.com", Type: "deny", Kind: "exact", Enabled: true, Groups: []string{defaultGroup}}}}, clock.Unix()-100)
+	store := unlockPage(t, logen, pageVisit{st: boxState(b, genuine), now: clock}).Store
+	if floorIn(t, store, logen) == nil {
+		t.Fatal("no floor after a trusted visit")
+	}
+
+	got := unlockPage(t, logen, pageVisit{st: hostileState(b, nil), store: store, now: clock, save: true})
+	if !strings.Contains(got.Kind, "err") || !strings.Contains(got.Msg, "isn't showing the shared list this browser has already seen") ||
+		!strings.Contains(got.Msg, "had 2 rules;") || strings.Contains(got.Msg, "failed") {
+		t.Errorf("warning: %q (%s)", got.Msg, got.Kind)
+	}
+	if len(got.List.Lists)+len(got.List.Domains)+len(got.List.Groups) != 0 {
+		t.Errorf("editor pre-filled from the box: %+v", got.List)
+	}
+	saved := savedList(t, logen, got)
+	if len(saved.Lists)+len(saved.Domains)+len(saved.Groups) != 0 {
+		t.Errorf("rules from the box signed: %+v %+v %+v", saved.Lists, saved.Domains, saved.Groups)
+	}
+	keys := map[string]bool{}
+	for _, x := range saved.Boxes {
+		keys[x.PubKey] = true
+	}
+	if !keys[other.PubKey] || !keys[pubHex(b.key)] || len(keys) != 2 {
+		t.Errorf("saved for boxes %+v, want this box and %s", saved.Boxes, other.Name)
+	}
+
+	// With no floor, no list is a first run: the editor starts from this
+	// box's Pi-hole, as before.
+	got = unlockPage(t, logen, pageVisit{st: boxState(b, nil), now: clock})
+	if a := addresses(got.List.Lists); len(a) != 1 || a[0] != "https://lists.example/on-this-box.txt" || strings.Contains(got.Kind, "err") {
+		t.Fatalf("first run: %+v", got)
+	}
+}
+
 // Must-fix 2 (Tron, round 3): a box can offer an older genuine list, and the
 // owner's next save would make it the newest everywhere, re-admitting a box
 // he removed. The page keeps a floor and won't edit anything older.
@@ -566,7 +615,7 @@ func TestPageRefusesListOlderThanFloor(t *testing.T) {
 		t.Fatalf("newer list: %+v", got)
 	}
 	store := got.Store
-	if f := floorIn(t, store, logen); f == nil || f.CreatedAt != newer.CreatedAt || f.ID != newer.ID || len(f.Boxes) != 1 {
+	if f := floorIn(t, store, logen); f == nil || f.CreatedAt != newer.CreatedAt || f.ID != newer.ID || len(f.Boxes) != 1 || f.Rules == nil || *f.Rules != 1 {
 		t.Fatalf("floor after opening the newer list: %+v", f)
 	}
 

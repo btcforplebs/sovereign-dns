@@ -295,15 +295,17 @@ async function load() {
 }
 
 // The freshness floor: the newest list this browser has saved or opened for
-// this owner, and the boxes it named. A box never goes back, so one that
-// offers something older is replaying an old list, which could hand read
-// access back to a removed box. The boxes are what a fallback starts from.
+// this owner, the boxes it named and how many rules it had. A box never goes
+// back, so one that offers something older is replaying an old list, which
+// could hand read access back to a removed box. The boxes are what a
+// fallback starts from; the rule count makes an emptied list obvious.
 const FLOOR = () => D + " floor " + st.owner;
 function floor() { try { return JSON.parse(localStorage.getItem(FLOOR())) || null; } catch { return null; } }
 function remember(ev, s) {
   const f = floor();
-  if (!f || !isOlder(ev, f)) try { localStorage.setItem(FLOOR(), JSON.stringify({ created_at: ev.created_at, id: ev.id, boxes: s.boxes || [] })); } catch {}
+  if (!f || !isOlder(ev, f)) try { localStorage.setItem(FLOOR(), JSON.stringify({ created_at: ev.created_at, id: ev.id, boxes: s.boxes || [], rules: ruleCount(s) })); } catch {}
 }
+const ruleCount = (s) => (s.groups || []).length + (s.lists || []).length + (s.domains || []).length;
 // As maxFutureSkew in sync.go: boxes refuse a list dated further ahead.
 const MAX_SKEW = 600;
 const nowSec = () => Math.floor(Date.now() / 1000);
@@ -319,22 +321,26 @@ const when = (t) => new Date(t * 1000).toLocaleString();
 // the hands of the box that just failed the check, and only the boxes this
 // browser last trusted. problem says why, when it fell back.
 async function startingList() {
+  const f = floor();
+  const fallback = (base, problem, accuse) => ({ list: { v: LIST_V, boxes: (f && f.boxes) || [], groups: [], lists: [], domains: [] }, base, problem, accuse,
+    knownBoxes: !!(f && f.boxes && f.boxes.length), rules: f && typeof f.rules === "number" ? f.rules : null });
   if (!st.newest) {
+    // No list from the box, but this browser has trusted one: an honest box
+    // can say so too (a fresh start with the relays down), so this is not an
+    // accusation, but its Pi-hole doesn't get to fill in the list either.
+    if (f) return fallback("", `this box isn't showing the shared list this browser has already seen (saved ${when(f.created_at)})`, false);
     const l = st.local || {};
     return { list: { v: LIST_V, boxes: [], groups: l.groups || [], lists: l.lists || [], domains: l.domains || [] }, base: "", problem: "" };
   }
   try {
     await checkEvent(st.newest);
     if (st.newest.created_at > nowSec() + MAX_SKEW) throw new Error(`the box offered a list dated ${when(st.newest.created_at)}, ahead of this computer's clock; every box refuses it`);
-    const f = floor();
     if (f && isOlder(st.newest, f)) throw new Error(`the box offered a list saved ${when(st.newest.created_at)}, older than the one this browser last saw (${when(f.created_at)})`);
     const opened = await openList(st.newest, st.owner);
     remember(st.newest, opened);
     return { list: opened, base: st.newest.id, problem: "" };
   } catch (e) {
-    const f = floor();
-    return { list: { v: LIST_V, boxes: (f && f.boxes) || [], groups: [], lists: [], domains: [] }, base: st.newest.id,
-      problem: e.message || String(e), knownBoxes: !!(f && f.boxes && f.boxes.length) };
+    return fallback(st.newest.id, e.message || String(e), true);
   }
 }
 let untrusted = false; // the editor is a fallback: nothing from this box's Pi-hole is offered
@@ -351,9 +357,13 @@ async function unlock() {
     // A box that failed the check doesn't get added to its own list.
     const added = !untrusted && !list.boxes.some((b) => b.pubkey === st.box);
     if (added) list.boxes.push({ pubkey: st.box, name: "This box" });
-    if (untrusted) say(`This box's shared list failed this page's checks, so it is not shown: ${start.problem}. ` +
-      "You are starting a new list. No rules are filled in: this box's Pi-hole entries come from the box that failed the check, so none of them are shown or offered. " +
-      (start.knownBoxes ? "The boxes below come from the last list this browser trusted, not from this box. " : "This browser has no record of your boxes, so none are listed: add each box that should read the list. ") +
+    if (untrusted) say((start.accuse ? `This box's shared list failed this page's checks, so it is not shown: ${start.problem}. ` : `The shared list can't be shown: ${start.problem}. `) +
+      "You are starting a new list. No rules are filled in: " +
+      (start.accuse ? "this box's Pi-hole entries come from the box that failed the check, so none of them are shown or offered. "
+        : "they would come from this box's Pi-hole, which this page can't check against that list, so none of them are shown or offered. ") +
+      (start.rules !== null ? `The last list this browser trusted had ${start.rules} ${start.rules === 1 ? "rule" : "rules"}; none are shown, so saving removes them from every box. ` : "") +
+      (start.knownBoxes ? "The boxes below come from the last list this browser trusted, not from this box, and may be out of date: a box added from another browser isn't in it. "
+        : "This browser has no record of your boxes, so none are listed: add each box that should read the list. ") +
       "Saving replaces the shared list on every box with what is below, and only the boxes listed can read it.", "err");
     else if (!st.newest) say("No shared list exists yet. This one starts from this box's current Pi-hole; saving it makes it the list for every box.", "warn");
     else if (added) say("This box isn't in the list yet. It has been added below; save to share the list with it.", "warn");
