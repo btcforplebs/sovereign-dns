@@ -120,7 +120,7 @@ type page struct {
 	OwnNpub       string
 	NetworkID     string
 	NetworkName   string
-	InviteCommand string
+	AddReady      bool // gates the Add-a-device card: this box knows its own device ID and network
 	Devices       []device
 	MeshSummary   string
 	MeshState     string
@@ -381,10 +381,7 @@ func (c config) buildPage(ctx context.Context) page {
 		}
 		p.Tiles = append(p.Tiles, tile{Name: "Mesh devices", State: p.MeshState, Detail: p.MeshSummary})
 
-		if p.OwnNpub != "" && p.NetworkID != "" {
-			p.InviteCommand = fmt.Sprintf(
-				"nvpn join-manual --admin-device-id %s --network-id %s", p.OwnNpub, p.NetworkID)
-		}
+		p.AddReady = p.OwnNpub != "" && p.NetworkID != ""
 	}
 
 	p.DNS = buildDNSControl(p)

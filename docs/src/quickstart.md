@@ -242,14 +242,16 @@ and the other two on the box.
 1. **Make a join link on the new device.**
    - **iPhone, iPad or Android:** install Nostr VPN, open it, and go to
      *Join Network*. It shows a QR code with *Copy Request* and *Share*
-     under it. Tap **Share** and AirDrop it to the box's computer, or tap
-     **Copy Request** and send it to yourself in any app you can open on
-     the box.
+     under it. Tap **Share** and AirDrop it to the box's computer. No
+     AirDrop? Tap **Copy Request** and get it across directly, by cable or
+     by typing it.
    - **Mac, Windows or Linux:** install Nostr VPN, open a terminal and run
      `nvpn join-request --no-qr`. Copy the line it prints.
 
    The link starts with `nvpn://join-request/`. The device isn't on your
-   network yet.
+   network yet. Treat the link like a one-time password: it carries a
+   secret the device uses to accept its approval, so don't send it through
+   chat or email. On its own it changes nothing on the box.
 2. **Paste it on the box.** On the dashboard (or step 2 of the setup
    guide), paste the link into **Add a device**. If the box's computer has
    a camera and you use Chrome or Edge, you can press **Scan its QR code**

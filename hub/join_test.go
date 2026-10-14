@@ -58,6 +58,10 @@ func TestParseJoinLink(t *testing.T) {
 		"no secret":     makeLink(t, map[string]string{"deviceAppKeyNpub": phoneNpub, "requestNpub": "npub1r"}),
 		"no npub":       makeLink(t, map[string]string{"deviceAppKeyNpub": "abc", "requestSecret": "s"}),
 		"too long":      joinLinkPrefix + strings.Repeat("A", joinLinkMaxLen),
+		// A look-alike rune in the prefix (U+017F, long s) is refused. The
+		// prefix check and the payload cut read the same bytes, so a rune
+		// that changes length under case mapping can't shift the cut.
+		"long s prefix": strings.Replace(phoneLink(t), "request", "reque\u017ft", 1),
 	}
 	for name, v := range bad {
 		if _, _, err := parseJoinLink(v); err == nil {
@@ -103,10 +107,13 @@ func TestAddDeviceOnlyAfterReview(t *testing.T) {
 		}
 	}
 
-	// From the wizard, back to the wizard's approval step.
+	// Pasted again from the wizard: the page says it's already on the mesh,
+	// offers no Add, and Done leads back to the wizard's approval step.
 	rec = postAdd(mux, url.Values{"csrf": {cfg.csrfToken}, "request": {link}, "from": {"setup"}}, nil)
-	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/setup?step=3" {
-		t.Fatalf("already-added device from the wizard: %d %q", rec.Code, rec.Header().Get("Location"))
+	body := rec.Body.String()
+	if rec.Code != http.StatusOK || !strings.Contains(body, "already on your mesh") ||
+		strings.Contains(body, `name="confirm"`) || !strings.Contains(body, `href="/setup?step=3"`) {
+		t.Fatalf("already-added device from the wizard: %d\n%s", rec.Code, body)
 	}
 	if len(f.writes) != 1 {
 		t.Fatalf("a device already on the network was imported again")

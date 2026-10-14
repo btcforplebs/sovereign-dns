@@ -11,11 +11,18 @@ package main
 // the admin check, the roster change and the delivery back to the device all
 // stay in nvpn's code, the same way dns.go leaves the DNS switch to the panel.
 //
-// Nothing here approves on its own. The link is plain text that can travel
-// through AirDrop, chat or email, so whoever pastes it is the approval: the
-// review step shows the device ID and does nothing until Add is pressed. The
-// route carries the same guards as /dns: POST only, a loopback Host, this
-// page's own origin, and the per-process CSRF token.
+// Nothing here approves on its own: pasting a link shows the device ID, and
+// the page's Add button is what sends it to the panel. That review is a page
+// flow, not a server-side lock: a POST that already carries confirm=yes
+// imports directly, so what actually stands in front of the panel is the
+// route's guards, the same as /dns: POST only, a loopback Host, this page's
+// own origin, and the per-process CSRF token.
+//
+// The link is not harmless to pass around. It carries the device's
+// requestSecret in the clear, the token the device uses to accept an
+// approval at a point where it can't yet check who approved it (nvpn redacts
+// it everywhere it logs or stores it). So the copy here treats it like a
+// one-time password: hand it over directly, not through chat or email.
 
 import (
 	"bytes"
@@ -61,10 +68,15 @@ func parseJoinLink(raw string) (string, joinLink, error) {
 	if len(link) > joinLinkMaxLen {
 		return "", j, errors.New("That is too long to be a Nostr VPN join link.")
 	}
-	if !strings.HasPrefix(strings.ToLower(link), joinLinkPrefix) {
+	// Match and cut on the same bytes of the same string. Lowercasing the
+	// whole link first can change its length (some runes fold to a shorter
+	// encoding), which would shift where the payload starts.
+	n := len(joinLinkPrefix)
+	if len(link) < n || strings.ToLower(link[:n]) != joinLinkPrefix {
 		return "", j, errors.New("That isn't a Nostr VPN join link. It should start with nvpn://join-request/")
 	}
-	payload, err := base64.RawURLEncoding.DecodeString(link[len(joinLinkPrefix):])
+	rest := link[n:]
+	payload, err := base64.RawURLEncoding.DecodeString(rest)
 	if err != nil {
 		return "", j, errors.New("That join link is damaged. Copy it again from the device.")
 	}
@@ -73,7 +85,7 @@ func parseJoinLink(raw string) (string, joinLink, error) {
 	if err := dec.Decode(&j); err != nil || !strings.HasPrefix(j.DeviceNpub, "npub1") || j.Secret == "" {
 		return "", j, errors.New("That join link is damaged. Copy it again from the device.")
 	}
-	return joinLinkPrefix + link[len(joinLinkPrefix):], j, nil
+	return joinLinkPrefix + rest, j, nil
 }
 
 // addDevicePage is the review step and the result of a failed add.
@@ -84,6 +96,7 @@ type addDevicePage struct {
 	NetworkName string
 	CSRF        string
 	Error       string
+	Joined      bool // the device is already on the mesh; nothing to add
 	Return      string
 }
 
@@ -139,13 +152,15 @@ func (c config) serveAddDevice(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, d := range p.Devices {
 		if d.Npub == j.DeviceNpub {
-			http.Redirect(w, r, view.Return, http.StatusSeeOther)
+			// Say so: a silent bounce back looks the same as "nothing happened".
+			view.Joined = true
+			renderAdd(w, view, http.StatusOK)
 			return
 		}
 	}
 
-	// The review step. Nothing reaches the panel until the reader presses Add
-	// on this page, which posts the same link back with confirm=yes.
+	// The review step. The page's Add button posts the same link back with
+	// confirm=yes; without it, nothing is sent to the panel.
 	if r.PostForm.Get("confirm") != "yes" {
 		renderAdd(w, view, http.StatusOK)
 		return
@@ -275,18 +290,23 @@ const addDeviceHTML = `<!doctype html>
 <main>
   <p class="brand">Sovereign-DNS · add a device</p>
   {{if .Error}}<div class="err" role="alert">{{.Error}}</div>{{end}}
-  {{if .Device}}
+  {{if .Joined}}
+  <h1>This device is already on your mesh</h1>
+  <p class="lede">Nothing was changed. It's already in {{if .NetworkName}}{{.NetworkName}}{{else}}your network{{end}}, so there's nothing to add.</p>
+  {{else if .Device}}
   <h1>Add this device{{if .NetworkName}} to {{.NetworkName}}{{end}}?</h1>
   <p class="lede">It joins your mesh and starts using this box for DNS. Only add a device you recognise.</p>
+  {{end}}
+  {{if .Device}}
   <div class="card">
     <div class="label">Device</div>
     <div class="name">{{if .Label}}{{.Label}}{{else}}Unnamed device{{end}}</div>
     <div class="label">Device ID</div>
     <code>{{.Device}}</code>
-    <p class="fine" style="margin:12px 0 0">Check that this matches the new device's own ID. In the Nostr VPN app: <em>Join Network</em> → <em>Manual join</em>. On a computer: <code>nvpn status</code>, the <code>device_id</code> line.</p>
+    {{if not .Joined}}<p class="fine" style="margin:12px 0 0">Check that this matches the new device's own ID. In the Nostr VPN app: <em>Join Network</em> → <em>Manual join</em>. On a computer: <code>nvpn status</code>, the <code>device_id</code> line.</p>{{end}}
   </div>
   <div class="actions">
-    {{if not .Error}}
+    {{if not (or .Error .Joined)}}
     <form method="post" action="/devices/add">
       <input type="hidden" name="csrf" value="{{.CSRF}}">
       <input type="hidden" name="request" value="{{.Link}}">
@@ -295,7 +315,7 @@ const addDeviceHTML = `<!doctype html>
       <button class="btn primary" type="submit" autofocus>Add device</button>
     </form>
     {{end}}
-    <a class="btn" href="{{.Return}}">Cancel</a>
+    <a class="btn{{if .Joined}} primary{{end}}" href="{{.Return}}">{{if .Joined}}Done{{else}}Cancel{{end}}</a>
   </div>
   {{else}}
   <h1>That link didn't work</h1>
@@ -349,12 +369,14 @@ const addCardHTML = `{{define "addcss"}}
 </form>
 <div class="add-how">
   <p><strong>iPhone or Android:</strong> open Nostr VPN, go to <em>Join Network</em>, tap
-    <em>Share</em> and AirDrop it to this computer (or tap <em>Copy Request</em> and send it to
-    yourself). Paste it above.</p>
+    <em>Share</em> and AirDrop it to this computer, then paste it above. No AirDrop? Tap
+    <em>Copy Request</em> and type or paste it here yourself.</p>
   <p><strong>Mac, Windows or Linux:</strong> with Nostr VPN installed, run
     <code>nvpn join-request --no-qr</code> and paste the line it prints.</p>
-  <p class="add-fine">The link is not a secret and it can't add anything by itself: you see which
-    device it names and press Add. Adding it is the approval.</p>
+  <p class="add-fine">Treat the link like a one-time password: it's good for one join. Hand it
+    over directly (AirDrop, a cable, or typing it), not through chat or email. On its own it
+    changes nothing on this box: you see which device it names and press Add. Adding it is the
+    approval.</p>
 </div>
 <script>
 (function () {

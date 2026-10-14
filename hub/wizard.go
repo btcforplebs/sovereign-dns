@@ -110,7 +110,7 @@ func buildWizard(p page, want int) wizardPage {
 func stateKey(p page) string {
 	return fmt.Sprintf("%t%t%t%t-%d-%d-%d-%t%t",
 		p.DaemonUp, p.PanelUp, p.PiholeUp, p.UnboundUp,
-		p.PendingJoins, len(p.Devices), p.Covered, p.InviteCommand != "", p.PiholeURL != "")
+		p.PendingJoins, len(p.Devices), p.Covered, p.AddReady, p.PiholeURL != "")
 }
 
 func (c config) serveWizard(w http.ResponseWriter, r *http.Request) {
@@ -284,7 +284,7 @@ const wizardHTML = `<!doctype html>
   <p class="lede">The new device makes a join link. Bring it here and you'll be asked to approve it.</p>
 
   <div class="card" id="add-device">
-    {{if .InviteCommand}}
+    {{if .AddReady}}
     {{template "addcard" .}}
     {{else}}
     <p>Waiting for the VPN to start before a device can be added. Go back to step 1 if this takes more than a minute.</p>

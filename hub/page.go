@@ -203,7 +203,7 @@ const pageHTML = `<!doctype html>
 
   <h2 id="add-device">Add a device</h2>
   <div class="card">
-    {{if .InviteCommand}}
+    {{if .AddReady}}
       {{template "addcard" .}}
     {{else}}
       <div class="detail">Waiting for the VPN to start before a device can be added.</div>
