@@ -5,59 +5,79 @@
 # only regenerated. Run this after changing any file that ships.
 #
 #   scripts/make-installer.sh          regenerate scripts/install.sh
-#   scripts/make-installer.sh --check  fail if install.sh's payload differs
-#                                      from the tree (drift guard)
+#   scripts/make-installer.sh --check  fail if install.sh is not, byte for
+#                                      byte, what this tree builds (drift
+#                                      guard), or if install.sh.sha256 is
+#                                      not its hash
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 OUT="scripts/install.sh"
+# The published fingerprint, served next to install.sh. It cannot live inside
+# anything that ships in the payload (the docs included): writing the hash
+# would change the payload, and so the hash. Same format as `shasum -a 256`,
+# with a bare file name, so `shasum -a 256 -c install.sh.sha256` works in
+# whatever folder the two files were downloaded to.
+SUM="$OUT.sha256"
 MARKER="__PAYLOAD_BELOW__"
 
 payload_files() {
   # .githooks/ is for people working on the repo, not for installs.
-  git ls-files | grep -v -x "$OUT" | grep -v '^\.githooks/'
+  git ls-files | grep -v -x -e "$OUT" -e "$SUM" | grep -v '^\.githooks/'
 }
 
+sha256_line() {
+  local h
+  if command -v sha256sum >/dev/null 2>&1; then
+    h=$(sha256sum < "$1")
+  else
+    h=$(shasum -a 256 < "$1")
+  fi
+  printf '%s  %s\n' "${h%% *}" "$(basename "$1")"
+}
+
+# The payload is a plain tar written by git, never by the host's tar or gzip,
+# so the same tree gives the same install.sh bytes on any machine. Measured:
+# bsdtar and GNU tar write different headers, Apple and GNU gzip compress the
+# same tar differently, and both tars record each file's mtime and owner, so a
+# bare `touch` used to change the hash. git archive records only what git
+# tracks: the path, the content, and the mode git stores (644 or 755; tar.umask
+# is pinned so a user's git config can't change it), with a fixed time and
+# owner root. Content comes from the working tree, as before, through a
+# throwaway index; modes come from the real index, so a checkout with
+# core.fileMode=false still packs the scripts as executable. The tar is left
+# uncompressed because compressed bytes depend on the zlib build.
+PAYLOAD_MTIME="2000-01-01 00:00:00 +0000"
+
 make_payload() {
-  # gzip -n: no embedded timestamp, so an unchanged tree packs identically.
-  payload_files | tar -cf - -T - | gzip -n
+  [[ "$(git archive -h 2>&1)" == *--mtime* ]] || {
+    echo "make-installer.sh needs git 2.42 or later (git archive --mtime)." >&2
+    exit 1
+  }
+  local idx tree
+  idx=$(mktemp)
+  rm -f "$idx"
+  payload_files | while IFS= read -r f; do
+    printf '%s %s\t%s\n' "$(git ls-files -s -- "$f" | cut -d' ' -f1)" "$(git hash-object -w -- "$f")" "$f"
+  done | GIT_INDEX_FILE="$idx" git update-index --add --index-info
+  tree=$(GIT_INDEX_FILE="$idx" git write-tree)
+  rm -f "$idx"
+  git -c tar.umask=022 -c core.autocrlf=false -c core.eol=lf \
+    archive --format=tar --mtime="$PAYLOAD_MTIME" "$tree"
+}
+
+# GNU base64 wraps at 76 columns and macOS base64 doesn't wrap at all, so
+# strip whatever the host did and wrap at 76 ourselves.
+b64_encode() {
+  base64 | tr -d '\n' | fold -w 76
+  echo
 }
 
 b64_decode() {
   if printf 'QQo=' | base64 -d >/dev/null 2>&1; then base64 -d; else base64 -D; fi
 }
 
-if [[ "${1:-}" == "--check" ]]; then
-  # The pins are part of what --check guards, so one command proves both.
-  scripts/check-pins.sh >/dev/null || { scripts/check-pins.sh; exit 1; }
-  [[ -f "$OUT" ]] || { echo "drift: $OUT does not exist"; exit 1; }
-  tmp=$(mktemp -d)
-  trap 'rm -rf "$tmp"' EXIT
-  line=$(awk -v m="$MARKER" '$0 == m { print NR + 1; exit }' "$OUT")
-  [[ -n "$line" ]] || { echo "drift: no payload marker in $OUT"; exit 1; }
-  mkdir "$tmp/tree"
-  tail -n +"$line" "$OUT" | b64_decode > "$tmp/payload.tgz"
-  tar -xzf "$tmp/payload.tgz" -C "$tmp/tree"
-  status=0
-  while IFS= read -r f; do
-    if ! diff -q "$tmp/tree/$f" "$f" >/dev/null 2>&1; then
-      echo "drift: $f"
-      status=1
-    fi
-  done < <(payload_files)
-  stale=$(cd "$tmp/tree" && find . -type f | sed 's|^\./||' | sort | comm -23 - <(cd "$OLDPWD" && payload_files | sort))
-  if [[ -n "$stale" ]]; then
-    printf 'drift (packed but no longer in tree): %s\n' $stale
-    status=1
-  fi
-  [[ "$status" == 0 ]] && echo "install.sh matches the tree"
-  exit "$status"
-fi
-
-# Never ship an installer whose images or sources can change underneath it.
-scripts/check-pins.sh >/dev/null || { scripts/check-pins.sh; exit 1; }
-
-{
+render_installer() {
   cat << 'HEADER'
 #!/usr/bin/env bash
 # Sovereign-DNS one-shot installer.
@@ -97,7 +117,7 @@ mkdir -p sovereign-dns
 if printf 'QQo=' | base64 -d >/dev/null 2>&1; then dec() { base64 -d; }; else dec() { base64 -D; }; fi
 payload_line=$(awk '/^__PAYLOAD_BELOW__$/ { print NR + 1; exit }' "$0")
 [[ -n "$payload_line" ]] || die "This installer file is truncated — re-download it and run again."
-tail -n +"$payload_line" "$0" | dec | tar -xzf - -C sovereign-dns
+tail -n +"$payload_line" "$0" | dec | tar -xf - -C sovereign-dns
 cd sovereign-dns
 
 if [[ ! -f .env ]]; then
@@ -186,8 +206,63 @@ echo "=========================================="
 exit 0
 HEADER
   echo "$MARKER"
-  make_payload | base64
-} > "$OUT.tmp"
+  make_payload | b64_encode
+}
+
+if [[ "${1:-}" == "--check" ]]; then
+  # The pins are part of what --check guards, so one command proves both.
+  scripts/check-pins.sh >/dev/null || { scripts/check-pins.sh; exit 1; }
+  [[ -f "$OUT" ]] || { echo "drift: $OUT does not exist"; exit 1; }
+  tmp=$(mktemp -d)
+  trap 'rm -rf "$tmp"' EXIT
+  line=$(awk -v m="$MARKER" '$0 == m { print NR + 1; exit }' "$OUT")
+  [[ -n "$line" ]] || { echo "drift: no payload marker in $OUT"; exit 1; }
+  mkdir "$tmp/tree"
+  tail -n +"$line" "$OUT" | b64_decode > "$tmp/payload.tar"
+  tar -xf "$tmp/payload.tar" -C "$tmp/tree"
+  status=0
+  # Keep this per-file loop even though the byte compare below exists: a file
+  # dropped by a .gitattributes export-ignore is missing from both the shipped
+  # and the rebuilt payload, so only this loop, which reads the tree, sees it.
+  while IFS= read -r f; do
+    if ! diff -q "$tmp/tree/$f" "$f" >/dev/null 2>&1; then
+      echo "drift: $f"
+      status=1
+    fi
+  done < <(payload_files)
+  stale=$(cd "$tmp/tree" && find . -type f | sed 's|^\./||' | sort | comm -23 - <(cd "$OLDPWD" && payload_files | sort))
+  if [[ -n "$stale" ]]; then
+    printf 'drift (packed but no longer in tree): %s\n' $stale
+    status=1
+  fi
+  # Same files is not enough for a published hash: rebuild and compare bytes.
+  # Nothing about the checkout (mtimes, owner, umask, tar or gzip build) feeds
+  # the payload, so any difference here is a real one.
+  render_installer > "$tmp/rebuilt.sh"
+  if ! cmp -s "$tmp/rebuilt.sh" "$OUT"; then
+    echo "drift: $OUT is not what this tree builds (run scripts/make-installer.sh)"
+    status=1
+  fi
+  if [[ ! -f "$SUM" ]]; then
+    echo "drift: $SUM does not exist"
+    status=1
+  elif [[ "$(cat "$SUM")" != "$(sha256_line "$OUT")" ]]; then
+    echo "drift: $SUM is not the hash of $OUT"
+    status=1
+  fi
+  [[ "$status" == 0 ]] && echo "install.sh matches the tree and $SUM"
+  exit "$status"
+fi
+
+# Never ship an installer whose images or sources can change underneath it.
+scripts/check-pins.sh >/dev/null || { scripts/check-pins.sh; exit 1; }
+
+render_installer > "$OUT.tmp"
 mv "$OUT.tmp" "$OUT"
 chmod +x "$OUT"
-echo "wrote $OUT ($(wc -c < "$OUT" | tr -d ' ') bytes, $(payload_files | wc -l | tr -d ' ') files packed)"
+sha256_line "$OUT" > "$SUM"
+# Count what the archive holds, not what payload_files lists: they differ if
+# git archive leaves a file out (export-ignore), and --check reports that.
+packed=$(tail -n +"$(awk -v m="$MARKER" '$0 == m { print NR + 1; exit }' "$OUT")" "$OUT" | b64_decode | tar -tf - | grep -vc '/$')
+echo "wrote $OUT ($(wc -c < "$OUT" | tr -d ' ') bytes, $packed files packed)"
+echo "wrote $SUM: $(cut -d' ' -f1 "$SUM")"
