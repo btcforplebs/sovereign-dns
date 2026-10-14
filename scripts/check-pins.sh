@@ -615,7 +615,7 @@ for f in $surface_files; do
       *) fail "a compose file defines service $s, which this gate has no rule for"; continue ;;
     esac
     case "$k" in
-      build|cap_add|command|container_name|depends_on|devices|entrypoint|environment|healthcheck|image|network_mode|networks|ports|restart|volumes) ;;
+      build|cap_add|command|container_name|depends_on|devices|entrypoint|environment|healthcheck|image|logging|network_mode|networks|ports|restart|volumes) ;;
       *) fail "$s sets $k, a service key this gate has no rule for" ;;
     esac
     [[ -z "$v" ]] && continue
@@ -623,6 +623,31 @@ for f in $surface_files; do
       || fail "$s $k '$v' is not one this gate allows (bind mounts, published ports, network_mode, networks, devices and capabilities are default-deny)"
   done < <(sed "s|$root/|./|g" "$f" | surface /dev/stdin)
 done
+# Required, not just allowed: every service caps its container log. Docker's
+# json-file driver keeps everything by default; on Docker Desktop a full VM disk
+# kills Pi-hole and with it DNS for the whole mesh. The driver is fixed too: a
+# syslog, gelf or fluentd driver would ship every log line off the box. Raw mode
+# sees the unexpanded alias, so it checks the alias and the anchor instead.
+for s in docs hub web nvpn pihole unbound; do
+  blk=$(awk -v s="$s" '$0 == "  " s ":" { a = 1; next }
+                       a && /^  [^[:space:]#]/ { a = 0 }
+                       a' "$loaded")
+  if [[ "$mode" == rendered ]]; then
+    lg=$(awk '/^    logging:/ { l = 1; next } l && /^    [^[:space:]]/ { l = 0 } l' <<<"$blk")
+    grep -qx '      driver: json-file' <<<"$lg" \
+      && grep -Eqx '        max-size: "?[0-9]+[km]?"?' <<<"$lg" \
+      && grep -Eqx '        max-file: "?[0-9]+"?' <<<"$lg" \
+      || fail "$s must cap its log: logging with driver json-file, max-size and max-file (x-logging in docker-compose.yml)"
+  else
+    grep -qx '    logging: \*logging' <<<"$blk" \
+      || fail "$s must set logging: *logging (x-logging in docker-compose.yml)"
+  fi
+done
+if [[ "$mode" != rendered ]]; then
+  awk '/^x-logging: &logging/ { a = 1; next } a && /^[^[:space:]]/ { a = 0 } a' "$loaded" \
+    | grep -qx '  driver: json-file' || fail "x-logging must use the json-file driver"
+fi
+
 # Required, not just allowed: pihole serves the mesh only from inside nvpn's netns.
 surface /dev/stdin <"$loaded" | grep -Fqx "pihole	network_mode	service:nvpn" \
   || fail "pihole must set network_mode: service:nvpn in the compose files the installer loads"

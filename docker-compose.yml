@@ -1,5 +1,15 @@
 name: sovereign-dns
 
+# Caps each container's log at 3 x 10 MB. nvpn's entrypoint follows the daemon
+# log into the container log with `tail -F`, and Docker's json-file driver keeps
+# everything by default: on Docker Desktop that fills the VM disk, Pi-hole dies,
+# and every device on the mesh loses DNS. Every service uses this.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   # NostrVPN node. This container is the "DNS device" the network admin
   # selects with `nvpn set --network-dns-node <this device's npub>
@@ -15,6 +25,7 @@ services:
         # where it is visible, rather than in .env.
         NVPN_COMMIT: a8ffb3caed1682ab57b1092212e5e368002fe8c5
     container_name: sovereign-dns-nvpn
+    logging: *logging
     restart: unless-stopped
     cap_add:
       - NET_ADMIN
@@ -28,7 +39,7 @@ services:
       # (an agent's, a dev's) often sets for its own Rust tools, which silently
       # changed this daemon's logging once. Set SOVEREIGN_DNS_LOG in .env, or
       # in the shell for one run, to change verbosity on purpose.
-      RUST_LOG: ${SOVEREIGN_DNS_LOG:-debug}
+      RUST_LOG: ${SOVEREIGN_DNS_LOG:-info}
       # Only used in printed instructions, so they show the real panel URL.
       WEB_UI_PORT: ${WEB_UI_PORT:-8082}
       # Optional. Set to "<host-lan-or-public-ip>:51820" to advertise a
@@ -74,6 +85,7 @@ services:
         NVPN_REPO: https://github.com/btcforplebs/nostr-vpn.git
         NVPN_COMMIT: a8ffb3caed1682ab57b1092212e5e368002fe8c5
     container_name: sovereign-dns-web
+    logging: *logging
     restart: unless-stopped
     entrypoint: ["/usr/local/bin/nvpn-web"]
     command:
@@ -91,7 +103,7 @@ services:
       NVPN_CLI_PATH: /usr/local/bin/nvpn
       NVPN_EXTERNAL_DAEMON: "true"
       NVPN_DAEMON_STATUS_MODE: state-file
-      RUST_LOG: ${SOVEREIGN_DNS_LOG:-debug}   # see the nvpn service
+      RUST_LOG: ${SOVEREIGN_DNS_LOG:-info}   # see the nvpn service
     ports:
       - "127.0.0.1:${WEB_UI_PORT:-8082}:8081"
 
@@ -105,6 +117,7 @@ services:
     # Bump both together: scripts/check-pins.sh fails on an unpinned image.
     image: pihole/pihole:2026.09.0@sha256:5b9c8cf51de7d6d3f2240dbe72baf5f06e1fd39cb4d77a99fab4fa13e23bd1be
     container_name: sovereign-dns-pihole
+    logging: *logging
     restart: unless-stopped
     network_mode: service:nvpn
     depends_on:
@@ -168,6 +181,7 @@ services:
     build:
       context: ./unbound
     container_name: sovereign-dns-unbound
+    logging: *logging
     restart: unless-stopped
     networks:
       dns-internal:
@@ -194,6 +208,7 @@ services:
     build:
       context: ./hub
     container_name: sovereign-dns-hub
+    logging: *logging
     restart: unless-stopped
     environment:
       TZ: ${TZ:-UTC}
@@ -220,6 +235,7 @@ services:
     build:
       context: ./docs
     container_name: sovereign-dns-docs
+    logging: *logging
     restart: unless-stopped
     ports:
       - "127.0.0.1:${DOCS_PORT:-8081}:80"
