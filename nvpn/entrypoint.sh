@@ -29,6 +29,9 @@ if [[ -n "$JOIN_ADMIN" && -z "$JOIN_NETWORK" ]] || [[ -z "$JOIN_ADMIN" && -n "$J
 fi
 # Survives restarts, so a joined box never later prints itself as the admin.
 JOINED_MARKER="${CONFIG_DIR}/sovereign-dns-joined"
+# Set while a join has been attempted and not yet succeeded, so a restart
+# retries the join with the same identity instead of minting a new one.
+JOIN_PENDING="${CONFIG_DIR}/sovereign-dns-join-pending"
 
 FRESH_INIT=0
 if [[ ! -f "$CONFIG_FILE" ]]; then
@@ -59,18 +62,33 @@ echo "  npub: ${DEVICE_NPUB}"
 # DNS-override block runs earlier in the same `set` dispatch than the
 # devices-override block, so a single combined call would still see no
 # active network yet.
-if [[ "$FRESH_INIT" == "1" && -n "$JOIN_ADMIN" ]]; then
+if [[ -n "$JOIN_ADMIN" && ( "$FRESH_INIT" == "1" || -f "$JOIN_PENDING" ) ]]; then
   echo "sovereign-dns: joining the existing network ${JOIN_NETWORK} as a second DNS box"
+  touch "$JOIN_PENDING"
   if ! nvpn join-manual --admin-device-id "$JOIN_ADMIN" --network-id "$JOIN_NETWORK"; then
-    # Leave no config behind, so the next start is a fresh install that tries
-    # the join again, rather than a half-made box that neither joined nor
-    # founded anything. The identity it drops was created seconds ago.
-    rm -f "$CONFIG_FILE"
-    echo "sovereign-dns: could not join network ${JOIN_NETWORK}; will retry on next start" >&2
+    # Keep the identity: an operator may already have approved this npub on
+    # the first box, and a new key each restart would leave dead devices on
+    # its roster. The pending marker makes the next start retry the join, and
+    # never found a network. The pause keeps a restart policy from spinning.
+    echo "sovereign-dns: could not join network ${JOIN_NETWORK}; check SOVEREIGN_DNS_JOIN_ADMIN" >&2
+    echo "  and SOVEREIGN_DNS_JOIN_NETWORK. Retrying on next start with the same identity." >&2
+    sleep 30
     exit 1
   fi
+  rm -f "$JOIN_PENDING"
   touch "$JOINED_MARKER"
+elif [[ -f "$JOIN_PENDING" ]]; then
+  # A join was started and the variables have since been removed. Founding a
+  # network now would put this box in a network nobody else is in, so stop.
+  echo "sovereign-dns: a join to another network never finished and SOVEREIGN_DNS_JOIN_* is" >&2
+  echo "  no longer set. Set them again to finish it, or remove the nvpn-config volume to" >&2
+  echo "  start over as a first box." >&2
+  sleep 30
+  exit 1
 elif [[ "$FRESH_INIT" == "1" ]]; then
+  # A marker left on the volume from an earlier joined life must not make a
+  # box that is founding its own network describe itself as a backup.
+  rm -f "$JOINED_MARKER"
   echo "sovereign-dns: founding a new network on this device"
   nvpn set --device "$DEVICE_NPUB"
   echo "sovereign-dns: turning on the DNS override"
@@ -125,19 +143,19 @@ NETWORK_ID=$(awk '
   in_net && /^network_id[[:space:]]*=/ { print $3 }
 ' "$CONFIG_FILE" | tr -d '"' | head -1)
 
-if [[ -n "$JOIN_ADMIN" && "$FRESH_INIT" == "0" && ! -f "$JOINED_MARKER" ]]; then
+if [[ -n "$JOIN_ADMIN" && "$FRESH_INIT" == "0" && ! -f "$JOINED_MARKER" && ! -f "$JOIN_PENDING" ]]; then
   echo "sovereign-dns: warning: SOVEREIGN_DNS_JOIN_* is set but this box already has its own"
   echo "  network, so it was ignored. Joining only happens on a fresh install."
 fi
 
 if [[ -f "$JOINED_MARKER" ]]; then
   echo "sovereign-dns: this box joined another box's network to serve as a backup."
-  echo "  On the FIRST box (the one that founded the network), run:"
-  echo "    1. docker exec sovereign-dns-nvpn nvpn add-device --device ${DEVICE_NPUB} --publish"
-  echo "       (or approve it in that box's control panel)"
-  echo "    2. docker exec sovereign-dns-nvpn nvpn set --network-dns-backup ${DEVICE_NPUB}"
-  echo "  Until step 2, no device sends lookups here. Other devices still join"
-  echo "  through the first box's invite, not this one."
+  echo "  On the FIRST box (the one that founded the network), run this one command:"
+  echo "    docker exec sovereign-dns-nvpn nvpn add-device --device ${DEVICE_NPUB} --dns-backup"
+  echo "  It approves this box and lists it as a backup DNS box in the same roster."
+  echo "  Don't approve it as an ordinary device first: until it is listed as a"
+  echo "  backup, this box would send its own lookups to the first box. Other"
+  echo "  devices still join through the first box's invite, not this one."
 elif [[ -n "$NETWORK_ID" ]]; then
   echo "sovereign-dns: to add another device to this network:"
   echo "  1. On that device, run:"

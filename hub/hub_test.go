@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -98,6 +99,7 @@ type fakePanel struct {
 	noActive   bool // leave the top-level networkId blank
 	noNetworks bool // answer with an empty networks list
 	notAdmin   bool // this box is a member, not an admin
+	noPeers    bool // no other device on the network yet
 	dropJoin   bool // accept an import without adding the device
 	selfEarly  bool // list the box itself before its state reads "local"
 	added      []string
@@ -113,6 +115,9 @@ func (f *fakePanel) handler() http.Handler {
 			node = ""
 		}
 		participants := []map[string]any{{"alias": "laptop", "state": "online", "reachable": true}}
+		if f.noPeers {
+			participants = nil
+		}
 		if f.selfEarly {
 			participants = append(participants, map[string]any{"npub": "npub1box", "alias": "self", "state": "offline"})
 		}
@@ -394,5 +399,43 @@ func TestDNSSwitchNoNetworkDoesNotBlamePanel(t *testing.T) {
 	rec := post(mux, url.Values{"csrf": {cfg.csrfToken}, "override": {"on"}, "confirm": {"yes"}}, nil)
 	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "No network has been joined") || len(f.writes) != 0 {
 		t.Fatalf("no networks: POST %d, %d writes", rec.Code, len(f.writes))
+	}
+}
+
+// A backup DNS box joined another box's network: the config also holds the
+// default network `nvpn init` made, listed first and never used. The page must
+// show the joined network, and must not offer to add devices or start the
+// first-run wizard, since this box can't approve anyone.
+func TestJoinedBoxShowsJoinedNetworkWithoutAddCard(t *testing.T) {
+	f := &fakePanel{override: true, decoyFirst: true, notAdmin: true}
+	cfg := panelConfig(t, f)
+	p := cfg.buildPage(context.Background())
+	if p.NetworkName != "home" || p.NetworkID != "9683dbda" {
+		t.Fatalf("showing network %q (%s), want the joined one home (9683dbda)", p.NetworkName, p.NetworkID)
+	}
+	if !p.NotAdmin || p.AddReady || p.FirstRun {
+		t.Fatalf("NotAdmin=%v AddReady=%v FirstRun=%v, want true false false", p.NotAdmin, p.AddReady, p.FirstRun)
+	}
+	rec := get(t, newMux(cfg), "/")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET / = %d (redirect to %q), want the dashboard", rec.Code, rec.Header().Get("Location"))
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, `action="/devices/add"`) || strings.Contains(body, `href="/setup"`) ||
+		!strings.Contains(body, "joined another box's network") {
+		t.Fatalf("joined box still offers the add-a-device card:\n%s", body)
+	}
+}
+
+// Just joined and not yet approved: the joined network lists nobody else. That
+// is not a first run for this box, so "/" must not hand it the wizard.
+func TestJoinedBoxWithNoPeersSkipsWizard(t *testing.T) {
+	f := &fakePanel{override: true, decoyFirst: true, notAdmin: true, noPeers: true}
+	cfg := panelConfig(t, f)
+	if p := cfg.buildPage(context.Background()); p.FirstRun {
+		t.Fatal("a joined box with no peers yet reads as a first run")
+	}
+	if rec := get(t, newMux(cfg), "/"); rec.Code != http.StatusOK {
+		t.Fatalf("GET / = %d (redirect to %q), want the dashboard", rec.Code, rec.Header().Get("Location"))
 	}
 }

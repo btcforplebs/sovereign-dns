@@ -130,6 +130,10 @@ type page struct {
 	Error         string
 	GeneratedAt   string
 
+	// NotAdmin is a box that joined someone else's network, such as a backup
+	// DNS box. It can't approve devices, and its own ID is no invite.
+	NotAdmin bool
+
 	// Raw facts behind the tiles. The setup wizard (wizard.go) decides which
 	// step a newcomer is on from these, so it never re-probes anything.
 	DaemonUp  bool
@@ -322,6 +326,7 @@ func (c config) buildPage(ctx context.Context) page {
 			p.noNetwork = "The control panel lists more than one network but doesn't say which one is running, so the switch can't tell which to change."
 		}
 		if tickErr == nil && matched {
+			p.NotAdmin = !net.LocalIsAdmin
 			p.network = &net
 			p.ownNpub = state.OwnNpub
 			p.OverrideState = "off"
@@ -368,7 +373,9 @@ func (c config) buildPage(ctx context.Context) page {
 		}
 		total := len(p.Devices)
 		p.Covered = carrying
-		p.FirstRun = total == 0
+		// The wizard walks the box that runs the network through adding its
+		// first device. A box that joined another's network has no such step.
+		p.FirstRun = total == 0 && !p.NotAdmin
 		p.MeshSummary = fmt.Sprintf("%d/%d reachable", carrying, total)
 		switch {
 		case total == 0:
@@ -381,7 +388,7 @@ func (c config) buildPage(ctx context.Context) page {
 		}
 		p.Tiles = append(p.Tiles, tile{Name: "Mesh devices", State: p.MeshState, Detail: p.MeshSummary})
 
-		p.AddReady = p.OwnNpub != "" && p.NetworkID != ""
+		p.AddReady = p.OwnNpub != "" && p.NetworkID != "" && !p.NotAdmin
 	}
 
 	p.DNS = buildDNSControl(p)

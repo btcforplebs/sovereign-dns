@@ -179,10 +179,12 @@ const pageHTML = `<!doctype html>
 
   <h2>Open</h2>
   <div class="grid">
+    {{if not .NotAdmin}}
     <a class="card" href="/setup">
       <span class="name">Setup guide</span><br>
       <span class="detail">Add a device, approve it, check it really uses this box.</span>
     </a>
+    {{end}}
     <a class="card" href="{{.PanelURL}}">
       <span class="name">Control Panel</span><br>
       <span class="detail">Rename or remove devices, network settings.</span>
@@ -203,7 +205,9 @@ const pageHTML = `<!doctype html>
 
   <h2 id="add-device">Add a device</h2>
   <div class="card">
-    {{if .AddReady}}
+    {{if .NotAdmin}}
+      <div class="detail">This box joined another box's network and isn't one of its admins, so devices are added on that box, not here.</div>
+    {{else if .AddReady}}
       {{template "addcard" .}}
     {{else}}
       <div class="detail">Waiting for the VPN to start before a device can be added.</div>
