@@ -179,7 +179,11 @@ async function openList(ev, me) {
   const k = unhex(await window.nostr.nip44.decrypt(st.owner, wrapped));
   const key = await crypto.subtle.importKey("raw", k, "AES-GCM", false, ["decrypt"]);
   const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: unb64(env.nonce) }, key, unb64(env.data));
-  return JSON.parse(new TextDecoder().decode(plain));
+  const s = JSON.parse(new TextDecoder().decode(plain));
+  // The page can't check the signature, but only the owner can seal: a list
+  // whose sealed date differs from the event's was re-dated by someone else.
+  if (s.at !== ev.created_at) throw new Error("the list's sealed date does not match its event; not editing it");
+  return s;
 }
 // The box hands the page its newest list; don't take its word for it. The id
 // must hash from the content, and the author, kind and d tag must be the
@@ -215,7 +219,7 @@ function addressIn(s) {
   for (let tok of t.split(TOKEN_SPLIT)) {
     tok = tok.replace(/\.+$/, "");
     if (tok === "localhost") return "localhost";
-    for (const suf of LAN_SUFFIXES) if (tok.endsWith(suf) || tok === suf.slice(1)) return "a local name (" + suf + ")";
+    for (const suf of LAN_SUFFIXES) if (tok.endsWith(suf)) return "a local name (" + suf + ")";
   }
   return "";
 }
@@ -382,7 +386,9 @@ async function save(e) {
     if (problems.length) { say("Not saved, and nothing was sent to your signer. Every box would refuse this list: " + problems.join("; ") + ".", "err"); return; }
     say("Asking your signer to seal and sign the list…");
     const created = Math.max(Math.floor(Date.now() / 1000), (st.newest ? st.newest.created_at : 0) + 1);
+    clean.at = created;
     const ev = await window.nostr.signEvent({ kind: KIND, created_at: created, tags: [["d", D]], content: await sealList(clean) });
+    if (ev.created_at !== created) { say("Not saved: the signer changed the list's date.", "err"); return; }
     const r = await fetch("api/publish", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ event: ev, base }) });
     const out = await r.json();
     if (!r.ok) { say(out.error || "Save failed.", "err"); return; }

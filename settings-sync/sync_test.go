@@ -29,7 +29,9 @@ func mustKey(t *testing.T) *btcec.PrivateKey {
 // signed is what Logen's signer produces: the list sealed and signed by sk.
 func signed(t *testing.T, sk *btcec.PrivateKey, s *settings, at int64) *event {
 	t.Helper()
-	content, err := seal(s, sk)
+	sealed := *s
+	sealed.At = at
+	content, err := seal(&sealed, sk)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -396,15 +398,18 @@ func TestPreexistingEntryNeverRemoved(t *testing.T) {
 	}
 }
 
-// A state.json edited on disk gets the same checks as a list from a relay;
-// a far-future saved list would otherwise freeze the box on it for good.
+// A state.json edited on disk must still hold a genuine list (kind, d,
+// author, signature); a re-dated one would otherwise freeze the box on it.
 func TestSavedStateIsReverified(t *testing.T) {
 	clock := time.Unix(1_800_000_000, 0)
 	logen, mallory := mustKey(t), mustKey(t)
 	rl := newFakeRelays()
 	b := newBox(t, pubHex(logen), rl, &clock)
+	redated := signed(t, logen, &settings{V: 1, Boxes: []box{b.asBox("pi")}}, clock.Unix())
+	redated.CreatedAt += 365 * 24 * 3600 // pushed a year ahead on disk; the signature no longer holds
+	redated.ID = redated.computeID()
 	for name, ev := range map[string]*event{
-		"far future": signed(t, logen, &settings{V: 1, Boxes: []box{b.asBox("pi")}}, clock.Unix()+365*24*3600),
+		"re-dated on disk": redated,
 		"not Logen":  signed(t, mallory, &settings{V: 1, Boxes: []box{b.asBox("pi")}}, clock.Unix()),
 	} {
 		b.sync.state = savedState{Applied: ev, Managed: managedSet{Lists: []string{"block https://lists.example/victim.txt"}}}
@@ -415,6 +420,52 @@ func TestSavedStateIsReverified(t *testing.T) {
 		if s.state.Applied != nil || len(s.state.Managed.Lists) != 0 {
 			t.Fatalf("%s: saved state trusted: %+v", name, s.state)
 		}
+	}
+}
+
+// A Pi that boots with a slow clock must not read its own saved list as
+// "from the future", drop it, and let an older list roll it back.
+func TestSavedListSurvivesSlowClock(t *testing.T) {
+	clock := time.Unix(1_800_000_000, 0)
+	logen := mustKey(t)
+	rl := newFakeRelays()
+	b := newBox(t, pubHex(logen), rl, &clock)
+	old := signed(t, logen, &settings{V: 1, Boxes: []box{b.asBox("pi")}, Lists: blocklist("https://lists.example/old.txt")}, clock.Unix()-3600)
+	cur := signed(t, logen, &settings{V: 1, Boxes: []box{b.asBox("pi")}, Lists: blocklist("https://lists.example/current.txt")}, clock.Unix())
+	rl.put(old, relays...)
+	rl.put(cur, relays...)
+	b.run(t)
+
+	slow := clock.Add(-30 * time.Minute)
+	rl.events = map[string][]*event{relays[0]: {old}, relays[1]: {old}}
+	b.sync = b.syncer(t, pubHex(logen), rl, &slow, b.sync.dataDir)
+	if b.sync.state.Applied == nil || b.sync.state.Applied.ID != cur.ID {
+		t.Fatal("saved list dropped at boot with a slow clock")
+	}
+	b.run(t)
+	if got := b.pihole.addresses(); len(got) != 1 || got[0] != "https://lists.example/current.txt" {
+		t.Fatalf("rolled back to %v", got)
+	}
+}
+
+// The date sealed inside the list must match the event's. Only the owner
+// can seal, so a genuine list re-dated by anyone else is refused.
+func TestSealedDateMustMatch(t *testing.T) {
+	clock := time.Unix(1_800_000_000, 0)
+	logen := mustKey(t)
+	rl := newFakeRelays()
+	b := newBox(t, pubHex(logen), rl, &clock)
+	s := &settings{V: 1, At: clock.Unix() - 100, Boxes: []box{b.asBox("pi")}, Lists: blocklist("https://lists.example/x.txt")}
+	content, _ := seal(s, logen)
+	ev := &event{CreatedAt: clock.Unix(), Kind: settingsKind, Tags: [][]string{{"d", settingsD}}, Content: content}
+	_ = ev.sign(logen)
+	if _, err := b.sync.openList(ev); err == nil {
+		t.Fatal("re-dated list opened")
+	}
+	rl.put(ev, relays...)
+	_ = b.sync.run(context.Background(), nil)
+	if b.sync.state.Applied != nil || len(b.pihole.addresses()) != 0 {
+		t.Fatal("re-dated list applied")
 	}
 }
 
@@ -481,6 +532,7 @@ var guardCases = []struct {
 	{"bad box pubkey", settings{V: 1, Boxes: []box{{PubKey: "nothex", Name: "x"}}}, false},
 	{"unknown group", settings{V: 1, Lists: []list{{Address: "https://lists.example/x", Type: "block", Groups: []string{"missing"}}}}, false},
 	{"unknown version", settings{V: 2}, false},
+	{"groups named like suffixes", settings{V: 1, Groups: []group{{Name: "Home", Enabled: true}, {Name: "Local", Enabled: true}, {Name: "lan", Comment: "internal devices on the local lan at home", Enabled: true}}}, true},
 	{"ordinary list", settings{V: 1,
 		Boxes:  []box{{PubKey: strings.Repeat("ab", 32), Name: "This box"}, {PubKey: strings.Repeat("cd", 32), Name: "Pi 4"}},
 		Groups: []group{{Name: "kids", Comment: "added 2026-10-14", Enabled: true}},

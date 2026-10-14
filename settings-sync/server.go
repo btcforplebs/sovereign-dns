@@ -126,7 +126,7 @@ func (h *server) state(w http.ResponseWriter, r *http.Request) {
 		} else {
 			var cur *settings
 			if s.state.Applied != nil {
-				cur, _ = open(s.state.Applied, s.key, s.owner)
+				cur, _ = s.openList(s.state.Applied)
 			}
 			resp.Local, resp.Extras = st, extras(st, cur)
 		}
@@ -155,7 +155,7 @@ func (h *server) publish(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	got, err := open(ev, s.key, s.owner)
+	got, err := s.openList(ev)
 	if err == nil {
 		err = got.validate()
 	}

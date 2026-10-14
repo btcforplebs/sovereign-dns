@@ -80,12 +80,13 @@ func (s *syncer) load() error {
 	if err := json.Unmarshal(b, &s.state); err != nil {
 		return err
 	}
-	// The saved list is the rollback floor, so it gets the same checks as one
-	// from a relay. One that fails (edited on disk, say, with a far-future
-	// date to freeze the box) is dropped along with the managed set that came
-	// with it: forgetting what the box created only means it removes less.
+	// The saved list is the rollback floor, so it must be genuine: kind, d,
+	// author, signature. Not the clock: a box that boots with a slow clock
+	// would read its own list as "from the future", drop it and roll back.
+	// One that fails is dropped along with the managed set that came with it:
+	// forgetting what the box created only means it removes less.
 	if a := s.state.Applied; a != nil && s.owner != "" {
-		if err := s.acceptable(a); err != nil {
+		if err := s.genuine(a); err != nil {
 			log.Printf("saved list %s dropped: %v", a.ID, err)
 			s.state = savedState{}
 		}
@@ -105,17 +106,38 @@ func (s *syncer) save() error {
 	return os.Rename(tmp, s.statePath())
 }
 
-// acceptable: rule 1 and the clock half of rule 2.
-func (s *syncer) acceptable(ev *event) error {
+// genuine: rule 1. Kind, d tag, author and signature.
+func (s *syncer) genuine(ev *event) error {
 	switch {
 	case ev.Kind != settingsKind || ev.tag("d") != settingsD:
 		return errors.New("not a settings list")
 	case ev.PubKey != s.owner:
 		return errors.New("not signed by the owner")
-	case time.Unix(ev.CreatedAt, 0).After(s.now().Add(maxFutureSkew)):
-		return errors.New("dated in the future")
 	}
 	return ev.verify()
+}
+
+// acceptable: rule 1 and the clock half of rule 2, for lists arriving now.
+func (s *syncer) acceptable(ev *event) error {
+	if time.Unix(ev.CreatedAt, 0).After(s.now().Add(maxFutureSkew)) {
+		return errors.New("dated in the future")
+	}
+	return s.genuine(ev)
+}
+
+// openList opens a genuine list and checks the date sealed inside it matches
+// the event's. Only the owner can seal, so a box (or anyone) that re-dates
+// a genuine list (the page can't check signatures) is caught here and in
+// the page.
+func (s *syncer) openList(ev *event) (*settings, error) {
+	got, err := open(ev, s.key, s.owner)
+	if err != nil {
+		return nil, err
+	}
+	if got.At != ev.CreatedAt {
+		return nil, errors.New("the date sealed in the list does not match the event's")
+	}
+	return got, nil
 }
 
 func (s *syncer) pickNewest(evs []*event) *event {
@@ -171,7 +193,7 @@ func (s *syncer) runLocked(ctx context.Context, fetched []*event) error {
 	target := s.state.Applied
 	var want *settings
 	if cand := s.newest; cand != nil && (target == nil || newer(cand, target)) {
-		got, err := open(cand, s.key, s.owner)
+		got, err := s.openList(cand)
 		if err == nil {
 			err = got.validate()
 		}
@@ -187,7 +209,7 @@ func (s *syncer) runLocked(ctx context.Context, fetched []*event) error {
 		return nil // no list yet: leave the Pi-hole exactly as it is
 	}
 	if want == nil {
-		got, err := open(target, s.key, s.owner)
+		got, err := s.openList(target)
 		if err != nil {
 			return s.fail(fmt.Errorf("saved list no longer opens: %w", err))
 		}

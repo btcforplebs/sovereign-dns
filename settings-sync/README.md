@@ -22,9 +22,12 @@ box is the main one.
   or IP-echo name (`.local`, `.lan`, `.home`, `.internal`, `nip.io`,
   `sslip.io`, ...), a single-label list host or exact domain, or a URL with a
   password in it. The two copies of this guard (`settings.go`, `page.html`)
-  are tested against the same cases. Box names may be a single word ("Pi 4"),
-  since a friendly name is not an address; a box name with a local name or IP
-  in it is refused.
+  are tested against the same cases. The guard is loose on purpose and a false
+  hit only refuses a save: `std::vector` in a comment reads as IPv6, and a
+  path like `/v1.2.3.4/` reads as IPv4. Box names may be a single word
+  ("Pi 4"), since a friendly name is not an address; a box name with a local
+  name or IP in it is refused. If anything ever derives a hostname, a link or
+  a DNS record from a box name, it must apply `singleLabel` there too.
 - **It is stored on the owner's relays** (`SETTINGS_RELAYS`). Each box checks
   every `SETTINGS_SYNC_INTERVAL` (2 minutes by default).
 - **Newest wins, and a box never goes back.** A box only accepts an event if
@@ -56,11 +59,15 @@ box is the main one.
 - **The page checks what the box hands it.** Before editing, the page
   recomputes the list's id and checks its author, kind and `d` tag, and it
   opens the list with the owner's own NIP-44 wrap, which only his key can
-  make. It shows when the list it is editing was saved.
+  make. It can't check the signature, so the list's date is also sealed
+  inside it (`at`): the page and every box refuse a list whose sealed date
+  differs from the event's, which is what re-dating a genuine list produces.
+  The page shows when the list it is editing was saved.
 - **Saved state is checked again on start.** The applied list in
-  `state.json` gets the same checks as one from a relay. If it fails, the box
-  forgets it and the record of what it created, so it removes less, never
-  more.
+  `state.json` must still be genuine: kind, `d` tag, author and signature. The
+  clock is not checked, so a box that boots with a slow clock keeps its list
+  instead of reading it as "from the future". If it fails, the box forgets it
+  and the record of what it created, so it removes less, never more.
 - **Relay fetches are bounded:** `limit` 20, at most 50 events and 1 MB per
   message per relay per poll.
 
@@ -115,7 +122,8 @@ address over plain http.
 - **Not proven in the browser.** The page checks the list's id and author
   and that the owner sealed it, but it can't check the signature or that the
   list is the newest on the relays. A box could hand it an older genuine list
-  to edit. Reading the relays from the page would close that.
+  (with its true date) to edit; the conflict check on save would still refuse
+  it once the relays have a newer one. Reading the relays from the page would close that.
 
 ## Tests
 
@@ -145,8 +153,12 @@ address over plain http.
 - `TestValidateRefusesAddresses` and `TestPageGuardMatchesGo`: the same cases
   through `settings.go` and, under node, the page's guard (skipped if node is
   missing).
-- `TestSavedStateIsReverified`: a far-future or foreign list in `state.json`
-  is dropped on start.
+- `TestSavedStateIsReverified`: a re-dated or foreign list in `state.json` is
+  dropped on start.
+- `TestSavedListSurvivesSlowClock`: a box booting 30 minutes slow keeps its
+  saved list and is not rolled back.
+- `TestSealedDateMustMatch`: a genuine list re-dated without the owner is
+  refused.
 - `TestFetchListsIsCapped`: a relay that streams without end yields 50 events.
 - `TestRelaysDownKeepsLastList`: with every relay down, after a restart, the
   box restores a shared entry that was removed locally.

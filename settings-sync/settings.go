@@ -17,6 +17,7 @@ import (
 
 type settings struct {
 	V       int      `json:"v"`
+	At      int64    `json:"at"` // the event's created_at, sealed so it can't be changed
 	Boxes   []box    `json:"boxes"`
 	Groups  []group  `json:"groups"`
 	Lists   []list   `json:"lists"`
@@ -105,7 +106,7 @@ func addressIn(s string) string {
 			return "localhost"
 		}
 		for _, suf := range lanSuffixes {
-			if strings.HasSuffix(tok, suf) || tok == suf[1:] {
+			if strings.HasSuffix(tok, suf) {
 				return "a local name (" + suf + ")"
 			}
 		}
