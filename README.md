@@ -49,6 +49,45 @@ When it says **Done**, open a web browser **on that same box** and go to:
 > The dashboard only opens on the box itself, not from another computer.
 > That's on purpose: it keeps strangers on your network out of it.
 
+### A box with no screen (like a Raspberry Pi)
+
+If you installed over SSH, or the box has no desktop, the installer asks:
+
+```text
+Open the dashboard to your home network? [Y/n]
+```
+
+Say yes and pick a dashboard password (at least 8 characters). When it's done
+it prints the address to open from your laptop or phone, on the same Wi-Fi:
+
+```text
+From another computer on your home network, open:
+    http://192.168.1.50:8080
+    http://raspberrypi.local:8080   (if your computer finds it by name)
+and sign in with the dashboard password.
+```
+
+(Your numbers will differ.) Every page asks for that password, because the
+dashboard can add devices to your network. On Linux (a Raspberry Pi, a Linux
+server) it also refuses any request from outside your home network, even with
+the password. On Docker Desktop (a Mac or Windows box) it can't tell where a
+request came from, so the password is the only guard there. Pick a long one,
+and never forward the dashboard's port on your router.
+
+To change your mind later, run one of these inside the `sovereign-dns` folder:
+
+```bash
+bash scripts/hub-lan.sh on    # open it to your home network (asks for a password)
+bash scripts/hub-lan.sh off   # back to this box only, no password
+bash scripts/hub-lan.sh url   # print the addresses again
+```
+
+From another computer you can add devices by their join link, and turn
+network DNS on or off. The VPN control panel still only opens on the box
+itself, since it has no password of its own. Two things to know: the
+password crosses your home network unencrypted (plain `http`, like the
+Pi-hole page), and anyone who knows it can add a device.
+
 ## Add your phone or laptop
 
 On the dashboard, click **Add a device**, then:

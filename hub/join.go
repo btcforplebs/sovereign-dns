@@ -118,7 +118,7 @@ func (c config) serveAddDevice(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if !loopbackHost(r.Host) || !sameOrigin(r) {
+	if !c.hostAllowed(r.Host) || !sameOrigin(r) {
 		http.Error(w, "cross-origin request rejected", http.StatusForbidden)
 		return
 	}

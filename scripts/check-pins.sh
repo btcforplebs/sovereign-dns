@@ -592,7 +592,7 @@ surface() {
 surface_allowed=$(cat <<'ALLOW'
 docs	ports	127.0.0.1:${DOCS_PORT:-8081}:80
 docs	networks	default
-hub	ports	127.0.0.1:${HUB_PORT:-8080}:8080
+hub	ports	${HUB_BIND:-127.0.0.1}:${HUB_PORT:-8080}:8080
 hub	networks	default
 hub	networks	dns-internal
 web	ports	127.0.0.1:${WEB_UI_PORT:-8082}:8081
@@ -658,6 +658,14 @@ if [[ "$mode" != rendered ]]; then
   awk '/^x-logging: &logging/ { a = 1; next } a && /^[^[:space:]]/ { a = 0 } a' "$loaded" \
     | grep -qx '  driver: json-file' || fail "x-logging must use the json-file driver"
 fi
+
+# Required, not just allowed: the hub reads the very HUB_BIND its port is
+# published on, defaulting to loopback like the port. If the two could differ,
+# the hub's refusal to serve the network with no password (hub/auth.go) would
+# be guarding an address that is not the one published.
+hub_blk=$(awk '$0 == "  hub:" { a = 1; next } a && /^  [^[:space:]#]/ { a = 0 } a' "$loaded")
+grep -Eq '^[[:space:]]*(-[[:space:]]*)?HUB_BIND[[:space:]]*[:=][[:space:]]*["'"'"']?\$\{HUB_BIND:-127\.0\.0\.1\}["'"'"']?[[:space:]]*$' <<<"$hub_blk" \
+  || fail "hub must set HUB_BIND: \${HUB_BIND:-127.0.0.1} in its environment, the same variable its port is published on"
 
 # Required, not just allowed: pihole serves the mesh only from inside nvpn's netns.
 surface /dev/stdin <"$loaded" | grep -Fqx "pihole	network_mode	service:nvpn" \

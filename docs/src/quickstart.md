@@ -228,6 +228,15 @@ http://localhost:8080
 This is your dashboard. It only opens on the box itself, never from
 another device, so nobody else on your network can reach it.
 
+**No screen on the box?** If you set it up over SSH (a Raspberry Pi, say),
+the installer asked whether to open the dashboard to your home network. If
+you said yes, open the address it printed, such as `http://192.168.1.50:8080`
+or `http://raspberrypi.local:8080`, on a laptop or phone on the same Wi-Fi,
+and sign in with the dashboard password you picked. You can turn this on or
+off later with `bash scripts/hub-lan.sh on` (or `off`) in the
+`sovereign-dns` folder. From another computer, add devices with their join
+link (Step 6). The VPN control panel still opens only on the box.
+
 <!-- MAINTAINERS: installer piece 2 turns the hub into a step-by-step
      wizard (parts running, add a device, approve it, check it uses the
      Pi-hole). When it lands, match Steps 5 to 7 to its wording. Tile

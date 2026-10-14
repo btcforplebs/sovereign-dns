@@ -49,6 +49,7 @@ type config struct {
 	mock         string // HUB_MOCK: render a canned state instead of probing (screenshots, demos)
 	checkName    string // unique name a device can look up to prove it resolves through Pi-hole
 	csrfToken    string // per process; every form that changes something must echo it
+	auth         *auth  // login for home-network access (auth.go); nil or no password: none
 }
 
 type setting struct {
@@ -142,7 +143,12 @@ type page struct {
 
 	// Request-scoped, never part of /api/status: the form token, and which
 	// confirmation (if any) the dashboard is asking for.
-	CSRF    string `json:"-"`
+	CSRF string `json:"-"`
+	// Remote: the reader addressed the hub by a non-loopback name, so links
+	// to services published on the box's loopback (the control panel) cannot
+	// open for them. Login: pages are behind the hub password (auth.go).
+	Remote  bool   `json:"-"`
+	Login   bool   `json:"-"`
 	Confirm string `json:"-"`
 	AddFrom string `json:"-"` // where the add-device form returns to ("setup" or the dashboard)
 
@@ -155,6 +161,14 @@ type page struct {
 
 func main() {
 	cfg := loadConfig()
+	a, err := newAuth(env("HUB_BIND", "127.0.0.1"), os.Getenv("HUB_PASSWORD"))
+	if err != nil {
+		log.Fatalf("hub: %v", err)
+	}
+	cfg.auth = a
+	if a.enabled() {
+		log.Printf("hub: home-network access on (published on %s), pages need the hub password", env("HUB_BIND", "127.0.0.1"))
+	}
 	mux := newMux(cfg)
 
 	log.Printf("hub: listening on %s", cfg.listen)
@@ -166,9 +180,10 @@ func main() {
 	log.Fatal(server.ListenAndServe())
 }
 
-// newMux wires the routes. Split from main so tests can serve a request
-// against a config whose probes point at nothing.
-func newMux(cfg config) *http.ServeMux {
+// newMux wires the routes, behind the login when there is one. Split from
+// main so tests can serve a request against a config whose probes point at
+// nothing.
+func newMux(cfg config) http.Handler {
 	tmpl := template.Must(template.Must(template.New("page").Parse(pageHTML)).Parse(addCardHTML))
 
 	mux := http.NewServeMux()
@@ -185,6 +200,7 @@ func newMux(cfg config) *http.ServeMux {
 	mux.HandleFunc("/dashboard", func(w http.ResponseWriter, r *http.Request) {
 		data := cfg.buildPage(r.Context())
 		data.CSRF = cfg.csrfToken
+		cfg.viewer(&data, r)
 		data.Confirm = r.URL.Query().Get("confirm")
 		noFraming(w)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -195,6 +211,7 @@ func newMux(cfg config) *http.ServeMux {
 	mux.HandleFunc("/setup", cfg.serveWizard)
 	mux.HandleFunc("/dns", cfg.serveDNS(tmpl))
 	mux.HandleFunc("/devices/add", cfg.serveAddDevice)
+	mux.Handle("/docs/", docsProxy(cfg.docsAddr))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
@@ -206,13 +223,34 @@ func newMux(cfg config) *http.ServeMux {
 			return
 		}
 		data.CSRF = cfg.csrfToken
+		cfg.viewer(&data, r)
 		noFraming(w)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		if err := tmpl.Execute(w, data); err != nil {
 			log.Printf("hub: rendering page: %v", err)
 		}
 	})
-	return mux
+	return cfg.auth.wrap(mux)
+}
+
+// viewer fills in what depends on who is looking rather than on the box.
+func (c config) viewer(p *page, r *http.Request) {
+	p.Remote = !loopbackHost(r.Host)
+	p.Login = c.auth.enabled()
+	// The docs' own port is on the box's loopback; from elsewhere, read them
+	// through the hub (docsProxy).
+	if p.Remote && p.DocsURL != "" {
+		p.DocsURL = "/docs/"
+	}
+}
+
+// hostAllowed is the DNS-rebinding guard for the routes that change things.
+// Without a login, only a loopback Host is legitimate (the hub is published
+// on loopback only). With one, the session cookie is the guard: a rebinding
+// page arrives under its own name, so its requests carry no session and never
+// get this far (auth.go).
+func (c config) hostAllowed(host string) bool {
+	return loopbackHost(host) || c.auth.enabled()
 }
 
 func loadConfig() config {
