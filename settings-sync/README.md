@@ -67,15 +67,22 @@ box is the main one.
   match the hash in the owner's wrap. A box can't make a new owner's wrap, so
   it can neither swap the list nor re-date it. Boxes check the hash in their
   own wrap too. The page shows when the list it is editing was saved.
-- **The page never locks the owner out.** If the box's newest list can't be
-  opened or trusted (a stripped wrap, an older format, not a list at all),
-  the page says so in red and opens a fresh list from this box's Pi-hole
-  instead. Saving it replaces the shared list, so a box can't keep the owner
-  out of the page he would use to remove it.
+- **The page never locks the owner out, and never lets a failing box write
+  the list.** If the box's newest list can't be opened or trusted (a
+  stripped wrap, an older format, not a list at all, older than the floor
+  below, or dated more than 10 minutes ahead), the page says so in red and
+  opens an empty list instead. It holds no rules, because this box's Pi-hole
+  is reported by the box that just failed the check, and none of its entries
+  are shown or offered. Its boxes are the ones in the last list this browser
+  trusted, so a save doesn't drop the rest of the fleet, and the failing box
+  isn't added unless that list named it. Only a first run (no shared list
+  yet) starts from this box's Pi-hole.
 - **The page won't go back either.** It keeps the newest list it has saved
-  or opened in the browser's `localStorage`, per owner. A box that offers an
-  older list (one that might still name a box the owner removed) gets the
-  same red warning and the fresh list, never the old one.
+  or opened, and that list's boxes, in the browser's `localStorage`, per
+  owner. A box that offers an older list (one that might still name a box
+  the owner removed) gets the fallback above, never the old one. A list
+  dated ahead never moves this record, and a save is never dated more than
+  10 minutes ahead to follow one.
 - **Saved state is checked again on start.** The applied list in
   `state.json` must still be genuine: kind, `d` tag, author and signature. The
   clock is not checked, so a box that boots with a slow clock keeps its list
@@ -175,7 +182,13 @@ address over plain http.
 - `TestPageRefusesListForgedByBox`: a list a box re-encrypts or re-dates under
   the content key is refused by the page (its real code, under node).
 - `TestPageEditorOpensWhenListWontOpen`: a stripped owner's wrap, a v1 list or
-  junk still reaches the editor, as a fresh list with a red warning.
+  junk still reaches the editor: no rules, the boxes this browser last
+  trusted, a red warning.
+- `TestPageSaveFromFallbackKeepsBoxesAndNoHostileRule`: a box that strips the
+  owner's wrap and reports an allow-all Pi-hole gets none of it into the list
+  the owner saves, and every box stays on it.
+- `TestPageFlagsListDatedAhead`: a list dated a year ahead is flagged, leaves
+  the floor alone, and doesn't push the next save's date.
 - `TestPageRefusesListOlderThanFloor`: after the page has seen a list, an
   older one offered by the box is not opened for editing.
 - `TestFetchListsIsCapped`: a relay that streams without end yields 50 events.

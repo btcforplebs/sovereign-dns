@@ -291,14 +291,29 @@ type pageApp struct {
 	List   settings          `json:"list"`
 	Base   string            `json:"base"`
 	Store  map[string]string `json:"store"` // localStorage after
+	// With save: what reached the box's /api/publish, and what the signer
+	// was asked to encrypt for it.
+	Published *struct {
+		Event event `json:"event"`
+	} `json:"published"`
+	Seals [][2]string `json:"seals"`
+}
+
+// pageVisit is one visit to a box's page.
+type pageVisit struct {
+	st    stateResponse
+	store map[string]string // localStorage at the start
+	now   time.Time         // the browser's clock
+	save  bool              // press Save after Unlock, changing nothing
 }
 
 // unlockPage runs the whole page script under node against a fake DOM: the
 // box's /api/state answers st, localStorage starts as store, and the fake
 // signer is the owner's (as in runPage). It loads, presses Unlock, and
-// reports what the owner sees.
-func unlockPage(t *testing.T, owner *btcec.PrivateKey, st stateResponse, store map[string]string) pageApp {
+// reports what the owner sees; with v.save it then presses Save.
+func unlockPage(t *testing.T, owner *btcec.PrivateKey, v pageVisit) pageApp {
 	t.Helper()
+	st, store := v.st, v.store
 	node := needNode(t)
 	page := string(pageHTML)
 	i, j := strings.Index(page, "<script>"), strings.Index(page, "</script>")
@@ -313,7 +328,9 @@ func unlockPage(t *testing.T, owner *btcec.PrivateKey, st stateResponse, store m
 	}
 	storeJS, _ := json.Marshal(store)
 	script := fmt.Sprintf(`"use strict";
-const OPENS = %s, STATE = %s, STORE = %s;
+const OPENS = %s, STATE = %s, STORE = %s, NOW = %d, SAVE = %t, SEALS = [];
+let PUBLISHED = null;
+Date.now = () => NOW * 1000;
 class FakeEl {
   constructor(tag) { this.tag = tag; this.children = []; this.attrs = {}; this.dataset = {}; this.hidden = false; this.textContent = ""; this.className = ""; this.value = ""; }
   setAttribute(k, v) { this.attrs[k] = v; } removeAttribute(k) { delete this.attrs[k]; } addEventListener() {}
@@ -324,18 +341,26 @@ const ELS = {};
 const byId = (id) => ELS[id] || (ELS[id] = new FakeEl("#" + id));
 for (const id of ["locked", "editor", "extras-wrap"]) byId(id).hidden = true; // hidden in the HTML
 globalThis.document = { getElementById: byId, createElement: (t) => new FakeEl(t), querySelectorAll: () => [] };
-globalThis.fetch = async () => ({ ok: true, json: async () => JSON.parse(JSON.stringify(STATE)) });
+globalThis.fetch = async (url, opts) => {
+  if (url !== "api/publish") return { ok: true, json: async () => JSON.parse(JSON.stringify(STATE)) };
+  PUBLISHED = JSON.parse(opts.body);
+  return { ok: true, json: async () => ({ published: 1, relays: 1, applied: true }) };
+};
 Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
   getItem: (k) => (k in STORE ? STORE[k] : null), setItem: (k, v) => { STORE[k] = String(v); } } });
-globalThis.window = { nostr: { getPublicKey: async () => STATE.owner, nip44: {
-  decrypt: async (peer, p) => { if (peer === STATE.owner && p in OPENS) return OPENS[p]; throw new Error("invalid MAC"); },
-  encrypt: async () => { throw new Error("not in this test"); } } } };
+globalThis.window = { nostr: { getPublicKey: async () => STATE.owner,
+  signEvent: async (tmpl) => ({ ...tmpl, pubkey: STATE.owner, id: "00".repeat(32), sig: "" }), // the box checks the signature, not this test
+  nip44: {
+    decrypt: async (peer, p) => { if (peer === STATE.owner && p in OPENS) return OPENS[p]; throw new Error("invalid MAC"); },
+    encrypt: async (peer, plain) => { SEALS.push([peer, plain]); return "SEAL" + (SEALS.length - 1); } } } };
 %s
 (async () => {
   await load(); await unlock();
-  console.log(JSON.stringify({ editor: !ELS.editor.hidden, msg: ELS.msg.textContent, kind: ELS.msg.className, list, base, store: STORE }));
+  const seen = { editor: !ELS.editor.hidden, msg: ELS.msg.textContent, kind: ELS.msg.className, list: JSON.parse(JSON.stringify(list)), base };
+  if (SAVE) await save({ preventDefault() {} });
+  console.log(JSON.stringify({ ...seen, store: STORE, published: PUBLISHED, seals: SEALS }));
 })().catch((e) => { console.error(e); process.exit(1); });
-`, opensJS, stJS, storeJS, page[i+len("<script>"):j])
+`, opensJS, stJS, storeJS, v.now.Unix(), v.save, page[i+len("<script>"):j])
 	out, err := exec.Command(node, "-e", script).CombinedOutput()
 	if err != nil {
 		t.Fatalf("node: %v\n%s", err, out)
@@ -347,6 +372,29 @@ globalThis.window = { nostr: { getPublicKey: async () => STATE.owner, nip44: {
 	return got
 }
 
+// savedList is what the page's save sealed, opened with the owner's key: the
+// signer's placeholders swapped for real NIP-44 payloads first.
+func savedList(t *testing.T, owner *btcec.PrivateKey, got pageApp) *settings {
+	t.Helper()
+	if got.Published == nil {
+		t.Fatalf("nothing was published; message %q", got.Msg)
+	}
+	ev := got.Published.Event
+	for n, sl := range got.Seals {
+		ck, _ := nip44ConversationKey(owner, sl[0])
+		w, err := nip44Encrypt(sl[1], ck, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ev.Content = strings.Replace(ev.Content, fmt.Sprintf("%q", fmt.Sprintf("SEAL%d", n)), fmt.Sprintf("%q", w), 1)
+	}
+	s, err := open(&ev, owner, pubHex(owner))
+	if err != nil {
+		t.Fatalf("the saved list does not open: %v", err)
+	}
+	return s
+}
+
 func addresses(ls []list) []string {
 	var out []string
 	for _, l := range ls {
@@ -355,51 +403,149 @@ func addresses(ls []list) []string {
 	return out
 }
 
+// boxState is what a box's /api/state says: its newest list, and a Pi-hole
+// holding one blocklist of its own.
 func boxState(b *testBox, newest *event) stateResponse {
 	return stateResponse{Box: pubHex(b.key), Newest: newest, Local: &localState{Lists: blocklist("https://lists.example/on-this-box.txt")}}
 }
 
+// hostileState is a compromised box: its Pi-hole, as it reports it, allows
+// everything and lets a tracker through, and it offers the same as extras.
+func hostileState(b *testBox, newest *event) stateResponse {
+	bad := &localState{
+		Lists:   []list{{Address: "https://evil.example/allow-all.txt", Type: "allow", Enabled: true, Groups: []string{defaultGroup}}},
+		Domains: []domain{{Domain: "tracker.example.com", Type: "allow", Kind: "exact", Enabled: true, Groups: []string{defaultGroup}}},
+	}
+	return stateResponse{Box: pubHex(b.key), Newest: newest, Local: bad, Extras: bad}
+}
+
+// stripOwnerWrap is what a box can do for free: drop the owner's wrap (keys
+// is the part the binding doesn't cover) and recompute the id.
+func stripOwnerWrap(genuine *event, owner string) *event {
+	var env envelope
+	_ = json.Unmarshal([]byte(genuine.Content), &env)
+	delete(env.Keys, readerID(env.Salt, owner))
+	content, _ := json.Marshal(env)
+	ev := *genuine
+	ev.Content = string(content)
+	ev.ID = ev.computeID()
+	return &ev
+}
+
+type pageFloor struct {
+	CreatedAt int64  `json:"created_at"`
+	ID        string `json:"id"`
+	Boxes     []box  `json:"boxes"`
+}
+
+func floorIn(t *testing.T, store map[string]string, owner *btcec.PrivateKey) *pageFloor {
+	t.Helper()
+	v, ok := store[settingsD+" floor "+pubHex(owner)]
+	if !ok {
+		return nil
+	}
+	var f pageFloor
+	if err := json.Unmarshal([]byte(v), &f); err != nil {
+		t.Fatalf("floor %q: %v", v, err)
+	}
+	return &f
+}
+
 // Must-fix 1 (Tron, round 3): a list the page can't open must not keep the
 // owner out of the editor, or a compromised box locks him out of the one
-// page that can remove it. He gets the fresh editor, loudly.
+// page that can remove it. He gets an editor, loudly, with no rules from the
+// box that failed the check (round 4) and the boxes this browser last
+// trusted.
 func TestPageEditorOpensWhenListWontOpen(t *testing.T) {
 	clock := time.Unix(1_800_000_000, 0)
 	logen := mustKey(t)
 	b := newBox(t, pubHex(logen), newFakeRelays(), &clock)
-	genuine := signed(t, logen, &settings{V: 1, Boxes: []box{b.asBox("pi")}, Lists: blocklist("https://lists.example/real.txt")}, clock.Unix()-100)
-
-	// The box drops the owner's wrap; keys is the part the binding doesn't cover.
-	var env envelope
-	_ = json.Unmarshal([]byte(genuine.Content), &env)
-	delete(env.Keys, readerID(env.Salt, pubHex(logen)))
-	content, _ := json.Marshal(env)
-	stripped := *genuine
-	stripped.Content = string(content)
-	stripped.ID = stripped.computeID()
-
+	other := box{PubKey: pubHex(mustKey(t)), Name: "Pi 4"}
+	genuine := signed(t, logen, &settings{V: 1, Boxes: []box{b.asBox("pi"), other}, Lists: blocklist("https://lists.example/real.txt")}, clock.Unix()-100)
 	junk := &event{CreatedAt: clock.Unix(), Kind: settingsKind, Tags: [][]string{{"d", settingsD}}, Content: "not json"}
 	_ = junk.sign(logen)
 
-	// Control: the genuine list opens in the editor, with no warning.
-	if got := unlockPage(t, logen, boxState(b, genuine), nil); !got.Editor || strings.Join(addresses(got.List.Lists), " ") != "https://lists.example/real.txt" || strings.Contains(got.Kind, "err") {
+	// Control: the genuine list opens in the editor, with no warning, and
+	// this browser keeps its boxes.
+	got := unlockPage(t, logen, pageVisit{st: boxState(b, genuine), now: clock})
+	if !got.Editor || strings.Join(addresses(got.List.Lists), " ") != "https://lists.example/real.txt" || strings.Contains(got.Kind, "err") {
 		t.Fatalf("genuine list: %+v", got)
 	}
+	seen := got.Store
 	for name, ev := range map[string]*event{
-		"owner's wrap removed by the box": &stripped,
+		"owner's wrap removed by the box": stripOwnerWrap(genuine, pubHex(logen)),
 		"stray v1 list":                   v1Sealed(t, logen, &settings{V: 1, Boxes: []box{b.asBox("pi")}, Lists: blocklist("https://lists.example/old.txt")}, clock.Unix()-50),
 		"content not a sealed list":       junk,
 	} {
-		got := unlockPage(t, logen, boxState(b, ev), nil)
-		if !got.Editor {
-			t.Errorf("%s: editor not shown; message %q", name, got.Msg)
-			continue
+		for _, known := range []bool{true, false} {
+			store := map[string]string{}
+			if known {
+				store = seen
+			}
+			got := unlockPage(t, logen, pageVisit{st: boxState(b, ev), store: store, now: clock})
+			name := fmt.Sprintf("%s, boxes known=%v", name, known)
+			if !got.Editor {
+				t.Errorf("%s: editor not shown; message %q", name, got.Msg)
+				continue
+			}
+			if len(got.List.Lists)+len(got.List.Domains)+len(got.List.Groups) != 0 || got.Base != ev.ID {
+				t.Errorf("%s: editor holds rules %+v on base %s, want none on %s", name, got.List, got.Base, ev.ID)
+			}
+			wantBoxes := 0
+			if known {
+				wantBoxes = 2
+			}
+			if len(got.List.Boxes) != wantBoxes {
+				t.Errorf("%s: editor names boxes %+v, want the %d this browser last trusted", name, got.List.Boxes, wantBoxes)
+			}
+			if !strings.Contains(got.Kind, "err") || !strings.Contains(got.Msg, "failed this page's checks") || !strings.Contains(got.Msg, "come from the box that failed the check") {
+				t.Errorf("%s: no loud warning: %q (%s)", name, got.Msg, got.Kind)
+			}
 		}
-		if a := addresses(got.List.Lists); len(a) != 1 || a[0] != "https://lists.example/on-this-box.txt" || got.Base != ev.ID {
-			t.Errorf("%s: editor holds %v on base %s, want this box's Pi-hole on %s", name, a, got.Base, ev.ID)
+	}
+
+	// The genuine first run still starts from this box's Pi-hole.
+	got = unlockPage(t, logen, pageVisit{st: boxState(b, nil), now: clock})
+	if a := addresses(got.List.Lists); len(a) != 1 || a[0] != "https://lists.example/on-this-box.txt" || strings.Contains(got.Kind, "err") {
+		t.Fatalf("first run: %+v", got)
+	}
+}
+
+// Must-fix (Tron, round 4): a box that fails the check must not choose what
+// the owner signs. Saving from the fallback lets no rule from that box's
+// Pi-hole in, and keeps every box the last trusted list named.
+func TestPageSaveFromFallbackKeepsBoxesAndNoHostileRule(t *testing.T) {
+	clock := time.Unix(1_800_000_000, 0)
+	logen := mustKey(t)
+	b := newBox(t, pubHex(logen), newFakeRelays(), &clock)
+	other := box{PubKey: pubHex(mustKey(t)), Name: "Pi 4"}
+	genuine := signed(t, logen, &settings{V: 1, Boxes: []box{b.asBox("pi"), other},
+		Lists:   blocklist("https://lists.example/real.txt"),
+		Domains: []domain{{Domain: "tracker.example.com", Type: "deny", Kind: "exact", Enabled: true, Groups: []string{defaultGroup}}}}, clock.Unix()-100)
+
+	// The owner has used this box's page before, while it was honest.
+	store := unlockPage(t, logen, pageVisit{st: boxState(b, genuine), now: clock}).Store
+
+	// Now the box strips the owner's wrap and reports a hostile Pi-hole. The
+	// owner, told the list can't be trusted, saves.
+	got := unlockPage(t, logen, pageVisit{st: hostileState(b, stripOwnerWrap(genuine, pubHex(logen))), store: store, now: clock, save: true})
+	saved := savedList(t, logen, got)
+	for _, l := range saved.Lists {
+		if l.Type == "allow" || strings.Contains(l.Address, "evil.example") {
+			t.Errorf("hostile list signed: %+v", l)
 		}
-		if !strings.Contains(got.Kind, "err") || !strings.Contains(got.Msg, "can't be trusted") {
-			t.Errorf("%s: no loud warning: %q (%s)", name, got.Msg, got.Kind)
+	}
+	for _, d := range saved.Domains {
+		if d.Type == "allow" {
+			t.Errorf("hostile domain signed: %+v", d)
 		}
+	}
+	keys := map[string]bool{}
+	for _, x := range saved.Boxes {
+		keys[x.PubKey] = true
+	}
+	if !keys[other.PubKey] || !keys[pubHex(b.key)] || len(keys) != 2 {
+		t.Errorf("saved for boxes %+v, want this box and %s", saved.Boxes, other.Name)
 	}
 }
 
@@ -415,18 +561,17 @@ func TestPageRefusesListOlderThanFloor(t *testing.T) {
 	newer := signed(t, logen, &settings{V: 1, Boxes: []box{b.asBox("pi")}, Lists: blocklist("https://lists.example/new.txt")}, clock.Unix())
 
 	// Opening the newer list sets the floor.
-	got := unlockPage(t, logen, boxState(b, newer), nil)
+	got := unlockPage(t, logen, pageVisit{st: boxState(b, newer), now: clock})
 	if !got.Editor || strings.Join(addresses(got.List.Lists), " ") != "https://lists.example/new.txt" {
 		t.Fatalf("newer list: %+v", got)
 	}
-	floorJS, _ := json.Marshal(map[string]any{"created_at": newer.CreatedAt, "id": newer.ID})
-	store := map[string]string{settingsD + " floor " + pubHex(logen): string(floorJS)}
-	if fmt.Sprint(got.Store) != fmt.Sprint(store) {
-		t.Errorf("floor kept after opening the newer list: %v, want %v", got.Store, store)
+	store := got.Store
+	if f := floorIn(t, store, logen); f == nil || f.CreatedAt != newer.CreatedAt || f.ID != newer.ID || len(f.Boxes) != 1 {
+		t.Fatalf("floor after opening the newer list: %+v", f)
 	}
 
 	// The box then offers the older one.
-	got = unlockPage(t, logen, boxState(b, older), store)
+	got = unlockPage(t, logen, pageVisit{st: boxState(b, older), store: store, now: clock})
 	if a := addresses(got.List.Lists); len(a) == 1 && a[0] == "https://lists.example/old.txt" {
 		t.Fatalf("page opened the older list for editing: %q", got.Msg)
 	}
@@ -445,8 +590,31 @@ func TestPageRefusesListOlderThanFloor(t *testing.T) {
 	}
 
 	// Older than nothing: a floor below the offered list lets it open.
-	got = unlockPage(t, logen, boxState(b, newer), map[string]string{})
+	got = unlockPage(t, logen, pageVisit{st: boxState(b, newer), now: clock})
 	if !got.Editor || strings.Contains(got.Kind, "err") {
 		t.Fatalf("newer list with no floor: %+v", got)
+	}
+}
+
+// An owner-signed list dated far ahead (boxes refuse it) is flagged, does not
+// move the floor, and does not push the next save's date past what boxes take.
+func TestPageFlagsListDatedAhead(t *testing.T) {
+	clock := time.Unix(1_800_000_000, 0)
+	logen := mustKey(t)
+	b := newBox(t, pubHex(logen), newFakeRelays(), &clock)
+	ahead := signed(t, logen, &settings{V: 1, Boxes: []box{b.asBox("pi")}, Lists: blocklist("https://lists.example/ahead.txt")}, clock.Unix()+365*24*3600)
+
+	got := unlockPage(t, logen, pageVisit{st: boxState(b, ahead), now: clock, save: true})
+	if !strings.Contains(got.Msg, "ahead of this computer's clock") {
+		t.Errorf("no warning: %q", got.Msg)
+	}
+	if a := addresses(got.List.Lists); len(a) != 0 {
+		t.Errorf("editor opened the list dated ahead: %v", a)
+	}
+	if f := floorIn(t, got.Store, logen); f != nil && f.CreatedAt > clock.Unix()+600 {
+		t.Errorf("floor moved to %d", f.CreatedAt)
+	}
+	if got.Published == nil || got.Published.Event.CreatedAt > clock.Unix()+600 {
+		t.Errorf("save dated %+v, want within the boxes' skew", got.Published)
 	}
 }

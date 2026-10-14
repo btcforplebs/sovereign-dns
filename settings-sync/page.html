@@ -295,37 +295,49 @@ async function load() {
 }
 
 // The freshness floor: the newest list this browser has saved or opened for
-// this owner. A box never goes back, so one that offers something older is
-// replaying an old list, which could hand read access back to a removed box.
+// this owner, and the boxes it named. A box never goes back, so one that
+// offers something older is replaying an old list, which could hand read
+// access back to a removed box. The boxes are what a fallback starts from.
 const FLOOR = () => D + " floor " + st.owner;
 function floor() { try { return JSON.parse(localStorage.getItem(FLOOR())) || null; } catch { return null; } }
-function remember(ev) {
+function remember(ev, s) {
   const f = floor();
-  if (!f || !isOlder(ev, f)) try { localStorage.setItem(FLOOR(), JSON.stringify({ created_at: ev.created_at, id: ev.id })); } catch {}
+  if (!f || !isOlder(ev, f)) try { localStorage.setItem(FLOOR(), JSON.stringify({ created_at: ev.created_at, id: ev.id, boxes: s.boxes || [] })); } catch {}
 }
+// As maxFutureSkew in sync.go: boxes refuse a list dated further ahead.
+const MAX_SKEW = 600;
+const nowSec = () => Math.floor(Date.now() / 1000);
 // NIP-01 order, as newer() in nostr.go: later created_at, then lowest id.
 const isOlder = (a, b) => a.created_at < b.created_at || (a.created_at === b.created_at && a.id > b.id);
 const when = (t) => new Date(t * 1000).toLocaleString();
 
-// The list the editor starts from. It never throws: a list the page can't
-// open or trust (keys stripped by the box, an old format, older than the
-// floor) falls back to this box's Pi-hole, so a box can't keep the owner out
-// of the one page that can remove it. problem says why, when it fell back.
+// The list the editor starts from. It never throws, so a box can't keep the
+// owner out of the one page that can remove it. With no shared list yet it
+// starts from this box's Pi-hole. A list the page can't open or trust (keys
+// stripped by the box, an old format, older than the floor, dated ahead)
+// falls back to an empty list: no rules, because this box's Pi-hole is in
+// the hands of the box that just failed the check, and only the boxes this
+// browser last trusted. problem says why, when it fell back.
 async function startingList() {
-  const l = st.local || {};
-  const fresh = () => ({ v: LIST_V, boxes: [], groups: l.groups || [], lists: l.lists || [], domains: l.domains || [] });
-  if (!st.newest) return { list: fresh(), base: "", problem: "" };
+  if (!st.newest) {
+    const l = st.local || {};
+    return { list: { v: LIST_V, boxes: [], groups: l.groups || [], lists: l.lists || [], domains: l.domains || [] }, base: "", problem: "" };
+  }
   try {
     await checkEvent(st.newest);
+    if (st.newest.created_at > nowSec() + MAX_SKEW) throw new Error(`the box offered a list dated ${when(st.newest.created_at)}, ahead of this computer's clock; every box refuses it`);
     const f = floor();
     if (f && isOlder(st.newest, f)) throw new Error(`the box offered a list saved ${when(st.newest.created_at)}, older than the one this browser last saw (${when(f.created_at)})`);
     const opened = await openList(st.newest, st.owner);
-    remember(st.newest);
+    remember(st.newest, opened);
     return { list: opened, base: st.newest.id, problem: "" };
   } catch (e) {
-    return { list: fresh(), base: st.newest.id, problem: e.message || String(e) };
+    const f = floor();
+    return { list: { v: LIST_V, boxes: (f && f.boxes) || [], groups: [], lists: [], domains: [] }, base: st.newest.id,
+      problem: e.message || String(e), knownBoxes: !!(f && f.boxes && f.boxes.length) };
   }
 }
+let untrusted = false; // the editor is a fallback: nothing from this box's Pi-hole is offered
 
 async function unlock() {
   if (!window.nostr || !window.nostr.nip44) { say("No Nostr signer with NIP-44 found in this browser. Install or enable one, then reload.", "err"); return; }
@@ -334,11 +346,15 @@ async function unlock() {
     const me = await window.nostr.getPublicKey();
     if (me !== st.owner) { say("That signer holds a different key from this box's owner, so it cannot edit the list.", "err"); return; }
     const start = await startingList();
-    list = start.list; base = start.base;
+    list = start.list; base = start.base; untrusted = !!start.problem;
     for (const k of ["boxes", "groups", "lists", "domains"]) list[k] = list[k] || [];
-    const added = !list.boxes.some((b) => b.pubkey === st.box);
+    // A box that failed the check doesn't get added to its own list.
+    const added = !untrusted && !list.boxes.some((b) => b.pubkey === st.box);
     if (added) list.boxes.push({ pubkey: st.box, name: "This box" });
-    if (start.problem) say(`The shared list this box offered can't be trusted, so it is not shown: ${start.problem}. Below is a fresh list from this box's Pi-hole instead. Saving it replaces the shared list on every box, and only the boxes listed below will be able to read it: add back the ones you still use.`, "err");
+    if (untrusted) say(`This box's shared list failed this page's checks, so it is not shown: ${start.problem}. ` +
+      "You are starting a new list. No rules are filled in: this box's Pi-hole entries come from the box that failed the check, so none of them are shown or offered. " +
+      (start.knownBoxes ? "The boxes below come from the last list this browser trusted, not from this box. " : "This browser has no record of your boxes, so none are listed: add each box that should read the list. ") +
+      "Saving replaces the shared list on every box with what is below, and only the boxes listed can read it.", "err");
     else if (!st.newest) say("No shared list exists yet. This one starts from this box's current Pi-hole; saving it makes it the list for every box.", "warn");
     else if (added) say("This box isn't in the list yet. It has been added below; save to share the list with it.", "warn");
     else say(`Editing the list saved ${when(st.newest.created_at)}.`);
@@ -403,9 +419,10 @@ function renderExtras() {
   for (const g of x.groups) ul.append(el("li", {}, "Group ", el("code", {}, g.name)));
   for (const l of x.lists) ul.append(el("li", {}, `${l.type === "allow" ? "Allowlist" : "Blocklist"} `, el("code", {}, l.address)));
   for (const d of x.domains) ul.append(el("li", {}, `${d.type === "allow" ? "Allow" : "Block"} ${d.kind} `, el("code", {}, d.domain)));
-  $("extras-wrap").hidden = !ul.children.length;
+  $("extras-wrap").hidden = untrusted || !ul.children.length;
 }
 function adopt() {
+  if (untrusted) return;
   const x = extrasNow();
   list.groups.push(...x.groups); list.lists.push(...x.lists); list.domains.push(...x.domains);
   dirty(); render();
@@ -429,20 +446,23 @@ async function save(e) {
     const problems = validateList(clean);
     if (problems.length) { say("Not saved, and nothing was sent to your signer. Every box would refuse this list: " + problems.join("; ") + ".", "err"); return; }
     say("Asking your signer to seal and sign the list…");
-    const created = Math.max(Math.floor(Date.now() / 1000), (st.newest ? st.newest.created_at : 0) + 1);
+    // After the box's newest, unless that is dated ahead (boxes refuse it, so
+    // following it would make this save refused too).
+    const now = nowSec(), next = st.newest ? st.newest.created_at + 1 : 0;
+    const created = next > now + MAX_SKEW ? now : Math.max(now, next);
     const ev = await window.nostr.signEvent({ kind: KIND, created_at: created, tags: [["d", D]], content: await sealList(clean, created) });
     if (ev.created_at !== created) { say("Not saved: the signer changed the list's date.", "err"); return; }
     const r = await fetch("api/publish", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ event: ev, base }) });
     const out = await r.json();
     if (!r.ok) { say(out.error || "Save failed.", "err"); return; }
-    base = ev.id; $("dirty").textContent = ""; remember(ev);
+    base = ev.id; $("dirty").textContent = ""; remember(ev, clean);
     say(`Saved to ${out.published} of ${out.relays} relays. ` + (out.applied ? "Applied on this box; the others pick it up within a few minutes." : `Not applied here yet: ${out.apply_error}`), out.applied ? "ok" : "warn");
     // Saved: from here on a failure is about reloading, not saving.
     let why = "";
     try {
       await load();
       const start = st.newest ? await startingList() : { problem: "this box doesn't show the saved list yet" };
-      why = start.problem; if (!why) { list = start.list; base = start.base; render(); }
+      why = start.problem; if (!why) { list = start.list; base = start.base; untrusted = false; render(); }
     }
     catch (err) { why = err.message || String(err); }
     if (why) { stale = true; say("Saved, but this page could not reload the list: " + why + ". Reload the page before editing again.", "warn"); }
