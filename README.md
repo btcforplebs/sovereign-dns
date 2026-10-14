@@ -32,9 +32,15 @@ Open a Terminal on the box and paste this one line:
 curl -fsSLO https://raw.githubusercontent.com/btcforplebs/sovereign-dns/main/scripts/install.sh && bash install.sh
 ```
 
-It will ask you to pick a password (for the ad-blocking dashboard), then build
-everything. **The first install takes a while:** about 10–15 minutes on a
-normal computer, 20–40 minutes on a Raspberry Pi. Let it run.
+It will ask you to pick a password (for the ad-blocking dashboard), then set
+everything up. When a ready-made copy of the encrypted network software exists
+for your box (most Macs, Linux PCs and 64-bit Raspberry Pis), it downloads that
+and the first install takes a few minutes. Otherwise it builds the software
+itself, which takes a while: about 10–15 minutes on a normal computer, 20–40
+minutes on a Raspberry Pi. Either way, let it run.
+
+To build from source even when a ready-made copy exists, run
+`SOVEREIGN_DNS_BUILD_FROM_SOURCE=1 bash install.sh` instead.
 
 When it says **Done**, open a web browser **on that same box** and go to:
 
@@ -129,6 +135,15 @@ cp .env.example .env          # set PIHOLE_PASSWORD at minimum
 docker compose up -d --build  # first build compiles nvpn + web panel
 ```
 
+To use the ready-made nvpn image instead of compiling it (when
+`docker-compose.prebuilt.yml` exists), add this line to `.env` before
+`docker compose up -d --build`. Every later `docker compose` command in the
+folder then uses the same image:
+
+```bash
+COMPOSE_FILE=docker-compose.yml:docker-compose.prebuilt.yml
+```
+
 The container prints its npub and a ready-made invite on first start:
 `docker compose logs nvpn | grep -A8 'to add another device'`. The old
 terminal path for adding a device still works: on the device, run the
@@ -186,3 +201,10 @@ The Pi-hole admin UI is also served on the mesh at
   branch), and every image is pinned by digest. `scripts/check-pins.sh`
   fails if anything is unpinned, and `make-installer.sh` won't build an
   installer until it passes.
+- The ready-made nvpn image (`docker-compose.prebuilt.yml`) is built by this
+  repo's CI from that same commit and the same `nvpn/` folder, for amd64 and
+  arm64, and pinned by digest. Its tag names the commit and a hash of
+  `nvpn/`, and `check-pins.sh` fails if either changes without a repin, so it
+  cannot quietly fall behind the source. Trusting it means trusting this
+  repo's GitHub Actions build. If you would rather not, build from source
+  (`SOVEREIGN_DNS_BUILD_FROM_SOURCE=1`).

@@ -1,0 +1,195 @@
+# Builds the ready-made nvpn image that installs download instead of compiling
+# nvpn on the device (docker-compose.prebuilt.yml, scripts/repin-prebuilt.sh).
+#
+# Pull requests: build only. Each architecture builds natively, then the
+# installer's fast path is exercised against a throwaway registry on the
+# runner: pull by digest, start nvpn and web from the image, and fail if
+# compose builds anything. Nothing leaves the runner. This job has no
+# registry login and no write permission.
+#
+# Publish: manual only (Actions > nvpn image > Run workflow on main, with
+# "publish" ticked). Pushes to ghcr.io/btcforplebs/sovereign-dns-nvpn under
+# the tag scripts/lib/nvpn-image.sh names, then prints the digest to repin.
+# The first publish creates the package as private: make it public in the
+# package settings, or installs cannot pull it and fall back to source. The
+# index digest gets a signed build-provenance attestation, which
+# scripts/repin-prebuilt.sh checks before pinning.
+name: nvpn image
+
+on:
+  pull_request:
+    paths:
+      - nvpn/**
+      - scripts/lib/nvpn-image.sh
+      - docker-compose.yml
+      - docker-compose.prebuilt.yml
+      - .github/workflows/nvpn-image.yml
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Push the image to ghcr.io (main only)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  # The BuildKit the builds run in, pinned like every other image here.
+  BUILDKIT_IMAGE: moby/buildkit:v0.34.0@sha256:b059f8d7226d0b326bc871af489a5dddf65e36af4d20d14251b072974d9ee87c
+
+jobs:
+  build:
+    if: ${{ !inputs.publish }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Name the image this tree builds
+        run: |
+          source scripts/lib/nvpn-image.sh
+          echo "TAG=$(nvpn_image_tag)" >> "$GITHUB_ENV"
+
+      - name: Build (no push)
+        run: |
+          docker buildx create --use --driver docker-container --driver-opt "image=$BUILDKIT_IMAGE"
+          start=$SECONDS
+          docker buildx build --platform "linux/${{ matrix.arch }}" --load -t "sdns-nvpn:ci" nvpn
+          secs=$((SECONDS - start))
+          # Roughly what a device downloads: the layers, gzip-compressed.
+          gz=$(docker save sdns-nvpn:ci | gzip -c | wc -c)
+          {
+            echo "### linux/${{ matrix.arch }}: $TAG"
+            echo "- build: $((secs / 60)) min $((secs % 60)) s on ${{ matrix.runner }}"
+            echo "- image: $(docker image inspect -f '{{.Size}}' sdns-nvpn:ci | awk '{printf "%.0f MB", $1/1e6}') unpacked, about $(awk -v b="$gz" 'BEGIN{printf "%.0f MB", b/1e6}') to download"
+          } >> "$GITHUB_STEP_SUMMARY"
+          docker run --rm --entrypoint /usr/local/bin/nvpn sdns-nvpn:ci --version
+          docker run --rm --entrypoint /bin/sh sdns-nvpn:ci -c 'test -x /usr/local/bin/nvpn-web && test -f /usr/share/nostr-vpn/web/index.html'
+
+      - name: Installer fast path, against a local registry
+        env:
+          REGISTRY_IMAGE: registry:3.0.0@sha256:6c5666b861f3505b116bb9aa9b25175e71210414bd010d92035ff64018f9457e
+        run: |
+          set -euo pipefail
+          docker run -d --name reg -p 127.0.0.1:5000:5000 "$REGISTRY_IMAGE"
+          for _ in $(seq 1 30); do curl -fs http://127.0.0.1:5000/v2/ >/dev/null && break; sleep 1; done
+          local_name=localhost:5000/sovereign-dns-nvpn
+          docker tag sdns-nvpn:ci "$local_name:$TAG"
+          docker push "$local_name:$TAG"
+          pushed=$(docker inspect -f '{{index .RepoDigests 0}}' "$local_name:$TAG")
+          ref="$local_name:$TAG@${pushed#*@}"
+          # Gone from the engine, so the pull below really downloads it.
+          docker image rm sdns-nvpn:ci "$local_name:$TAG"
+
+          # The same shape scripts/repin-prebuilt.sh writes.
+          printf '%s\n' 'services:' '  nvpn:' '    build: !reset null' "    image: $ref" \
+                        '  web:' '    build: !reset null' "    image: $ref" > docker-compose.prebuilt.yml
+          printf 'PIHOLE_PASSWORD=ci\nCOMPOSE_FILE=docker-compose.yml:docker-compose.prebuilt.yml\n' > .env
+
+          # What install.sh runs: check the merge, pull by digest, then the
+          # plain `up -d --build` (COMPOSE_FILE from .env loads both files).
+          docker compose -f docker-compose.yml -f docker-compose.prebuilt.yml config -q
+          docker pull "$ref"
+          start=$SECONDS
+          docker compose up -d --build nvpn web
+          # Nothing built: compose tags a build as <project>-<service>, so
+          # neither name may exist. (Its progress output is no evidence either
+          # way: it prints "Building 0.0s (0/0)" when there is nothing to build.)
+          for s in sovereign-dns-nvpn sovereign-dns-web; do
+            if docker image inspect "$s" >/dev/null 2>&1; then
+              echo "compose built $s on the fast path; it should only have used $ref" >&2; exit 1
+            fi
+          done
+          for s in sovereign-dns-nvpn sovereign-dns-web; do
+            img=$(docker inspect -f '{{.Config.Image}}' "$s")
+            [[ "$img" == "$ref" ]] || { echo "$s runs $img, not $ref" >&2; exit 1; }
+          done
+          for _ in $(seq 1 60); do
+            h=$(docker inspect -f '{{.State.Health.Status}}' sovereign-dns-nvpn)
+            [[ "$h" == healthy ]] && break; sleep 3
+          done
+          [[ "$h" == healthy ]] || { docker compose logs nvpn | tail -50; echo "nvpn is $h" >&2; exit 1; }
+          echo "- fast path: pull to healthy nvpn in $((SECONDS - start)) s, nothing built" >> "$GITHUB_STEP_SUMMARY"
+          docker compose down -v
+
+  publish:
+    if: ${{ inputs.publish && github.ref == 'refs/heads/main' }}
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build and push linux/${{ matrix.arch }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          source scripts/lib/nvpn-image.sh
+          repo=$(nvpn_image_repo); tag=$(nvpn_image_tag)
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker buildx create --use --driver docker-container --driver-opt "image=$BUILDKIT_IMAGE"
+          docker buildx build --platform "linux/${{ matrix.arch }}" --push \
+            --label "org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
+            --label "org.opencontainers.image.revision=${{ github.sha }}" \
+            --label "nvpn.commit=$(nvpn_image_commit)" \
+            -t "$repo:$tag-${{ matrix.arch }}" nvpn
+
+  index:
+    needs: publish
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+      # Signed build provenance for the index digest: repin-prebuilt.sh
+      # refuses a digest this workflow, on main, did not attest.
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: One tag for both architectures
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          source scripts/lib/nvpn-image.sh
+          repo=$(nvpn_image_repo); tag=$(nvpn_image_tag)
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker buildx imagetools create -t "$repo:$tag" "$repo:$tag-amd64" "$repo:$tag-arm64"
+          digest=$(docker buildx imagetools inspect "$repo:$tag" --format '{{json .Manifest}}' | python3 -c 'import json,sys; print(json.load(sys.stdin)["digest"])')
+          echo "REPO=$repo" >> "$GITHUB_ENV"
+          echo "DIGEST=$digest" >> "$GITHUB_ENV"
+          {
+            echo "### Published $repo:$tag"
+            echo "Digest: \`$digest\`"
+            echo
+            echo "Make the package public (first publish only), then pin it:"
+            echo "\`scripts/repin-prebuilt.sh $digest\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.REPO }}
+          subject-digest: ${{ env.DIGEST }}
+          push-to-registry: true
