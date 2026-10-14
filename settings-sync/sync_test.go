@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -325,7 +326,10 @@ func TestTwoBoxesConverge(t *testing.T) {
 		t.Fatalf("boxes differ:\nmac %s\npi  %s", a, b)
 	}
 
-	// 3. Logen drops the blocklist and the group, from either box: both lose them.
+	// 3. Logen drops the blocklist and the group. The Pi created them, so it
+	// removes them. The Mac had the blocklist before any list existed, so it
+	// keeps it (and its page lists it under "only on this box"); the group the
+	// Mac created goes.
 	third := second
 	third.Groups = nil
 	third.Lists = blocklist("https://lists.example/replacement.txt")
@@ -334,14 +338,83 @@ func TestTwoBoxesConverge(t *testing.T) {
 	mac.run(t)
 	pi.run(t)
 	a, b := mac.pihole.snapshot(t), pi.pihole.snapshot(t)
-	if a != b {
-		t.Fatalf("boxes differ:\nmac %s\npi  %s", a, b)
+	if strings.Contains(b, "existing.txt") || strings.Contains(b, "kids") || !strings.Contains(b, "replacement.txt") || !strings.Contains(b, "ads.example") {
+		t.Fatalf("unexpected Pi state: %s", b)
 	}
-	if strings.Contains(a, "existing.txt") || strings.Contains(a, "kids") || !strings.Contains(a, "replacement.txt") || !strings.Contains(a, "ads.example") {
-		t.Fatalf("unexpected final state: %s", a)
+	if !strings.Contains(a, "existing.txt") || strings.Contains(a, "kids") || !strings.Contains(a, "replacement.txt") || !strings.Contains(a, "ads.example") {
+		t.Fatalf("unexpected Mac state: %s", a)
+	}
+	// The Pi had ads.example before the list named it; the Mac created it.
+	// Dropping it removes it from the Mac only.
+	fourth := third
+	fourth.Domains = nil
+	clock = clock.Add(time.Minute)
+	rl.put(signed(t, logen, &fourth, clock.Unix()), relays...)
+	mac.run(t)
+	pi.run(t)
+	if strings.Contains(mac.pihole.snapshot(t), "ads.example") || !strings.Contains(pi.pihole.snapshot(t), "ads.example") {
+		t.Fatalf("ads.example: mac %s / pi %s", mac.pihole.snapshot(t), pi.pihole.snapshot(t))
 	}
 	if mac.pihole.gravity == 0 || pi.pihole.gravity == 0 {
 		t.Fatal("gravity was not rebuilt after list changes")
+	}
+}
+
+// Tron's case: an entry already on the Pi-hole, which a shared list later
+// names and then drops, is never removed. That holds for a blocklist, a deny
+// domain (removing it would silently unblock the domain) and a group, and
+// across a restart.
+func TestPreexistingEntryNeverRemoved(t *testing.T) {
+	clock := time.Unix(1_800_000_000, 0)
+	logen := mustKey(t)
+	rl := newFakeRelays()
+	b := newBox(t, pubHex(logen), rl, &clock)
+	ctx := context.Background()
+	p := b.pihole.client()
+	_ = p.login(ctx)
+	_ = p.putGroup(ctx, group{Name: "kids", Enabled: true}, false)
+	_ = p.putList(ctx, list{Address: "https://lists.example/mine.txt", Type: "block", Enabled: true}, []int{0}, false)
+	_ = p.putDomain(ctx, domain{Domain: "tracker.example", Type: "deny", Kind: "exact", Enabled: true}, []int{0}, false)
+	p.logout(ctx)
+	before := b.pihole.snapshot(t)
+
+	v1 := &settings{V: 1, Boxes: []box{b.asBox("pi")}, Groups: []group{{Name: "kids", Enabled: true}},
+		Lists:   []list{{Address: "https://lists.example/mine.txt", Type: "block", Enabled: true, Groups: []string{defaultGroup}}, {Address: "https://lists.example/new.txt", Type: "block", Enabled: true, Groups: []string{"kids"}}},
+		Domains: []domain{{Domain: "tracker.example", Type: "deny", Kind: "exact", Enabled: true, Groups: []string{defaultGroup}}}}
+	rl.put(signed(t, logen, v1, clock.Unix()), relays...)
+	b.run(t)
+	if m := b.sync.state.Managed; len(m.Groups) != 0 || len(m.Domains) != 0 || len(m.Lists) != 1 || m.Lists[0] != "block https://lists.example/new.txt" {
+		t.Fatalf("managed set adopted pre-existing entries: %+v", m)
+	}
+
+	b.sync = b.syncer(t, pubHex(logen), rl, &clock, b.sync.dataDir) // restart in between
+	clock = clock.Add(time.Minute)
+	rl.put(signed(t, logen, &settings{V: 1, Boxes: []box{b.asBox("pi")}}, clock.Unix()), relays...)
+	b.run(t)
+	if got := b.pihole.snapshot(t); got != before {
+		t.Fatalf("pre-existing entries changed or removed:\nbefore %s\nafter  %s", before, got)
+	}
+}
+
+// A state.json edited on disk gets the same checks as a list from a relay;
+// a far-future saved list would otherwise freeze the box on it for good.
+func TestSavedStateIsReverified(t *testing.T) {
+	clock := time.Unix(1_800_000_000, 0)
+	logen, mallory := mustKey(t), mustKey(t)
+	rl := newFakeRelays()
+	b := newBox(t, pubHex(logen), rl, &clock)
+	for name, ev := range map[string]*event{
+		"far future": signed(t, logen, &settings{V: 1, Boxes: []box{b.asBox("pi")}}, clock.Unix()+365*24*3600),
+		"not Logen":  signed(t, mallory, &settings{V: 1, Boxes: []box{b.asBox("pi")}}, clock.Unix()),
+	} {
+		b.sync.state = savedState{Applied: ev, Managed: managedSet{Lists: []string{"block https://lists.example/victim.txt"}}}
+		if err := b.sync.save(); err != nil {
+			t.Fatal(err)
+		}
+		s := b.syncer(t, pubHex(logen), rl, &clock, b.sync.dataDir)
+		if s.state.Applied != nil || len(s.state.Managed.Lists) != 0 {
+			t.Fatalf("%s: saved state trusted: %+v", name, s.state)
+		}
 	}
 }
 
@@ -372,30 +445,106 @@ func TestRelaysDownKeepsLastList(t *testing.T) {
 	}
 }
 
+// guardCases: every list here must be refused (ok=false) or accepted (ok=true)
+// by both settings.go and the page. Addresses are private ranges, never real.
+var guardCases = []struct {
+	name string
+	s    settings
+	ok   bool
+}{
+	{"list host is an IP", settings{V: 1, Lists: blocklist("http://10.0.0.5/hosts")}, false},
+	{"list host is IPv6", settings{V: 1, Lists: blocklist("http://[fd00::1]/hosts")}, false},
+	{"list host .local", settings{V: 1, Lists: blocklist("http://nas.local/hosts")}, false},
+	{"list host .local.", settings{V: 1, Lists: blocklist("http://nas.local./hosts")}, false},
+	{"list host single label", settings{V: 1, Lists: blocklist("http://pihole/hosts")}, false},
+	{"list URL with credentials", settings{V: 1, Lists: blocklist("https://user:pw@lists.example/x")}, false},
+	{"IP in list path", settings{V: 1, Lists: blocklist("https://cdn.example.com/10.0.0.5.txt")}, false},
+	{"IP in list query", settings{V: 1, Lists: blocklist("https://example.com/l.txt?from=192.168.1.5")}, false},
+	{"nip.io host", settings{V: 1, Lists: blocklist("https://10.0.0.5.nip.io/l.txt")}, false},
+	{"dashed sslip.io host", settings{V: 1, Lists: blocklist("https://10-0-0-5.sslip.io/l.txt")}, false},
+	{"IP in list comment", settings{V: 1, Lists: []list{{Address: "https://lists.example/x", Type: "block", Comment: "from 192.0.2.9"}}}, false},
+	{"exact domain is an IP", settings{V: 1, Domains: []domain{{Domain: "192.168.1.1", Type: "deny", Kind: "exact"}}}, false},
+	{"exact domain IP with trailing dot", settings{V: 1, Domains: []domain{{Domain: "10.0.0.5.", Type: "deny", Kind: "exact"}}}, false},
+	{"comment IP with trailing dot", settings{V: 1, Domains: []domain{{Domain: "example.com", Type: "deny", Kind: "exact", Comment: "seen at 10.0.0.5."}}}, false},
+	{"regex domain with escaped IP", settings{V: 1, Domains: []domain{{Domain: `^10\.0\.0\.5$`, Type: "deny", Kind: "regex"}}}, false},
+	{"regex reverse-lookup of a LAN IP", settings{V: 1, Domains: []domain{{Domain: `5\.1\.168\.192\.in-addr\.arpa`, Type: "deny", Kind: "regex"}}}, false},
+	{"regex reverse-lookup of a LAN range", settings{V: 1, Domains: []domain{{Domain: `(\.|^)168\.192\.in-addr\.arpa$`, Type: "allow", Kind: "regex"}}}, false},
+	{"regex IPv6", settings{V: 1, Domains: []domain{{Domain: `^fd00::5$`, Type: "deny", Kind: "regex"}}}, false},
+	{"regex .local", settings{V: 1, Domains: []domain{{Domain: `(\.|^)nas\.local$`, Type: "deny", Kind: "regex"}}}, false},
+	{"exact .local", settings{V: 1, Domains: []domain{{Domain: "nas.local", Type: "allow", Kind: "exact"}}}, false},
+	{"exact .lan", settings{V: 1, Domains: []domain{{Domain: "logen-mbp.lan", Type: "allow", Kind: "exact"}}}, false},
+	{"exact single label", settings{V: 1, Domains: []domain{{Domain: "nas", Type: "allow", Kind: "exact"}}}, false},
+	{"exact localhost.", settings{V: 1, Domains: []domain{{Domain: "localhost.", Type: "allow", Kind: "exact"}}}, false},
+	{"box name .local", settings{V: 1, Boxes: []box{{PubKey: strings.Repeat("ab", 32), Name: "pihole.local"}}}, false},
+	{"box name with IP", settings{V: 1, Boxes: []box{{PubKey: strings.Repeat("ab", 32), Name: "pi at 10.0.0.7"}}}, false},
+	{"group named for an IPv6 address", settings{V: 1, Groups: []group{{Name: "home fe80::1 devices"}}}, false},
+	{"bad box pubkey", settings{V: 1, Boxes: []box{{PubKey: "nothex", Name: "x"}}}, false},
+	{"unknown group", settings{V: 1, Lists: []list{{Address: "https://lists.example/x", Type: "block", Groups: []string{"missing"}}}}, false},
+	{"unknown version", settings{V: 2}, false},
+	{"ordinary list", settings{V: 1,
+		Boxes:  []box{{PubKey: strings.Repeat("ab", 32), Name: "This box"}, {PubKey: strings.Repeat("cd", 32), Name: "Pi 4"}},
+		Groups: []group{{Name: "kids", Comment: "added 2026-10-14", Enabled: true}},
+		Lists: []list{
+			{Address: "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts", Type: "block", Enabled: true, Groups: []string{"kids"}},
+			{Address: "https://v.firebog.net/hosts/AdguardDNS.txt", Type: "block", Enabled: true},
+			{Address: "https://big.oisd.nl", Type: "block", Enabled: true, Comment: "v2 list, 1.5M domains"},
+		},
+		Domains: []domain{
+			{Domain: `(\.|^)tiktok\.com$`, Type: "deny", Kind: "regex"},
+			{Domain: `^ad[0-9]+\.example\.com$`, Type: "deny", Kind: "regex"},
+			{Domain: "example.com", Type: "allow", Kind: "exact"},
+			{Domain: "my.home-depot.example.", Type: "allow", Kind: "exact"},
+		}}, true},
+}
+
 func TestValidateRefusesAddresses(t *testing.T) {
-	bad := []settings{
-		{V: 1, Lists: blocklist("http://10.0.0.5/hosts")},
-		{V: 1, Lists: blocklist("http://[fd00::1]/hosts")},
-		{V: 1, Lists: blocklist("http://nas.local/hosts")},
-		{V: 1, Lists: blocklist("http://pihole/hosts")},
-		{V: 1, Lists: blocklist("https://user:pw@lists.example/x")},
-		{V: 1, Lists: []list{{Address: "https://lists.example/x", Type: "block", Comment: "from 203.0.113.9"}}},
-		{V: 1, Domains: []domain{{Domain: "192.168.1.1", Type: "deny", Kind: "exact"}}},
-		{V: 1, Groups: []group{{Name: "home fe80::1 devices"}}},
-		{V: 1, Boxes: []box{{PubKey: "nothex", Name: "x"}}},
-		{V: 1, Lists: []list{{Address: "https://lists.example/x", Type: "block", Groups: []string{"missing"}}}},
-		{V: 2},
-	}
-	for i, s := range bad {
-		if err := s.validate(); err == nil {
-			t.Errorf("case %d passed validation: %+v", i, s)
+	for _, c := range guardCases {
+		err := c.s.validate()
+		if c.ok && err != nil {
+			t.Errorf("%s: refused: %v", c.name, err)
+		}
+		if !c.ok && err == nil {
+			t.Errorf("%s: accepted", c.name)
 		}
 	}
-	ok := settings{V: 1, Groups: []group{{Name: "kids", Enabled: true}},
-		Lists:   []list{{Address: "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts", Type: "block", Enabled: true, Groups: []string{"kids"}}},
-		Domains: []domain{{Domain: `(\.|^)tiktok\.com$`, Type: "deny", Kind: "regex"}, {Domain: "example.com", Type: "allow", Kind: "exact"}}}
-	if err := ok.validate(); err != nil {
-		t.Fatal(err)
+}
+
+// The page refuses the same lists as the box, before the signer is asked:
+// its copy of the guard (between the markers in page.html) runs under node
+// on the same cases.
+func TestPageGuardMatchesGo(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not installed; the page guard is not checked")
+	}
+	page := string(pageHTML)
+	const begin, end = "// --- address guard", "// --- end address guard ---"
+	i, j := strings.Index(page, begin), strings.Index(page, end)
+	if i < 0 || j < i {
+		t.Fatal("page.html has no address guard")
+	}
+	type jsCase struct {
+		Name string   `json:"name"`
+		S    settings `json:"s"`
+	}
+	var cases []jsCase
+	for _, c := range guardCases {
+		cases = append(cases, jsCase{c.name, c.s})
+	}
+	in, _ := json.Marshal(cases)
+	script := page[i:j] + "\nconst cases = " + string(in) + ";\nconsole.log(JSON.stringify(cases.map((c) => validateList(c.s).length === 0)));\n"
+	out, err := exec.Command(node, "-e", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("node: %v\n%s", err, out)
+	}
+	var got []bool
+	if err := json.Unmarshal(out, &got); err != nil || len(got) != len(guardCases) {
+		t.Fatalf("node output: %s", out)
+	}
+	for k, c := range guardCases {
+		if got[k] != c.ok {
+			t.Errorf("%s: page accepts=%v, want %v", c.name, got[k], c.ok)
+		}
 	}
 }
 

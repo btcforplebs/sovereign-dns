@@ -10,7 +10,6 @@ package main
 import (
 	"errors"
 	"fmt"
-	"net"
 	"net/url"
 	"regexp"
 	"strings"
@@ -58,39 +57,65 @@ const defaultGroup = "Default"
 func (l list) key() string   { return l.Type + " " + l.Address }
 func (d domain) key() string { return d.Type + "/" + d.Kind + " " + d.Domain }
 
+// The address guard. page.html carries a line-for-line copy (between the
+// "address guard" markers) so the page refuses the same lists before the
+// signer is asked; TestPageGuardMatchesGo runs both on the same cases.
+//
+// Every string is scanned after lowercasing and dropping backslashes, so an
+// escaped regex (`192\.168\.`) reads like the address it matches.
 var (
-	ipv4Literal = regexp.MustCompile(`(^|[^0-9.])(\d{1,3}\.){3}\d{1,3}([^0-9.]|$)`)
-	// Two or more hex groups joined by colons with a :: or 7 colons: an IPv6
-	// literal. Loose on purpose; a false hit only refuses a save.
-	ipv6Literal = regexp.MustCompile(`(?i)([0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}`)
-	lanSuffixes = []string{".local", ".lan", ".home", ".internal", ".home.arpa", ".localdomain", ".arpa"}
+	// Four 1-3 digit groups joined by dots or dashes (the dashed form is how
+	// nip.io/sslip.io hosts spell an IP). A trailing dot still counts, and so
+	// do longer runs like a.b.c.d.e: loose on purpose, a false hit only
+	// refuses a save.
+	ipv4Literal = regexp.MustCompile(`(^|[^0-9])([0-9]{1,3}[.-]){3}[0-9]{1,3}([^0-9]|$)`)
+	// Up to eight hex groups joined by colons; counted as IPv6 when it has a
+	// :: or seven colons, and at least one hex digit.
+	ipv6Literal = regexp.MustCompile(`([0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}`)
+	hexDigit    = regexp.MustCompile(`[0-9a-f]`)
+	// Tokens: what is left between these. Splits URLs, regexes and prose alike.
+	tokenSplit = regexp.MustCompile(`[\s,;"'()|^\[\]{}<>=&?/:#@!*+$]+`)
+	// A name ending in one of these never resolves on the public internet,
+	// or resolves straight back to the address written in it.
+	lanSuffixes = []string{".local", ".lan", ".home", ".internal", ".localdomain", ".arpa",
+		".nip.io", ".sslip.io", ".xip.io", ".traefik.me", ".localtest.me", ".lvh.me"}
 )
 
-func hasIPLiteral(s string) bool {
-	if ipv4Literal.MatchString(s) {
-		return true
+func scanForm(s string) string {
+	return strings.ReplaceAll(strings.ToLower(s), `\`, "")
+}
+
+// addressIn says why s carries a home or LAN address, or "" if it doesn't.
+func addressIn(s string) string {
+	t := scanForm(s)
+	if ipv4Literal.MatchString(t) {
+		return "an IPv4 address"
 	}
-	for _, m := range ipv6Literal.FindAllString(s, -1) {
-		if strings.Contains(m, "::") || strings.Count(m, ":") == 7 {
-			if net.ParseIP(strings.Trim(m, "[]")) != nil {
-				return true
+	for _, m := range ipv6Literal.FindAllString(t, -1) {
+		if (strings.Contains(m, "::") || strings.Count(m, ":") == 7) && hexDigit.MatchString(m) {
+			return "an IPv6 address"
+		}
+	}
+	if strings.Contains(t, "in-addr.arpa") || strings.Contains(t, "ip6.arpa") {
+		return "a reverse-lookup name"
+	}
+	for _, tok := range tokenSplit.Split(t, -1) {
+		tok = strings.TrimRight(tok, ".")
+		if tok == "localhost" {
+			return "localhost"
+		}
+		for _, suf := range lanSuffixes {
+			if strings.HasSuffix(tok, suf) || tok == suf[1:] {
+				return "a local name (" + suf + ")"
 			}
 		}
 	}
-	return false
+	return ""
 }
 
-func lanName(host string) bool {
-	h := strings.ToLower(strings.TrimSuffix(host, "."))
-	if h == "localhost" || !strings.Contains(h, ".") {
-		return true
-	}
-	for _, s := range lanSuffixes {
-		if strings.HasSuffix(h, s) {
-			return true
-		}
-	}
-	return false
+// singleLabel: a host or exact domain with no dot is a LAN machine name.
+func singleLabel(name string) bool {
+	return !strings.Contains(strings.Trim(scanForm(name), "."), ".")
 }
 
 // validate refuses anything that could carry a home or LAN address, and
@@ -102,8 +127,8 @@ func (s *settings) validate() error {
 	var errs []string
 	bad := func(f string, a ...any) { errs = append(errs, fmt.Sprintf(f, a...)) }
 	text := func(what, v string) {
-		if hasIPLiteral(v) {
-			bad("%s %q contains an IP address", what, v)
+		if why := addressIn(v); why != "" {
+			bad("%s %q contains %s", what, v, why)
 		}
 	}
 	groups := map[string]bool{defaultGroup: true}
@@ -140,11 +165,10 @@ func (s *settings) validate() error {
 		switch {
 		case err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "":
 			bad("list %q is not an http(s) URL", l.Address)
-		case net.ParseIP(strings.Trim(u.Hostname(), "[]")) != nil:
-			bad("list %q points at an IP address; only public names may be shared", l.Address)
-		case lanName(u.Hostname()):
+		case singleLabel(u.Hostname()):
 			bad("list %q points at a local name; only public names may be shared", l.Address)
 		}
+		text("list", l.Address) // host, path and query
 		if u != nil && u.User != nil {
 			bad("list %q carries a username or password", l.Address)
 		}
@@ -162,8 +186,9 @@ func (s *settings) validate() error {
 		if strings.TrimSpace(d.Domain) == "" {
 			bad("a domain entry is empty")
 		}
-		if d.Kind == "exact" && hasIPLiteral(d.Domain) {
-			bad("domain %q is an IP address", d.Domain)
+		text("domain", d.Domain) // exact and regex alike
+		if d.Kind == "exact" && singleLabel(d.Domain) {
+			bad("domain %q is a single-label (local) name", d.Domain)
 		}
 		if seen[d.key()] {
 			bad("domain %q is listed twice", d.Domain)

@@ -77,7 +77,20 @@ func (s *syncer) load() error {
 	if err != nil {
 		return err
 	}
-	return json.Unmarshal(b, &s.state)
+	if err := json.Unmarshal(b, &s.state); err != nil {
+		return err
+	}
+	// The saved list is the rollback floor, so it gets the same checks as one
+	// from a relay. One that fails (edited on disk, say, with a far-future
+	// date to freeze the box) is dropped along with the managed set that came
+	// with it: forgetting what the box created only means it removes less.
+	if a := s.state.Applied; a != nil && s.owner != "" {
+		if err := s.acceptable(a); err != nil {
+			log.Printf("saved list %s dropped: %v", a.ID, err)
+			s.state = savedState{}
+		}
+	}
+	return nil
 }
 
 func (s *syncer) save() error {
@@ -127,12 +140,14 @@ func (s *syncer) fetchAll(ctx context.Context) []*event {
 			evs, err := s.fetch(ctx, r, s.owner)
 			mu.Lock()
 			defer mu.Unlock()
-			if err != nil && len(evs) == 0 {
+			// A relay that failed part way still hands over what it sent,
+			// but does not count as answering.
+			all = append(all, evs...)
+			if err != nil {
 				log.Printf("relay %s: %v", r, err)
 				return
 			}
 			ok++
-			all = append(all, evs...)
 		}(r)
 	}
 	wg.Wait()
@@ -179,9 +194,13 @@ func (s *syncer) runLocked(ctx context.Context, fetched []*event) error {
 		want = got
 	}
 
-	changes, err := apply(ctx, s.pihole, want, s.state.Managed)
+	changes, managed, err := apply(ctx, s.pihole, want, s.state.Managed)
 	s.status.Changes = changes
+	// Saved even when apply stopped part way: what this box created is
+	// what it may later remove, and nothing else.
+	s.state.Managed = managed
 	if err != nil {
+		_ = s.save()
 		return s.fail(err)
 	}
 	if len(changes) > 0 {
@@ -191,7 +210,6 @@ func (s *syncer) runLocked(ctx context.Context, fetched []*event) error {
 		s.state.AppliedAt = s.now()
 	}
 	s.state.Applied = target
-	s.state.Managed = managedFrom(want)
 	s.status.Error = ""
 	return s.save()
 }

@@ -15,14 +15,21 @@ import (
 	"github.com/coder/websocket"
 )
 
-const relayTimeout = 15 * time.Second
+const (
+	relayTimeout = 15 * time.Second
+	// A relay keeps one list per author for this d tag, so a handful is
+	// plenty. These bound what a hostile relay can make a box hold per poll.
+	fetchLimit     = 20
+	maxFetchEvents = 50
+	maxMessage     = 1 << 20
+)
 
 func dialRelay(ctx context.Context, url string) (*websocket.Conn, error) {
 	c, _, err := websocket.Dial(ctx, url, nil)
 	if err != nil {
 		return nil, err
 	}
-	c.SetReadLimit(4 << 20)
+	c.SetReadLimit(maxMessage)
 	return c, nil
 }
 
@@ -46,7 +53,7 @@ func fetchLists(ctx context.Context, url, owner string) ([]*event, error) {
 	idb := make([]byte, 8)
 	_, _ = rand.Read(idb)
 	sub := "sdns-" + hex.EncodeToString(idb)
-	filter := map[string]any{"kinds": []int{settingsKind}, "authors": []string{owner}, "#d": []string{settingsD}}
+	filter := map[string]any{"kinds": []int{settingsKind}, "authors": []string{owner}, "#d": []string{settingsD}, "limit": fetchLimit}
 	if err := writeJSON(ctx, c, []any{"REQ", sub, filter}); err != nil {
 		return nil, err
 	}
@@ -72,6 +79,10 @@ func fetchLists(ctx context.Context, url, owner string) ([]*event, error) {
 				var ev event
 				if json.Unmarshal(msg[2], &ev) == nil {
 					out = append(out, &ev)
+				}
+				if len(out) >= maxFetchEvents {
+					c.Close(websocket.StatusPolicyViolation, "too many events")
+					return out, nil
 				}
 			}
 		case "EOSE":

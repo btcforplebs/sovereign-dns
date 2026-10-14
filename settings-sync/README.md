@@ -15,9 +15,16 @@ box is the main one.
   box the list names. Wraps are filed under a salted hash, not a pubkey, so
   the public event shows how many readers there are but not which boxes. The
   list carries no clients, local DNS records, DHCP settings or box wiring.
-  Both the page and the box refuse a list with an IP address, a local name
-  (`.local`, `.lan`, a single-label host, and so on) or a URL with a password
-  in it.
+  Both the page (before it asks the signer) and the box refuse a list that
+  carries an address anywhere: an IPv4 or IPv6 literal in any field (escaped
+  regexes, URL paths and queries, a trailing dot and the dashed `10-0-0-5`
+  form included), a reverse-lookup name (`in-addr.arpa`, `ip6.arpa`), a local
+  or IP-echo name (`.local`, `.lan`, `.home`, `.internal`, `nip.io`,
+  `sslip.io`, ...), a single-label list host or exact domain, or a URL with a
+  password in it. The two copies of this guard (`settings.go`, `page.html`)
+  are tested against the same cases. Box names may be a single word ("Pi 4"),
+  since a friendly name is not an address; a box name with a local name or IP
+  in it is refused.
 - **It is stored on the owner's relays** (`SETTINGS_RELAYS`). Each box checks
   every `SETTINGS_SYNC_INTERVAL` (2 minutes by default).
 - **Newest wins, and a box never goes back.** A box only accepts an event if
@@ -33,17 +40,29 @@ box is the main one.
 - **Relays down: nothing changes.** The box keeps its last list in its
   volume. It applies that copy again on every run, so it also restores a
   shared entry that someone removed in Pi-hole's own page.
-- **Nothing gets wiped.** A box remembers which entries came from the shared
-  list. Applying a list adds or updates everything in it. It removes only
-  entries that an earlier list added and this one dropped. Entries that were
-  already on a Pi-hole are never removed, and neither are entries someone adds
-  in Pi-hole's own page. The edit page lists them under "Only on this box"
-  with one button to add them to the shared list. When no list exists yet, the
-  page starts from the current box's Pi-hole, so the first save keeps what is
-  already there.
+- **Nothing gets wiped.** A box remembers which entries it created itself.
+  Applying a list adds or updates everything in it, and removes only entries
+  this box created for an earlier list that the new one dropped. An entry that
+  was already on a Pi-hole never becomes the box's to remove, even when the
+  shared list names it too, so dropping it from the list leaves it on that box
+  (the page then shows it under "Only on this box"). The same goes for entries
+  someone adds in Pi-hole's own page. "Only on this box" has one button to add
+  them all to the shared list. When no list exists yet, the page starts from
+  the current box's Pi-hole, so the first save keeps what is already there.
+  The record of what a box created is saved even when a run stops part way.
 - **Two pages at once.** Each save names the list it was edited from. A box
   refuses to publish a save if a different list has been saved since, so two
   open pages can't silently drop each other's changes.
+- **The page checks what the box hands it.** Before editing, the page
+  recomputes the list's id and checks its author, kind and `d` tag, and it
+  opens the list with the owner's own NIP-44 wrap, which only his key can
+  make. It shows when the list it is editing was saved.
+- **Saved state is checked again on start.** The applied list in
+  `state.json` gets the same checks as one from a relay. If it fails, the box
+  forgets it and the record of what it created, so it removes less, never
+  more.
+- **Relay fetches are bounded:** `limit` 20, at most 50 events and 1 MB per
+  message per relay per poll.
 
 ## Keys
 
@@ -81,6 +100,22 @@ address over plain http.
   default-denies unknown services. The exact lines are in the PR description.
 - **Signers.** Only NIP-07 signers are supported, not NIP-46 (bunker) or
   Amber. The signer must support `nip44`.
+- **The Host check is not access control.** It stops DNS rebinding from a
+  browser. The service listens on `:8083` inside the container, so anything
+  that can reach the container on `dns-internal`, or any process on the host,
+  can read `/api/state` (this box's lists and status, no keys). It can't
+  publish: that needs an owner-signed event. Follow-up: bind to loopback
+  inside the container, or check the peer, once the hub proxy decides how it
+  connects.
+- **Taking a box out.** A box dropped from the list can no longer read new
+  lists, so it keeps enforcing the last one it could read, and only its own
+  page says so. A mistyped npub has the same effect. Follow-up: decide what a
+  dropped box should do (a readable "no longer managed" notice, or clearing
+  what it created) and warn on the page and the hub when a save drops a box.
+- **Not proven in the browser.** The page checks the list's id and author
+  and that the owner sealed it, but it can't check the signature or that the
+  list is the newest on the relays. A box could hand it an older genuine list
+  to edit. Reading the relays from the page would close that.
 
 ## Tests
 
@@ -102,8 +137,17 @@ address over plain http.
   In each case the Pi-hole stays the same.
 - `TestTwoBoxesConverge`: two boxes start from different Pi-holes. After the
   shared list is applied and the extras are adopted, both Pi-holes are
-  identical, and a removal reaches both. A box's own entries survive until the
-  list takes them over.
+  identical. A removal reaches every box that created the entry; the box that
+  had it first keeps it.
+- `TestPreexistingEntryNeverRemoved`: a blocklist, deny domain and group that
+  were on the Pi-hole first survive a list that names them and a later list
+  that drops them, across a restart.
+- `TestValidateRefusesAddresses` and `TestPageGuardMatchesGo`: the same cases
+  through `settings.go` and, under node, the page's guard (skipped if node is
+  missing).
+- `TestSavedStateIsReverified`: a far-future or foreign list in `state.json`
+  is dropped on start.
+- `TestFetchListsIsCapped`: a relay that streams without end yields 50 events.
 - `TestRelaysDownKeepsLastList`: with every relay down, after a restart, the
   box restores a shared entry that was removed locally.
 - `TestPublishEndpoint`: the box publishes only lists the owner signed, and
