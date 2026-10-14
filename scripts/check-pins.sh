@@ -47,6 +47,9 @@ dockerfiles=$(git ls-files '*[Dd]ockerfile*')
 # and any of them can be passed with -f.
 compose_files=$(git ls-files '*compose*.yml' '*compose*.yaml')
 [[ -n "$compose_files" ]] || fail "no tracked compose file found"
+# Optional: the override that swaps the nvpn source build for a ready-made
+# image (written by scripts/repin-prebuilt.sh, checked near the end).
+prebuilt=docker-compose.prebuilt.yml
 
 # Read each compose file the way compose reads it. `docker compose config
 # --no-interpolate` resolves anchors, aliases, merge keys, flow style, include:
@@ -116,9 +119,14 @@ for cf in $compose_files; do
       || fail "$cf: the copy of it this gate reads is short"
     continue
   fi
+  # The prebuilt override is only ever loaded on top of docker-compose.yml, and
+  # rendered alone compose hands its services a default network they never get
+  # in the real merge. Render the merge, which is what an install runs.
+  files=(-f "$cf")
+  [[ "$cf" == "$prebuilt" ]] && files=(-f docker-compose.yml -f "$cf")
   # Nonzero means "could not read it", which must not fall through as "read it
   # and it is fine". --profile '*' keeps services in any profile in the render.
-  if ! render_to "$(yaml "$cf")" -f "$cf"; then
+  if ! render_to "$(yaml "$cf")" "${files[@]}"; then
     fail "$cf: $render_err"
   elif ! grep -q '^services:' "$(yaml "$cf")"; then
     fail "$cf: docker compose rendered no services from it"
@@ -178,6 +186,9 @@ compose_build_keys() {
     {
       i = ind($0)
       if (inb && i <= bi) endb()
+      # `build: !reset null` removes a build (the prebuilt override); it adds
+      # no input. Only raw files carry it: a render drops the key entirely.
+      if (!inb && $0 ~ /^[ \t]*build:[ \t]*!reset[ \t]+null[ \t]*$/) next
       if (!inb && $0 ~ /^[ \t]*build:[ \t]*$/) { bi = i; inb = 1; ki = -1; ina = 0; c = ""; d = ""; next }
       if (!inb && $0 ~ /^[ \t]*build:[ \t]*[^ \t]/) { c = ""; ctxv(val($0)); print "dpath " c "/Dockerfile"; next }
       if (!inb) next
@@ -652,11 +663,49 @@ fi
 surface /dev/stdin <"$loaded" | grep -Fqx "pihole	network_mode	service:nvpn" \
   || fail "pihole must set network_mode: service:nvpn in the compose files the installer loads"
 
+# The prebuilt override (optional). It may do one thing: swap nvpn and web
+# from the source build to one ready-made image. That image must be the one
+# this tree builds: its tag names NVPN_COMMIT and a hash of nvpn/
+# (scripts/lib/nvpn-image.sh), and its digest is what Docker checks every
+# downloaded byte against. A tree that moved on (a new commit, an edited
+# entrypoint.sh) fails here until someone repins, or deletes the file so
+# installs build from source again.
+if grep -Fqx -- "$prebuilt" <<<"$compose_files"; then
+  # shellcheck source=lib/nvpn-image.sh
+  source scripts/lib/nvpn-image.sh
+  want=$(nvpn_image_repo):$(nvpn_image_tag) || want=
+  [[ "$want" == *:nvpn-* ]] || fail "$prebuilt: could not work out which image this tree builds"
+  imgs=$(sed -nE 's/^[[:space:]]*image:[[:space:]]*//p' "$prebuilt" | sed -E 's/[[:space:]]+#.*$//; s/[[:space:]]+$//' | sort -u)
+  img=$(head -n1 <<<"$imgs")
+  # Exact shape, default-deny: anything else in this file (a port, a mount,
+  # another service) would ride into every install that takes the fast path.
+  shape=$(grep -Ev '^[[:space:]]*(#|$)' "$prebuilt" | sed -E 's/^([[:space:]]*image:).*/\1 IMG/')
+  expected=$(printf '%s\n' 'services:' '  nvpn:' '    build: !reset null' '    image: IMG' '  web:' '    build: !reset null' '    image: IMG')
+  if [[ "$shape" != "$expected" ]]; then
+    fail "$prebuilt must be exactly what scripts/repin-prebuilt.sh writes: services nvpn and web, each with 'build: !reset null' and one image"
+  elif [[ $(wc -l <<<"$imgs") -ne 1 ]]; then
+    fail "$prebuilt: nvpn and web must use the same image"
+  elif ! grep -Eq -- "$digest\$" <<<"$img"; then
+    fail "$prebuilt image $img"
+  elif [[ "${img%@*}" != "$want" ]]; then
+    fail "$prebuilt pins ${img%@*}, but this tree builds $want. The image no longer matches nvpn/ or NVPN_COMMIT: publish the new one and run scripts/repin-prebuilt.sh, or delete $prebuilt so installs build from source"
+  fi
+  # And the merge must really drop the source build: `!reset` needs compose
+  # 2.24 or later, and an older compose would keep build: beside image:.
+  if [[ "$mode" == rendered ]]; then
+    for s in nvpn web; do
+      blk=$(awk -v s="$s" '$0 == "  " s ":" { a = 1; next } a && /^  [^[:space:]#]/ { a = 0 } a' "$(yaml "$prebuilt")")
+      grep -Eq '^    build:' <<<"$blk" && fail "$prebuilt: merged with docker-compose.yml, $s still has a build: section"
+      grep -Fqx -- "    image: $img" <<<"$blk" || fail "$prebuilt: merged with docker-compose.yml, $s does not run $img"
+    done
+  fi
+fi
+
 [[ "$status" == 0 ]] && echo "all images, sources and lockfiles pinned"
 
 # The offline gate proves a digest is present, not that it belongs to the tag
-# written beside it, and the tag is what a human reads when bumping. Ask Docker
-# Hub. A tag that has moved is reported, not "fixed": re-pinning is a decision.
+# written beside it, and the tag is what a human reads when bumping. Ask the
+# registry. A tag that has moved is reported, not "fixed": re-pinning is a decision.
 if [[ "${1:-}" == "--verify-remote" ]]; then
   mismatch() { echo "remote: $*"; status=1; }
   accept='application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json'
@@ -666,12 +715,19 @@ if [[ "${1:-}" == "--verify-remote" ]]; then
     [[ "${ref%%@*}" =~ :[A-Za-z0-9._-]+$ && "${ref%%@*}" != *:*/* ]] || { mismatch "$ref: no tag beside the digest, not checked"; continue; }
     name=${ref%%:*}; rest=${ref#*:}; tag=${rest%%@*}; pin=${rest#*@}
     [[ "$name" == */* ]] || name="library/$name"
-    [[ "${name%%/*}" == *.* ]] && { mismatch "$ref: registry other than Docker Hub, not checked"; continue; }
-    token=$(curl -fsS "https://auth.docker.io/token?service=registry.docker.io&scope=repository:$name:pull" \
+    # Docker Hub, plus GitHub's registry for the prebuilt nvpn image. Both hand
+    # out anonymous pull tokens for public images.
+    reg=registry-1.docker.io; auth="https://auth.docker.io/token?service=registry.docker.io&scope=repository:$name:pull"
+    if [[ "${name%%/*}" == ghcr.io ]]; then
+      name=${name#ghcr.io/}; reg=ghcr.io; auth="https://ghcr.io/token?service=ghcr.io&scope=repository:$name:pull"
+    elif [[ "${name%%/*}" == *.* ]]; then
+      mismatch "$ref: registry other than Docker Hub or ghcr.io, not checked"; continue
+    fi
+    token=$(curl -fsS "$auth" \
               | sed -E 's/.*"token":"([^"]+)".*/\1/') || { mismatch "$ref: no registry token"; continue; }
-    manifest_head() { curl -fsSI -H "Authorization: Bearer $token" -H "Accept: $accept" "https://registry-1.docker.io/v2/$name/manifests/$1"; }
+    manifest_head() { curl -fsSI -H "Authorization: Bearer $token" -H "Accept: $accept" "https://$reg/v2/$name/manifests/$1"; }
     live=$(manifest_head "$tag" 2>/dev/null | tr -d '\r' | sed -n 's/^[Dd]ocker-[Cc]ontent-[Dd]igest: //p') || true
-    if [[ -z "$live" ]]; then mismatch "$ref: tag $tag not found on Docker Hub"
+    if [[ -z "$live" ]]; then mismatch "$ref: tag $tag not found on $reg"
     elif [[ "$live" != "$pin" ]]; then
       # Either the tag moved on since pinning, or the tag text is wrong for this digest.
       if manifest_head "$pin" >/dev/null 2>&1; then where="the pinned digest exists in $name"

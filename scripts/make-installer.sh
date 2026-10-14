@@ -113,6 +113,10 @@ if [[ -d sovereign-dns ]]; then
   echo "Existing ./sovereign-dns found — refreshing its stack files. Your .env, password, and data are kept."
 fi
 mkdir -p sovereign-dns
+# tar -x adds and overwrites files but never deletes one. A prebuilt override
+# left by an older installer would pin an older nvpn than this payload ships,
+# so it goes before unpacking; the payload brings it back if it has one.
+rm -f sovereign-dns/docker-compose.prebuilt.yml
 
 if printf 'QQo=' | base64 -d >/dev/null 2>&1; then dec() { base64 -d; }; else dec() { base64 -D; }; fi
 payload_line=$(awk '/^__PAYLOAD_BELOW__$/ { print NR + 1; exit }' "$0")
@@ -170,8 +174,40 @@ if [[ "${SOVEREIGN_DNS_EXTRACT_ONLY:-0}" == "1" ]]; then
   exit 0
 fi
 
+# Fast path: download the ready-made NostrVPN image instead of compiling nvpn
+# here (about 35 minutes on a Raspberry Pi 4). docker-compose.prebuilt.yml
+# pins it by digest, so Docker checks every byte it downloads against the pin.
+# No such file, an image with no build for this device, a compose too old for
+# the override, or a failed download all fall back to the source build, and so
+# does SOVEREIGN_DNS_BUILD_FROM_SOURCE=1.
+# COMPOSE_FILE in .env makes every later plain `docker compose` command in this
+# folder, including the ones the docs and the dashboard tell people to run,
+# load the same files. Without it, `docker compose up -d` would quietly rebuild
+# nvpn from source. Removed first, so a source install never keeps an old one.
+(umask 077; grep -v '^COMPOSE_FILE=' .env > .env.tmp || true) && cat .env.tmp > .env && rm -f .env.tmp
+prebuilt=0
+if [[ "${SOVEREIGN_DNS_BUILD_FROM_SOURCE:-0}" == "1" ]]; then
+  echo
+  echo "SOVEREIGN_DNS_BUILD_FROM_SOURCE=1: NostrVPN will be built from source."
+elif [[ -f docker-compose.prebuilt.yml ]]; then
+  image=$(sed -nE 's/^[[:space:]]*image:[[:space:]]*//p' docker-compose.prebuilt.yml | head -n1)
+  echo
+  echo "Downloading the ready-made NostrVPN image (Docker checks it against its pinned fingerprint)..."
+  if docker compose -f docker-compose.yml -f docker-compose.prebuilt.yml config -q >/dev/null 2>&1 \
+     && docker pull "$image"; then
+    prebuilt=1
+    echo "COMPOSE_FILE=docker-compose.yml:docker-compose.prebuilt.yml" >> .env
+  else
+    echo "There is no ready-made NostrVPN image for this device, so it will be built from source instead."
+  fi
+fi
+
 echo
-echo "Building and starting (the first run compiles from source and can take 10-15 minutes; later runs are fast)..."
+if [[ "$prebuilt" == "1" ]]; then
+  echo "Building and starting (a few minutes on a Raspberry Pi; later runs are fast)..."
+else
+  echo "Building and starting (the first run compiles from source and can take 10-15 minutes, 20-40 on a Raspberry Pi; later runs are fast)..."
+fi
 docker compose up -d --build
 
 echo

@@ -170,18 +170,32 @@ down: you'll use it to open the ad-blocking dashboard later.
 The installer only asks this the first time. If you run it again later,
 it keeps your password and settings.
 
-## Step 4: Wait while it builds (10 to 15 minutes)
+## Step 4: Wait while it builds (a few minutes, or 10 to 40)
 
-Then you'll see:
+If a ready-made copy of the encrypted network software exists for your
+computer, you'll see:
 
 ```text
-Building and starting (the first run compiles from source and can take 10-15 minutes; later runs are fast)...
+Downloading the ready-made NostrVPN image (Docker checks it against its pinned fingerprint)...
 ```
 
-and a lot of scrolling text. **That's normal, and you don't need to read
-it.** The computer is downloading the parts and building the encrypted
-network software from its source code. Leave the window open and let it
-finish. Later runs take seconds, because the build is kept.
+then:
+
+```text
+Building and starting (a few minutes on a Raspberry Pi; later runs are fast)...
+```
+
+If there isn't one, the installer builds it from source instead, and you'll
+see:
+
+```text
+Building and starting (the first run compiles from source and can take 10-15 minutes, 20-40 on a Raspberry Pi; later runs are fast)...
+```
+
+Either way, a lot of text scrolls past. **That's normal, and you don't need to
+read it.** The computer is downloading the parts and, if needed, building the
+encrypted network software from its source code. Leave the window open and
+let it finish. Later runs take seconds, because the result is kept.
 
 When it's done, you'll see a box like this:
 
