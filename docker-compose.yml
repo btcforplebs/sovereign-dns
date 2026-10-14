@@ -240,6 +240,37 @@ services:
     ports:
       - "127.0.0.1:${DOCS_PORT:-8081}:80"
 
+  # One shared list of blocklists, allow/deny domains and groups for every DNS
+  # box, none of them the main one. The list is a Nostr event signed by the
+  # owner's own key (his signer signs it in the edit page; no box holds it),
+  # sealed so only his devices and the boxes it names can read it, and kept on
+  # his relays. Each box pulls the newest one and applies it to its own
+  # Pi-hole; with the relays down it keeps what it last had. Clients, local
+  # DNS records and each box's wiring never travel. See settings-sync/README.md.
+  # Holds the Pi-hole password (to write lists) and its own decrypt-only key,
+  # in its volume. Edit page published to loopback only, like the hub.
+  settings-sync:
+    build:
+      context: ./settings-sync
+    container_name: sovereign-dns-settings-sync
+    logging: *logging
+    restart: unless-stopped
+    environment:
+      # Until both are set the service only shows this box's key on its page.
+      SETTINGS_OWNER: ${SETTINGS_OWNER:-}     # the owner's npub
+      SETTINGS_RELAYS: ${SETTINGS_RELAYS:-}   # comma-separated wss:// URLs
+      PIHOLE_URL: http://172.28.53.10:${PIHOLE_WEB_PORT:-80}
+      PIHOLE_PASSWORD: ${PIHOLE_PASSWORD:?set PIHOLE_PASSWORD in .env}
+    depends_on:
+      pihole:
+        condition: service_started
+    networks:
+      - dns-internal
+    volumes:
+      - settings-sync-data:/data
+    ports:
+      - "127.0.0.1:${SETTINGS_SYNC_PORT:-8083}:8083"
+
 networks:
   dns-internal:
     driver: bridge
@@ -251,3 +282,4 @@ networks:
 volumes:
   nvpn-config:
   pihole-config:
+  settings-sync-data:

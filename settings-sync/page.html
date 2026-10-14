@@ -1,0 +1,332 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shared blocklists · Sovereign DNS</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --line: #262b36; --ink: #e6e9ef;
+    --dim: #9aa4b8; --up: #46c07a; --down: #e5484d; --warn: #e8a33d;
+    --accent: #6ea8fe;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 15px/1.55 ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 980px; margin: 0 auto; padding: 40px 24px 72px; }
+  h1 { font-size: 30px; margin: 0 0 6px; letter-spacing: -0.02em; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.09em;
+       color: var(--dim); margin: 36px 0 12px; font-weight: 600; }
+  .lede, .dim { color: var(--dim); }
+  .lede { margin: 0 0 20px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+  .facts { display: grid; gap: 6px 18px; grid-template-columns: max-content 1fr; font-size: 14px; }
+  .facts dt { color: var(--dim); } .facts dd { margin: 0; overflow-wrap: anywhere; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th { text-align: left; color: var(--dim); font-weight: 600; font-size: 12px;
+       text-transform: uppercase; letter-spacing: 0.06em; padding: 0 8px 8px 0; }
+  td { padding: 6px 8px 6px 0; border-top: 1px solid var(--line); vertical-align: middle; }
+  td.grow { width: 100%; }
+  input[type=text], select {
+    font: inherit; font-size: 14px; color: var(--ink); background: #0b0d11;
+    border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; width: 100%; min-width: 7em; }
+  input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); }
+  input:focus-visible, select:focus-visible, .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .btn { font: inherit; font-size: 14px; font-weight: 600; line-height: 1.2; border-radius: 8px;
+         padding: 9px 16px; cursor: pointer; border: 1px solid var(--line); background: #1f2430; color: var(--ink); }
+  .btn:hover { border-color: var(--accent); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #0b1220; }
+  .btn.small { padding: 5px 10px; font-size: 13px; }
+  .btn.ghost { background: transparent; }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 12px; }
+  .msg { border-left: 3px solid var(--accent); padding: 10px 14px; background: #121826;
+         border-radius: 0 8px 8px 0; margin: 16px 0; }
+  .msg.err { border-color: var(--down); background: #1d1416; }
+  .msg.warn { border-color: var(--warn); background: #1d1a12; }
+  .msg.ok { border-color: var(--up); background: #121d16; }
+  .msg:empty { display: none; }
+  .bar { position: sticky; bottom: 0; background: linear-gradient(transparent, var(--bg) 30%);
+         padding: 24px 0 8px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  [hidden] { display: none !important; }
+  @media (max-width: 640px) {
+    main { padding: 24px 14px 56px; }
+    .facts { grid-template-columns: 1fr; } .facts dt { margin-top: 6px; }
+    table, tbody, tr, td { display: block; } thead { display: none; }
+    tr { border-top: 1px solid var(--line); padding: 8px 0; } td { border: 0; padding: 3px 0; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>Shared blocklists</h1>
+  <p class="lede">One list for every DNS box. Edit it here on any box; your signer signs it, and every box picks it up within a few minutes.</p>
+
+  <section aria-labelledby="h-box">
+    <h2 id="h-box">This box</h2>
+    <dl class="card facts" id="facts"><dt>Status</dt><dd>Loading…</dd></dl>
+  </section>
+
+  <div class="msg" id="msg" role="status" aria-live="polite"></div>
+
+  <div id="locked" hidden>
+    <p>To see or change the list, unlock it with your Nostr signer (a browser extension such as nos2x or Alby, with NIP-44 support). Your key stays in the signer; this box never sees it.</p>
+    <button class="btn primary" id="unlock" type="button">Unlock with my signer</button>
+  </div>
+
+  <form id="editor" hidden novalidate>
+    <section aria-labelledby="h-lists">
+      <h2 id="h-lists">Blocklists and allowlists</h2>
+      <table><thead><tr><th scope="col">On</th><th scope="col">Address</th><th scope="col">Type</th><th scope="col">Comment</th><th scope="col">Groups</th><th scope="col"><span class="sr">Remove</span></th></tr></thead>
+      <tbody id="lists"></tbody></table>
+      <div class="row"><button class="btn small" type="button" data-add="lists">Add a list</button></div>
+    </section>
+
+    <section aria-labelledby="h-domains">
+      <h2 id="h-domains">Allowed and blocked domains</h2>
+      <table><thead><tr><th scope="col">On</th><th scope="col">Domain</th><th scope="col">Rule</th><th scope="col">Comment</th><th scope="col">Groups</th><th scope="col"><span class="sr">Remove</span></th></tr></thead>
+      <tbody id="domains"></tbody></table>
+      <div class="row"><button class="btn small" type="button" data-add="domains">Add a domain</button></div>
+    </section>
+
+    <section aria-labelledby="h-groups">
+      <h2 id="h-groups">Groups</h2>
+      <p class="dim">Every entry is in <code>Default</code> unless you name other groups, comma-separated.</p>
+      <table><thead><tr><th scope="col">On</th><th scope="col">Name</th><th scope="col">Comment</th><th scope="col"><span class="sr">Remove</span></th></tr></thead>
+      <tbody id="groups"></tbody></table>
+      <div class="row"><button class="btn small" type="button" data-add="groups">Add a group</button></div>
+    </section>
+
+    <section aria-labelledby="h-boxes">
+      <h2 id="h-boxes">DNS boxes that get this list</h2>
+      <p class="dim">Only these boxes and your own devices can read the list. Each box shows its key at the top of this page.</p>
+      <table><thead><tr><th scope="col">Name</th><th scope="col">Box key (npub)</th><th scope="col"><span class="sr">Remove</span></th></tr></thead>
+      <tbody id="boxes"></tbody></table>
+      <div class="row"><button class="btn small" type="button" data-add="boxes">Add a box</button></div>
+    </section>
+
+    <section aria-labelledby="h-extras" id="extras-wrap" hidden>
+      <h2 id="h-extras">Only on this box</h2>
+      <p class="dim">These are in this box's Pi-hole but not in the shared list. A sync never removes them. Add them so every box has them.</p>
+      <ul id="extras" class="card"></ul>
+      <div class="row"><button class="btn small" type="button" id="adopt">Add all of these to the shared list</button></div>
+    </section>
+
+    <div class="bar">
+      <button class="btn primary" id="save" type="submit">Sign and save for every box</button>
+      <span class="dim" id="dirty"></span>
+    </div>
+  </form>
+</main>
+<script>
+"use strict";
+const D = "sovereign-dns/settings", KIND = 30078;
+const $ = (id) => document.getElementById(id);
+let st = null, list = null, base = "";
+
+function say(text, kind) { const m = $("msg"); m.className = "msg" + (kind ? " " + kind : ""); m.textContent = text || ""; }
+function el(tag, attrs, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === "on") for (const [ev, fn] of Object.entries(v)) e.addEventListener(ev, fn);
+    else if (k in e && typeof v !== "string") e[k] = v; else e.setAttribute(k, v);
+  }
+  for (const c of kids) if (c != null) e.append(c);
+  return e;
+}
+
+// --- bytes, base64, bech32 ---
+const b64 = (u8) => btoa(String.fromCharCode(...u8));
+const unb64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+const hex = (u8) => Array.from(u8, (b) => b.toString(16).padStart(2, "0")).join("");
+const unhex = (s) => Uint8Array.from(s.match(/../g), (h) => parseInt(h, 16));
+const rand = (n) => crypto.getRandomValues(new Uint8Array(n));
+const CS = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
+function polymod(v) { const G = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3]; let c = 1;
+  for (const x of v) { const t = c >>> 25; c = ((c & 0x1ffffff) << 5) ^ x; for (let i = 0; i < 5; i++) if ((t >>> i) & 1) c ^= G[i]; } return c >>> 0; }
+const HRP = [3, 3, 3, 3, 0, 14, 16, 21, 2]; // "npub" expanded
+function npubToHex(s) {
+  s = s.trim().toLowerCase();
+  if (/^[0-9a-f]{64}$/.test(s)) return s;
+  if (!s.startsWith("npub1")) throw new Error("not an npub");
+  const d = [...s.slice(5)].map((c) => CS.indexOf(c));
+  if (d.includes(-1) || polymod([...HRP, ...d]) !== 1) throw new Error("bad npub");
+  let acc = 0, bits = 0; const out = [];
+  for (const x of d.slice(0, -6)) { acc = (acc << 5) | x; bits += 5; if (bits >= 8) { bits -= 8; out.push((acc >> bits) & 255); } }
+  if (out.length !== 32) throw new Error("bad npub");
+  return hex(new Uint8Array(out));
+}
+function hexToNpub(h) {
+  const b = unhex(h); let acc = 0, bits = 0; const d = [];
+  for (const x of b) { acc = (acc << 8) | x; bits += 8; while (bits >= 5) { bits -= 5; d.push((acc >> bits) & 31); } }
+  if (bits) d.push((acc << (5 - bits)) & 31);
+  const pm = polymod([...HRP, ...d, 0, 0, 0, 0, 0, 0]) ^ 1;
+  for (let i = 0; i < 6; i++) d.push((pm >>> (5 * (5 - i))) & 31);
+  return "npub1" + d.map((x) => CS[x]).join("");
+}
+
+// --- the sealed envelope (mirror of seal.go) ---
+async function readerID(salt, pk) {
+  const h = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(D + "|" + salt + "|" + pk)));
+  return hex(h.slice(0, 16));
+}
+async function openList(ev, me) {
+  const env = JSON.parse(ev.content);
+  const wrapped = env.keys[await readerID(env.salt, me)];
+  if (!wrapped) throw new Error("the list is not sealed to this signer's key");
+  const k = unhex(await window.nostr.nip44.decrypt(st.owner, wrapped));
+  const key = await crypto.subtle.importKey("raw", k, "AES-GCM", false, ["decrypt"]);
+  const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: unb64(env.nonce) }, key, unb64(env.data));
+  return JSON.parse(new TextDecoder().decode(plain));
+}
+async function sealList(s) {
+  const k = rand(32), salt = b64(rand(16)), iv = rand(12), khex = hex(k);
+  const keys = {};
+  for (const r of [st.owner, ...s.boxes.map((b) => b.pubkey)]) keys[await readerID(salt, r)] = await window.nostr.nip44.encrypt(r, khex);
+  const key = await crypto.subtle.importKey("raw", k, "AES-GCM", false, ["encrypt"]);
+  const data = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(JSON.stringify(s))));
+  return JSON.stringify({ v: 1, salt, keys, nonce: b64(iv), data: b64(data) });
+}
+
+// --- page ---
+async function load() {
+  const r = await fetch("api/state", { cache: "no-store" });
+  st = await r.json();
+  const f = $("facts"); f.replaceChildren();
+  const fact = (k, v) => f.append(el("dt", {}, k), el("dd", {}, v));
+  fact("This box's key", el("code", {}, st.box_npub));
+  fact("Owner", st.owner_npub ? el("code", {}, st.owner_npub) : "not set");
+  const s = st.status || {};
+  fact("Relays", s.relays_total ? `${s.relays_ok} of ${s.relays_total} answered${s.last_run ? " at " + new Date(s.last_run).toLocaleTimeString() : ""}` : "—");
+  fact("Shared list", st.applied ? `applied, saved ${new Date(st.applied.created_at * 1000).toLocaleString()}` : "none applied yet");
+  if (st.setup_error) say(`Not syncing yet: ${st.setup_error}.`, "warn");
+  else if (s.error) say(`Last sync failed: ${s.error}. The box keeps serving with what it had.`, "err");
+  else if (s.note) say(`Heads up: ${s.note}.`, "warn");
+  if (st.local_error) say(`Can't read this box's Pi-hole: ${st.local_error}`, "err");
+  $("locked").hidden = !!list || !!st.setup_error;
+}
+
+async function unlock() {
+  if (!window.nostr || !window.nostr.nip44) { say("No Nostr signer with NIP-44 found in this browser. Install or enable one, then reload.", "err"); return; }
+  if (!crypto.subtle) { say("This page needs a secure context: open it at http://localhost or over HTTPS.", "err"); return; }
+  try {
+    const me = await window.nostr.getPublicKey();
+    if (me !== st.owner) { say("That signer holds a different key from this box's owner, so it cannot edit the list.", "err"); return; }
+    if (st.newest) { list = await openList(st.newest, me); base = st.newest.id; }
+    else {
+      const l = st.local || {};
+      list = { v: 1, boxes: [], groups: l.groups || [], lists: l.lists || [], domains: l.domains || [] };
+      base = "";
+      say("No shared list exists yet. This one starts from this box's current Pi-hole; saving it makes it the list for every box.", "warn");
+    }
+    for (const k of ["boxes", "groups", "lists", "domains"]) list[k] = list[k] || [];
+    if (!list.boxes.some((b) => b.pubkey === st.box)) {
+      list.boxes.push({ pubkey: st.box, name: "This box" });
+      if (st.newest) say("This box isn't in the list yet. It has been added below; save to share the list with it.", "warn");
+    }
+    $("locked").hidden = true; $("editor").hidden = false;
+    render();
+  } catch (e) { say("Could not unlock: " + (e.message || e), "err"); }
+}
+
+const groupsText = (g) => (g || []).join(", ");
+const parseGroups = (t) => t.split(",").map((x) => x.trim()).filter(Boolean);
+function input(obj, key, label, extra) {
+  return el("input", { type: "text", value: obj[key] || "", "aria-label": label, on: { input: (e) => { obj[key] = e.target.value; dirty(); } }, ...(extra || {}) });
+}
+function check(obj, label) {
+  return el("input", { type: "checkbox", checked: !!obj.enabled, "aria-label": label, on: { change: (e) => { obj.enabled = e.target.checked; dirty(); } } });
+}
+function groupsInput(obj, label) {
+  return el("input", { type: "text", value: groupsText(obj.groups), placeholder: "Default", "aria-label": label, on: { input: (e) => { obj.groups = parseGroups(e.target.value); dirty(); } } });
+}
+function remove(arr, i, label) {
+  return el("button", { type: "button", class: "btn small ghost", "aria-label": label, on: { click: () => { arr.splice(i, 1); dirty(); render(); } } }, "Remove");
+}
+function select(obj, key, opts, label) {
+  const s = el("select", { "aria-label": label, on: { change: (e) => { const [a, b] = e.target.value.split("/"); obj[key] = a; if (b) obj.kind = b; dirty(); } } });
+  for (const [v, t] of opts) s.append(el("option", { value: v }, t));
+  s.value = key === "type" && obj.kind ? obj.type + "/" + obj.kind : obj[key];
+  return s;
+}
+
+function render() {
+  const L = $("lists"); L.replaceChildren();
+  list.lists.forEach((l, i) => { const n = l.address || "new list";
+    L.append(el("tr", {}, el("td", {}, check(l, "Use " + n)), el("td", { class: "grow" }, input(l, "address", "Address", { placeholder: "https://…", inputmode: "url" })),
+      el("td", {}, select(l, "type", [["block", "Block"], ["allow", "Allow"]], "Type for " + n)),
+      el("td", {}, input(l, "comment", "Comment for " + n)), el("td", {}, groupsInput(l, "Groups for " + n)), el("td", {}, remove(list.lists, i, "Remove " + n)))); });
+  const Dm = $("domains"); Dm.replaceChildren();
+  list.domains.forEach((d, i) => { const n = d.domain || "new domain";
+    Dm.append(el("tr", {}, el("td", {}, check(d, "Use " + n)), el("td", { class: "grow" }, input(d, "domain", "Domain")),
+      el("td", {}, select(d, "type", [["deny/exact", "Block exact"], ["deny/regex", "Block regex"], ["allow/exact", "Allow exact"], ["allow/regex", "Allow regex"]], "Rule for " + n)),
+      el("td", {}, input(d, "comment", "Comment for " + n)), el("td", {}, groupsInput(d, "Groups for " + n)), el("td", {}, remove(list.domains, i, "Remove " + n)))); });
+  const G = $("groups"); G.replaceChildren();
+  list.groups.forEach((g, i) => { const n = g.name || "new group";
+    G.append(el("tr", {}, el("td", {}, check(g, "Use group " + n)), el("td", { class: "grow" }, input(g, "name", "Group name")),
+      el("td", {}, input(g, "comment", "Comment for " + n)), el("td", {}, remove(list.groups, i, "Remove group " + n)))); });
+  const B = $("boxes"); B.replaceChildren();
+  list.boxes.forEach((b, i) => { const n = b.name || "box";
+    const key = el("input", { type: "text", value: b.pubkey ? hexToNpub(b.pubkey) : "", placeholder: "npub1…", "aria-label": "Key for " + n,
+      on: { change: (e) => { try { b.pubkey = npubToHex(e.target.value); e.target.removeAttribute("aria-invalid"); } catch { b.pubkey = ""; e.target.setAttribute("aria-invalid", "true"); } dirty(); } } });
+    B.append(el("tr", {}, el("td", {}, input(b, "name", "Box name")), el("td", { class: "grow" }, key),
+      el("td", {}, b.pubkey === st.box ? el("span", { class: "dim" }, "this box") : remove(list.boxes, i, "Remove " + n)))); });
+  renderExtras();
+}
+
+function extrasNow() {
+  const x = st.extras || { groups: [], lists: [], domains: [] };
+  const have = new Set([...list.groups.map((g) => "g " + g.name), ...list.lists.map((l) => l.type + " " + l.address), ...list.domains.map((d) => `${d.type}/${d.kind} ${d.domain}`)]);
+  return { groups: (x.groups || []).filter((g) => !have.has("g " + g.name)), lists: (x.lists || []).filter((l) => !have.has(l.type + " " + l.address)),
+           domains: (x.domains || []).filter((d) => !have.has(`${d.type}/${d.kind} ${d.domain}`)) };
+}
+function renderExtras() {
+  const x = extrasNow(), ul = $("extras"); ul.replaceChildren();
+  for (const g of x.groups) ul.append(el("li", {}, "Group ", el("code", {}, g.name)));
+  for (const l of x.lists) ul.append(el("li", {}, `${l.type === "allow" ? "Allowlist" : "Blocklist"} `, el("code", {}, l.address)));
+  for (const d of x.domains) ul.append(el("li", {}, `${d.type === "allow" ? "Allow" : "Block"} ${d.kind} `, el("code", {}, d.domain)));
+  $("extras-wrap").hidden = !ul.children.length;
+}
+function adopt() {
+  const x = extrasNow();
+  list.groups.push(...x.groups); list.lists.push(...x.lists); list.domains.push(...x.domains);
+  dirty(); render();
+}
+function dirty() { $("dirty").textContent = "Unsaved changes"; }
+function add(kind) {
+  const blank = { lists: { address: "", type: "block", comment: "", enabled: true, groups: [] },
+    domains: { domain: "", type: "deny", kind: "exact", comment: "", enabled: true, groups: [] },
+    groups: { name: "", comment: "", enabled: true }, boxes: { name: "", pubkey: "" } }[kind];
+  list[kind].push(blank); dirty(); render();
+  const rows = $(kind).querySelectorAll("tr"); rows[rows.length - 1].querySelector("input[type=text]").focus();
+}
+
+async function save(e) {
+  e.preventDefault();
+  const btn = $("save"); btn.disabled = true;
+  try {
+    const clean = { v: 1, boxes: list.boxes.filter((b) => b.pubkey), groups: list.groups.filter((g) => g.name.trim()),
+      lists: list.lists.filter((l) => l.address.trim()), domains: list.domains.filter((d) => d.domain.trim()) };
+    say("Asking your signer to seal and sign the list…");
+    const created = Math.max(Math.floor(Date.now() / 1000), (st.newest ? st.newest.created_at : 0) + 1);
+    const ev = await window.nostr.signEvent({ kind: KIND, created_at: created, tags: [["d", D]], content: await sealList(clean) });
+    const r = await fetch("api/publish", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ event: ev, base }) });
+    const out = await r.json();
+    if (!r.ok) { say(out.error || "Save failed.", "err"); return; }
+    base = ev.id; $("dirty").textContent = "";
+    say(`Saved to ${out.published} of ${out.relays} relays. ` + (out.applied ? "Applied on this box; the others pick it up within a few minutes." : `Not applied here yet: ${out.apply_error}`), out.applied ? "ok" : "warn");
+    await load(); list = await openList(st.newest || ev, st.owner); render();
+  } catch (err) { say("Not saved: " + (err.message || err), "err"); }
+  finally { btn.disabled = false; }
+}
+
+$("unlock").addEventListener("click", unlock);
+$("editor").addEventListener("submit", save);
+$("adopt").addEventListener("click", adopt);
+document.querySelectorAll("[data-add]").forEach((b) => b.addEventListener("click", () => add(b.dataset.add)));
+load().catch((e) => say("Could not load this box's state: " + e.message, "err"));
+</script>
+</body>
+</html>
