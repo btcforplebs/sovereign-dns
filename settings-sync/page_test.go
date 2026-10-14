@@ -297,6 +297,9 @@ type pageApp struct {
 		Event event `json:"event"`
 	} `json:"published"`
 	Seals [][2]string `json:"seals"`
+	// "Only on this box" after Unlock: shown, and how many entries it offers.
+	Offered      bool `json:"offered"`
+	OfferedCount int  `json:"offered_count"`
 }
 
 // pageVisit is one visit to a box's page.
@@ -304,7 +307,8 @@ type pageVisit struct {
 	st    stateResponse
 	store map[string]string // localStorage at the start
 	now   time.Time         // the browser's clock
-	save  bool              // press Save after Unlock, changing nothing
+	adopt bool              // press "Add all of these to the shared list" after Unlock
+	save  bool              // then press Save
 }
 
 // unlockPage runs the whole page script under node against a fake DOM: the
@@ -328,7 +332,7 @@ func unlockPage(t *testing.T, owner *btcec.PrivateKey, v pageVisit) pageApp {
 	}
 	storeJS, _ := json.Marshal(store)
 	script := fmt.Sprintf(`"use strict";
-const OPENS = %s, STATE = %s, STORE = %s, NOW = %d, SAVE = %t, SEALS = [];
+const OPENS = %s, STATE = %s, STORE = %s, NOW = %d, ADOPT = %t, SAVE = %t, SEALS = [];
 let PUBLISHED = null;
 Date.now = () => NOW * 1000;
 class FakeEl {
@@ -356,11 +360,14 @@ globalThis.window = { nostr: { getPublicKey: async () => STATE.owner,
 %s
 (async () => {
   await load(); await unlock();
-  const seen = { editor: !ELS.editor.hidden, msg: ELS.msg.textContent, kind: ELS.msg.className, list: JSON.parse(JSON.stringify(list)), base };
+  const x = extrasNow();
+  const seen = { editor: !ELS.editor.hidden, msg: ELS.msg.textContent, kind: ELS.msg.className, list: JSON.parse(JSON.stringify(list)), base,
+    offered: !ELS["extras-wrap"].hidden, offered_count: x.groups.length + x.lists.length + x.domains.length };
+  if (ADOPT) adopt();
   if (SAVE) await save({ preventDefault() {} });
   console.log(JSON.stringify({ ...seen, store: STORE, published: PUBLISHED, seals: SEALS }));
 })().catch((e) => { console.error(e); process.exit(1); });
-`, opensJS, stJS, storeJS, v.now.Unix(), v.save, page[i+len("<script>"):j])
+`, opensJS, stJS, storeJS, v.now.Unix(), v.adopt, v.save, page[i+len("<script>"):j])
 	out, err := exec.Command(node, "-e", script).CombinedOutput()
 	if err != nil {
 		t.Fatalf("node: %v\n%s", err, out)
@@ -436,7 +443,7 @@ type pageFloor struct {
 	CreatedAt int64  `json:"created_at"`
 	ID        string `json:"id"`
 	Boxes     []box  `json:"boxes"`
-	Rules     *int   `json:"rules"`
+	Entries   *int   `json:"entries"`
 }
 
 func floorIn(t *testing.T, store map[string]string, owner *btcec.PrivateKey) *pageFloor {
@@ -499,19 +506,13 @@ func TestPageEditorOpensWhenListWontOpen(t *testing.T) {
 			if len(got.List.Boxes) != wantBoxes {
 				t.Errorf("%s: editor names boxes %+v, want the %d this browser last trusted", name, got.List.Boxes, wantBoxes)
 			}
-			if known && (!strings.Contains(got.Msg, "had 1 rule;") || !strings.Contains(got.Msg, "may be out of date")) {
-				t.Errorf("%s: warning doesn't give the trusted list's rule count or say its boxes may be stale: %q", name, got.Msg)
+			if known && (!strings.Contains(got.Msg, "had 1 entry;") || !strings.Contains(got.Msg, "may be out of date")) {
+				t.Errorf("%s: warning doesn't give the trusted list's entry count or say its boxes may be stale: %q", name, got.Msg)
 			}
 			if !strings.Contains(got.Kind, "err") || !strings.Contains(got.Msg, "failed this page's checks") || !strings.Contains(got.Msg, "come from the box that failed the check") {
 				t.Errorf("%s: no loud warning: %q (%s)", name, got.Msg, got.Kind)
 			}
 		}
-	}
-
-	// The genuine first run still starts from this box's Pi-hole.
-	got = unlockPage(t, logen, pageVisit{st: boxState(b, nil), now: clock})
-	if a := addresses(got.List.Lists); len(a) != 1 || a[0] != "https://lists.example/on-this-box.txt" || strings.Contains(got.Kind, "err") {
-		t.Fatalf("first run: %+v", got)
 	}
 }
 
@@ -572,7 +573,7 @@ func TestPageNoListAfterTrustedListIsAFallback(t *testing.T) {
 
 	got := unlockPage(t, logen, pageVisit{st: hostileState(b, nil), store: store, now: clock, save: true})
 	if !strings.Contains(got.Kind, "err") || !strings.Contains(got.Msg, "isn't showing the shared list this browser has already seen") ||
-		!strings.Contains(got.Msg, "had 2 rules;") || strings.Contains(got.Msg, "failed") {
+		!strings.Contains(got.Msg, "had 2 entries;") || strings.Contains(got.Msg, "failed") {
 		t.Errorf("warning: %q (%s)", got.Msg, got.Kind)
 	}
 	if len(got.List.Lists)+len(got.List.Domains)+len(got.List.Groups) != 0 {
@@ -589,12 +590,41 @@ func TestPageNoListAfterTrustedListIsAFallback(t *testing.T) {
 	if !keys[other.PubKey] || !keys[pubHex(b.key)] || len(keys) != 2 {
 		t.Errorf("saved for boxes %+v, want this box and %s", saved.Boxes, other.Name)
 	}
+	// With no floor it is a first run: TestPageFirstRunTakesBoxEntriesOnlyByChoice.
+}
 
-	// With no floor, no list is a first run: the editor starts from this
-	// box's Pi-hole, as before.
-	got = unlockPage(t, logen, pageVisit{st: boxState(b, nil), now: clock})
-	if a := addresses(got.List.Lists); len(a) != 1 || a[0] != "https://lists.example/on-this-box.txt" || strings.Contains(got.Kind, "err") {
-		t.Fatalf("first run: %+v", got)
+// Must-fix (Tron, round 6): "no floor" is every first visit to a box's page
+// (localStorage is per origin), in a private window, on a new machine. So a
+// first run starts empty too, and the box's Pi-hole entries are offered in
+// "Only on this box": nothing from the box is signed unless the owner adds
+// it. The box isn't accused, so the message stays mild.
+func TestPageFirstRunTakesBoxEntriesOnlyByChoice(t *testing.T) {
+	clock := time.Unix(1_800_000_000, 0)
+	logen := mustKey(t)
+	b := newBox(t, pubHex(logen), newFakeRelays(), &clock)
+
+	got := unlockPage(t, logen, pageVisit{st: hostileState(b, nil), now: clock, save: true})
+	if len(got.List.Lists)+len(got.List.Domains)+len(got.List.Groups) != 0 {
+		t.Errorf("editor pre-filled from the box: %+v", got.List)
+	}
+	if !got.Offered || got.OfferedCount != 2 {
+		t.Errorf("box's entries not offered in Only on this box: shown=%v count=%d", got.Offered, got.OfferedCount)
+	}
+	if strings.Contains(got.Kind, "err") || !strings.Contains(got.Msg, "starts empty") {
+		t.Errorf("message: %q (%s)", got.Msg, got.Kind)
+	}
+	saved := savedList(t, logen, got)
+	if len(saved.Lists)+len(saved.Domains)+len(saved.Groups) != 0 {
+		t.Errorf("box entries signed without being added: %+v %+v %+v", saved.Lists, saved.Domains, saved.Groups)
+	}
+	if len(saved.Boxes) != 1 || saved.Boxes[0].PubKey != pubHex(b.key) {
+		t.Errorf("saved for boxes %+v, want this box", saved.Boxes)
+	}
+
+	// Control: adding them is one deliberate click, and then they are signed.
+	got = unlockPage(t, logen, pageVisit{st: boxState(b, nil), now: clock, adopt: true, save: true})
+	if a := addresses(savedList(t, logen, got).Lists); len(a) != 1 || a[0] != "https://lists.example/on-this-box.txt" {
+		t.Errorf("adopted entry not signed: %v", a)
 	}
 }
 
@@ -615,7 +645,7 @@ func TestPageRefusesListOlderThanFloor(t *testing.T) {
 		t.Fatalf("newer list: %+v", got)
 	}
 	store := got.Store
-	if f := floorIn(t, store, logen); f == nil || f.CreatedAt != newer.CreatedAt || f.ID != newer.ID || len(f.Boxes) != 1 || f.Rules == nil || *f.Rules != 1 {
+	if f := floorIn(t, store, logen); f == nil || f.CreatedAt != newer.CreatedAt || f.ID != newer.ID || len(f.Boxes) != 1 || f.Entries == nil || *f.Entries != 1 {
 		t.Fatalf("floor after opening the newer list: %+v", f)
 	}
 

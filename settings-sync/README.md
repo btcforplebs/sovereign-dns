@@ -51,8 +51,9 @@ box is the main one.
   shared list names it too, so dropping it from the list leaves it on that box
   (the page then shows it under "Only on this box"). The same goes for entries
   someone adds in Pi-hole's own page. "Only on this box" has one button to add
-  them all to the shared list. When no list exists yet, the page starts from
-  the current box's Pi-hole, so the first save keeps what is already there.
+  them all to the shared list. When no list exists yet, the page starts empty
+  and offers all of this box's Pi-hole there, so one click keeps what is
+  already on it.
   The record of what a box created is saved even when a run stops part way.
 - **Two pages at once.** Each save names the list it was edited from. A box
   refuses to publish a save if a different list has been saved since, so two
@@ -71,16 +72,18 @@ box is the main one.
   the list.** If the box's newest list can't be opened or trusted (a
   stripped wrap, an older format, not a list at all, older than the floor
   below, or dated more than 10 minutes ahead), the page says so in red and
-  opens an empty list instead. It holds no rules, because this box's Pi-hole
+  opens an empty list instead. It holds no entries, because this box's Pi-hole
   is reported by the box that just failed the check, and none of its entries
   are shown or offered. Its boxes are the ones in the last list this browser
   trusted, so a save doesn't drop the rest of the fleet, and the failing box
   isn't added unless that list named it; the warning says those boxes may be
-  out of date, and how many rules that list had. A box that shows no list
+  out of date, and how many entries that list had. A box that shows no list
   at all after this browser has trusted one gets the same fallback (without
-  the accusation: relays down at a fresh start look the same). Only a first
-  run (no shared list, and none seen in this browser) starts from this box's
-  Pi-hole.
+  the accusation: relays down at a fresh start look the same). Nothing a
+  box reports is ever filled in: on a first run (no shared list, and none
+  seen in this browser, which is every first visit to a box's page) the list
+  starts empty, and the box's entries are offered in "Only on this box" to
+  add on purpose.
 - **The page won't go back either.** It keeps the newest list it has saved
   or opened, and that list's boxes, in the browser's `localStorage`, per
   owner. A box that offers an older list (one that might still name a box
@@ -186,15 +189,17 @@ address over plain http.
 - `TestPageRefusesListForgedByBox`: a list a box re-encrypts or re-dates under
   the content key is refused by the page (its real code, under node).
 - `TestPageEditorOpensWhenListWontOpen`: a stripped owner's wrap, a v1 list or
-  junk still reaches the editor: no rules, the boxes this browser last
+  junk still reaches the editor: no entries, the boxes this browser last
   trusted, a red warning.
 - `TestPageSaveFromFallbackKeepsBoxesAndNoHostileRule`: a box that strips the
   owner's wrap and reports an allow-all Pi-hole gets none of it into the list
   the owner saves, and every box stays on it.
 - `TestPageNoListAfterTrustedListIsAFallback`: a box that reports no list
   after this browser trusted one gets no rule from its Pi-hole into the
-  saved list, and every box stays on it; with no record, a first run still
-  starts from the box's Pi-hole.
+  saved list, and every box stays on it.
+- `TestPageFirstRunTakesBoxEntriesOnlyByChoice`: a first run against a box
+  reporting an allow-all Pi-hole starts empty and signs none of it; the
+  box's entries are offered, and adding them does sign them.
 - `TestPageFlagsListDatedAhead`: a list dated a year ahead is flagged, leaves
   the floor alone, and doesn't push the next save's date.
 - `TestPageRefusesListOlderThanFloor`: after the page has seen a list, an
