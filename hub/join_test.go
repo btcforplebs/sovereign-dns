@@ -58,15 +58,22 @@ func TestParseJoinLink(t *testing.T) {
 		"no secret":     makeLink(t, map[string]string{"deviceAppKeyNpub": phoneNpub, "requestNpub": "npub1r"}),
 		"no npub":       makeLink(t, map[string]string{"deviceAppKeyNpub": "abc", "requestSecret": "s"}),
 		"too long":      joinLinkPrefix + strings.Repeat("A", joinLinkMaxLen),
-		// A look-alike rune in the prefix (U+017F, long s) is refused. The
-		// prefix check and the payload cut read the same bytes, so a rune
-		// that changes length under case mapping can't shift the cut.
+		// A look-alike rune in the prefix (U+017F, long s) is refused.
 		"long s prefix": strings.Replace(phoneLink(t), "request", "reque\u017ft", 1),
 	}
 	for name, v := range bad {
 		if _, _, err := parseJoinLink(v); err == nil {
 			t.Errorf("%s: accepted %q", name, v)
 		}
+	}
+
+	// U+0130 (dotted capital I) lowercases to a plain "i" one byte shorter,
+	// so lowercasing the whole link would match the prefix and then cut the
+	// payload one byte early. It has to be refused as not a join link, at the
+	// prefix, rather than fail later as a damaged payload.
+	dotted := strings.Replace(phoneLink(t), "join", "jo\u0130n", 1)
+	if _, _, err := parseJoinLink(dotted); err == nil || !strings.Contains(err.Error(), "isn't a Nostr VPN join link") {
+		t.Errorf("dotted capital I prefix: got %v, want the not-a-join-link error", err)
 	}
 }
 
