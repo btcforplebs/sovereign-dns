@@ -186,9 +186,9 @@ func TestAddDeviceBadLinkChangesNothing(t *testing.T) {
 func TestWizardStepTwoHasAddForm(t *testing.T) {
 	f := &fakePanel{}
 	cfg := panelConfig(t, f)
-	body := get(t, newMux(cfg), "/setup?step=2").Body.String()
+	body := get(t, newMux(cfg), "/setup?step=3").Body.String()
 	if !strings.Contains(body, `action="/devices/add"`) || !strings.Contains(body, cfg.csrfToken) || !strings.Contains(body, `name="from" value="setup"`) {
-		t.Fatalf("step 2 has no add-device form returning to the wizard:\n%s", body)
+		t.Fatalf("step 3 has no add-device form returning to the wizard:\n%s", body)
 	}
 }
 

@@ -1,18 +1,22 @@
 package main
 
 // The setup wizard: what a newcomer sees first, at http://localhost:8080,
-// after install.sh finishes. Four steps, each one a question with a plain
-// answer and the single thing to do next:
+// after install.sh finishes. Each step is a question with a plain answer and
+// the single thing to do next. Step 2 asks which box this is, and the rest
+// follow from the answer:
 //
-//   1. Is everything running?        (Unbound, Pi-hole, VPN, control panel)
-//   2. Add your first device.        (paste or scan its join link)
-//   3. Approve it.                   (the review page Add button -> control panel)
-//   4. Does it really use the Pi-hole? (reachability + a name only it would ask)
+//   First box                          Another box (boxjoin.go)
+//   1. Is everything running?          1. Is everything running?
+//   2. First box or another one?       2. First box or another one?
+//   3. Add your next device            3. Join your first box
+//      (a phone, or another DNS box)
+//   4. Approve it                      4. Let the first box add it
+//   5. Does it really use the Pi-hole?
 //
 // It is a view over the same page struct the dashboard renders from, so it
 // never probes anything itself and cannot disagree with the dashboard. Like
-// the rest of the hub it changes nothing itself: adding a device goes through
-// join.go to the control panel, which owns that change.
+// the rest of the hub it changes nothing itself: every change goes through
+// the control panel, which owns it.
 
 import (
 	"fmt"
@@ -22,10 +26,9 @@ import (
 	"strconv"
 )
 
-const wizardSteps = 4
-
 type wizardStep struct {
 	N       int
+	Key     string
 	Title   string
 	Done    bool
 	Current bool
@@ -33,8 +36,12 @@ type wizardStep struct {
 
 type wizardPage struct {
 	page
+	Role      string // "first", "second", or "" until the reader picks
+	Kind      string // on the first box's add step: "phone" or "box"
 	Steps     []wizardStep
 	Step      int    // the step being shown
+	Key       string // which step that is
+	Total     int
 	StepDone  bool   // whether the shown step is satisfied
 	AllDone   bool   // every step satisfied
 	PrevURL   string // "" on the first step
@@ -44,63 +51,84 @@ type wizardPage struct {
 	PiholeLog string // Pi-hole query log, or "" when the mesh IP is not known yet
 }
 
-var wizardTitles = [wizardSteps]string{
-	"Is everything running?",
-	"Add your first device",
-	"Approve it",
-	"Does it really use the Pi-hole?",
+type stepDef struct {
+	key, title string
+	done       func(p page) bool
 }
 
-// stepDone is the one place that decides what "done" means for each step.
-func stepDone(p page, n int) bool {
-	switch n {
-	case 1:
+var (
+	stepRunning = stepDef{"running", "Is everything running?", func(p page) bool {
 		return p.DaemonUp && p.PanelUp && p.PiholeUp && p.UnboundUp
-	case 2:
-		return p.PendingJoins > 0 || len(p.Devices) > 0
-	case 3:
-		return len(p.Devices) > 0
-	case 4:
-		return p.Covered > 0
+	}}
+	firstBoxSteps = []stepDef{
+		stepRunning,
+		{"role", "First box or another one?", nil},
+		{"add", "Add your next device", func(p page) bool { return p.PendingJoins > 0 || len(p.Devices) > 0 }},
+		{"approve", "Approve it", func(p page) bool { return len(p.Devices) > 0 }},
+		{"check", "Does it really use the Pi-hole?", func(p page) bool { return p.Covered > 0 }},
 	}
-	return false
-}
+	secondBoxSteps = []stepDef{
+		stepRunning,
+		{"role", "First box or another one?", nil},
+		{"join", "Join your first box", func(p page) bool { return p.Member }},
+		{"admitted", "Let the first box add it", func(p page) bool { return p.Admitted }},
+	}
+)
 
-func buildWizard(p page, want int) wizardPage {
-	w := wizardPage{page: p, AllDone: true}
+// roleCookie remembers the reader's answer to step 2 until the facts take
+// over (boxRole). It only picks which steps are shown; nothing is changed by
+// it, so a page that sets it from another tab can do no harm.
+const roleCookie = "sdns_setup_role"
+
+func buildWizard(p page, want int, picked, kind string) wizardPage {
+	w := wizardPage{page: p, AllDone: true, Role: boxRole(p, picked)}
+	defs := firstBoxSteps
+	if w.Role == "second" {
+		defs = secondBoxSteps
+	}
+	w.Total = len(defs)
 	first := 0
-	for n := 1; n <= wizardSteps; n++ {
-		done := stepDone(p, n)
+	for i, d := range defs {
+		done := w.Role != ""
+		if d.done != nil {
+			done = d.done(p)
+		}
 		if !done {
 			w.AllDone = false
 			if first == 0 {
-				first = n
+				first = i + 1
 			}
 		}
-		w.Steps = append(w.Steps, wizardStep{N: n, Title: wizardTitles[n-1], Done: done})
+		w.Steps = append(w.Steps, wizardStep{N: i + 1, Key: d.key, Title: d.title, Done: done})
 	}
 	if first == 0 {
-		first = wizardSteps
+		first = w.Total
 	}
 	// Land on the first thing that still needs doing, unless the reader asked
 	// for a specific step (Back, or re-reading an earlier one).
 	w.Step = want
-	if w.Step < 1 || w.Step > wizardSteps {
+	if w.Step < 1 || w.Step > w.Total {
 		w.Step = first
 	}
-	w.Steps[w.Step-1].Current = true
-	w.StepDone = w.Steps[w.Step-1].Done
+	cur := &w.Steps[w.Step-1]
+	cur.Current = true
+	w.Key = cur.Key
+	w.StepDone = cur.Done
 	if w.Step > 1 {
 		w.PrevStep = w.Step - 1
 		w.PrevURL = fmt.Sprintf("/setup?step=%d", w.PrevStep)
 	}
-	if w.Step < wizardSteps {
+	if w.Step < w.Total {
 		w.NextURL = fmt.Sprintf("/setup?step=%d", w.Step+1)
+	}
+	w.Kind = "phone"
+	if kind == "box" {
+		w.Kind = "box"
 	}
 	if p.PiholeURL != "" {
 		w.PiholeLog = p.PiholeURL + "/queries"
 	}
-	w.StateKey = stateKey(p)
+	w.StateKey = stateKey(p) + "-" + w.Role
 	return w
 }
 
@@ -108,19 +136,30 @@ func buildWizard(p page, want int) wizardPage {
 // exactly the facts the wizard renders, so a reload happens when the reader
 // would see something different and not on every clock tick.
 func stateKey(p page) string {
-	return fmt.Sprintf("%t%t%t%t-%d-%d-%d-%t%t",
+	return fmt.Sprintf("%t%t%t%t-%d-%d-%d-%t%t-%t%t",
 		p.DaemonUp, p.PanelUp, p.PiholeUp, p.UnboundUp,
-		p.PendingJoins, len(p.Devices), p.Covered, p.AddReady, p.PiholeURL != "")
+		p.PendingJoins, len(p.Devices), p.Covered, p.AddReady, p.PiholeURL != "",
+		p.Member, p.Admitted)
 }
 
 func (c config) serveWizard(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	if role := q.Get("role"); role == "first" || role == "second" {
+		http.SetCookie(w, &http.Cookie{Name: roleCookie, Value: role, Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode})
+		http.Redirect(w, r, "/setup?step=3", http.StatusSeeOther)
+		return
+	}
+	picked := ""
+	if ck, err := r.Cookie(roleCookie); err == nil {
+		picked = ck.Value
+	}
 	data := c.buildPage(r.Context())
-	want, _ := strconv.Atoi(r.URL.Query().Get("step"))
+	want, _ := strconv.Atoi(q.Get("step"))
 	data.CSRF = c.csrfToken
 	c.viewer(&data, r)
 	data.AddFrom = "setup"
-	wz := buildWizard(data, want)
-	if r.URL.Query().Get("format") == "key" {
+	wz := buildWizard(data, want, picked, q.Get("kind"))
+	if q.Get("format") == "key" {
 		// The page polls this. Plain text, one line, cheap.
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		fmt.Fprint(w, wz.StateKey)
@@ -133,14 +172,14 @@ func (c config) serveWizard(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-var wizardTmpl = template.Must(template.Must(template.New("wizard").Parse(wizardHTML)).Parse(addCardHTML))
+var wizardTmpl = template.Must(template.Must(template.Must(template.New("wizard").Parse(wizardHTML)).Parse(addCardHTML)).Parse(boxCardHTML))
 
 const wizardHTML = `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Set up Sovereign-DNS · step {{.Step}} of 4</title>
+<title>Set up Sovereign-DNS · step {{.Step}} of {{.Total}}</title>
 <style>
   :root {
     --bg: #0f1115; --panel: #171a21; --line: #262b36; --ink: #e6e9ef;
@@ -209,6 +248,13 @@ const wizardHTML = `<!doctype html>
   nav.steps .spacer { flex: 1; }
   footer { color: var(--dim); font-size: 12px; margin-top: 30px; }
 {{template "addcss"}}
+  .choose { display: grid; gap: 12px; }
+  .pick { display: block; border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; text-decoration: none; color: var(--ink); }
+  .pick:hover, .pick.picked { border-color: var(--accent); }
+  .pick span { display: block; color: var(--dim); font-size: 14px; }
+  .tabs { display: flex; gap: 8px; margin: 0 0 14px; }
+  .tab { border: 1px solid var(--line); border-radius: 999px; padding: 6px 14px; text-decoration: none; color: var(--dim); font-size: 14px; font-weight: 600; }
+  .tab.on { border-color: var(--accent); color: var(--ink); }
 </style>
 </head>
 <body>
@@ -224,10 +270,10 @@ const wizardHTML = `<!doctype html>
   {{/* The control panel is the source of device facts. Step 1 says what
        went wrong in full; every other step gets the one-line version so a
        reader who typed ?step=3 still learns why nothing is moving. */}}
-  {{if and .Error (ne .Step 1)}}<div class="err">{{.Error}}</div>{{end}}
+  {{if and .Error (ne .Key "running")}}<div class="err">{{.Error}}</div>{{end}}
 
   {{/* ───────────────────────── STEP 1 ───────────────────────── */}}
-  {{if eq .Step 1}}
+  {{if eq .Key "running"}}
   <h1>Is everything running?</h1>
   <p class="lede">Your box has four parts. Each one has to be up before a device can use it.</p>
 
@@ -280,10 +326,53 @@ const wizardHTML = `<!doctype html>
   {{end}}
 
   {{/* ───────────────────────── STEP 2 ───────────────────────── */}}
-  {{if eq .Step 2}}
-  <h1>Add your first device</h1>
-  <p class="lede">The new device makes a join link. Bring it here and you'll be asked to approve it.</p>
+  {{if eq .Key "role"}}
+  <h1>First box or another one?</h1>
+  <p class="lede">You can run Sovereign-DNS on more than one machine. The second one keeps DNS working when the first is off, asleep or being updated.</p>
 
+  {{if and .StepDone (eq .Role "second") .Member}}
+  <div class="verdict ok">
+    <strong>This is another box.</strong>
+    <p>It has asked to join your first box's network.</p>
+  </div>
+  {{else if and .StepDone (eq .Role "first") (or .Devices .PendingJoins)}}
+  <div class="verdict ok">
+    <strong>This is your first box.</strong>
+    <p>Devices already use its network, so it stays the one they join.</p>
+  </div>
+  {{else}}
+  <div class="card choose">
+    <a class="pick{{if eq .Role "first"}} picked{{end}}" href="/setup?role=first">
+      <strong>This is my first box</strong>
+      <span>It runs your network. Phones, laptops and any other DNS box join it.</span>
+    </a>
+    <a class="pick{{if eq .Role "second"}} picked{{end}}" href="/setup?role=second">
+      <strong>I already have a box</strong>
+      <span>This one joins your first box's network, as a second DNS box. Have the first box's setup or dashboard open.</span>
+    </a>
+  </div>
+  {{end}}
+  {{end}}
+
+  {{/* ─────────────────── STEP 3, FIRST BOX ─────────────────── */}}
+  {{if eq .Key "add"}}
+  <h1>Add your next device</h1>
+  <p class="lede">What are you adding?</p>
+
+  <div class="tabs" role="tablist">
+    <a role="tab" class="tab{{if eq .Kind "phone"}} on{{end}}" href="/setup?step={{.Step}}&amp;kind=phone">A phone or computer</a>
+    <a role="tab" class="tab{{if eq .Kind "box"}} on{{end}}" href="/setup?step={{.Step}}&amp;kind=box">Another DNS box</a>
+  </div>
+
+  {{if eq .Kind "box"}}
+  <div class="card" id="add-box">
+    {{if and .AddReady .JoinCode}}
+    {{template "boxcard" .}}
+    {{else}}
+    <p>Waiting for the VPN to start before a box can be added. Go back to step 1 if this takes more than a minute.</p>
+    {{end}}
+  </div>
+  {{else}}
   <div class="card" id="add-device">
     {{if .AddReady}}
     {{template "addcard" .}}
@@ -291,17 +380,79 @@ const wizardHTML = `<!doctype html>
     <p>Waiting for the VPN to start before a device can be added. Go back to step 1 if this takes more than a minute.</p>
     {{end}}
   </div>
+  {{end}}
 
   {{if .StepDone}}
   <div class="verdict ok">
     <strong>{{if .PendingJoins}}A device is asking to join.{{else}}A device has already joined.{{end}}</strong>
-    <p>Next, approve it.</p>
+    <p>Next, approve it. A box you just added is already approved.</p>
   </div>
   {{end}}
   {{end}}
 
-  {{/* ───────────────────────── STEP 3 ───────────────────────── */}}
-  {{if eq .Step 3}}
+  {{/* ────────────────── STEP 3, ANOTHER BOX ────────────────── */}}
+  {{if eq .Key "join"}}
+  <h1>Join your first box</h1>
+  <p class="lede">This box leaves the network it made for itself and joins your first box's, so both answer the same devices.</p>
+
+  {{if .Member}}
+  <div class="verdict ok">
+    <strong>Done. This box has asked to join.</strong>
+    <p>Next, let the first box add it.</p>
+  </div>
+  {{else}}
+  <div class="card">
+    <ol class="todo">
+      <li>On your <strong>first</strong> box, open setup (or its dashboard), go to <em>Add your next device</em> and pick <em>Another DNS box</em>. It shows a join code.</li>
+      <li>Paste that code here:</li>
+    </ol>
+    <form class="add-form" method="post" action="/setup/join">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <textarea name="code" rows="2" spellcheck="false" autocomplete="off" placeholder="npub1…:a0454be9" required aria-label="The first box's join code"></textarea>
+      <div class="add-actions"><button class="btn primary" type="submit">Join</button></div>
+    </form>
+    <p class="fine" style="color:var(--dim);font-size:14px;margin:14px 0 0">
+      The code is not a password: on its own it lets nobody in. It only tells this box which network to ask for. The first box still has to add this one.
+    </p>
+  </div>
+  {{end}}
+  {{end}}
+
+  {{/* ────────────────── STEP 4, ANOTHER BOX ────────────────── */}}
+  {{if eq .Key "admitted"}}
+  <h1>Let the first box add it</h1>
+  {{if .Admitted}}
+  <div class="verdict ok">
+    <strong>You're set. This box is on {{if .NetworkName}}{{.NetworkName}}{{else}}your first box's network{{end}}.</strong>
+    <p>The first box added it, and both now see each other.</p>
+    <p class="fine">To have this box answer when the first one is off, make it the network's backup DNS box on the first box. That switch comes with the backup-DNS update; until then the first box answers on its own.</p>
+    <p><a class="big" href="/dashboard">Go to the dashboard →</a></p>
+  </div>
+  {{else if .Member}}
+  <p class="lede">One more paste, the other way round. This is how the first box approves this one.</p>
+  <div class="card">
+    <ol class="todo">
+      <li>On the first box, still under <em>Add your next device</em> → <em>Another DNS box</em>, paste this box's ID:
+        <pre class="copy" id="own-id">{{.OwnNpub}}</pre>
+        <button class="btn copybtn" type="button" data-copy="own-id" hidden>Copy</button>
+      </li>
+      <li>Press <strong>Add this box</strong> there. This page notices on its own, usually within a few seconds.</li>
+    </ol>
+  </div>
+  <div class="verdict wait">
+    <strong>Waiting for the first box{{if .AdminNpub}} ({{.AdminNpub | printf "%.18s"}}…){{end}}.</strong>
+    <p class="fine">Still waiting after a minute with the ID added? Both boxes need to be on and online.</p>
+  </div>
+  {{else}}
+  <div class="verdict wait">
+    <strong>This box hasn't asked to join yet.</strong>
+    <p>Go back to step 3 and paste the first box's join code.</p>
+  </div>
+  {{end}}
+  {{end}}
+
+  {{/* ─────────────────── STEP 4, FIRST BOX ──────────────────── */}}
+  {{if eq .Key "approve"}}
   <h1>Approve it</h1>
   <p class="lede">Nothing reaches your box until you say yes. That is the whole point of this step.</p>
 
@@ -310,7 +461,7 @@ const wizardHTML = `<!doctype html>
     <p><span class="badge">{{.PendingJoins}} device{{if gt .PendingJoins 1}}s{{end}} waiting</span></p>
     <ol class="todo">
       {{if .Remote}}
-      <li>Easiest from here: go back to step 2 and paste the device's join link. That adds it in one click.</li>
+      <li>Easiest from here: go back to step 3 and paste the device's join link. That adds it in one click.</li>
       <li>Or, on the box itself, open the admin panel at <code>localhost:8082</code>.</li>
       {{else}}
       <li>Open the admin panel: <a class="big" href="{{.PanelURL}}" target="_blank" rel="noopener">Open localhost:8082 →</a></li>
@@ -331,7 +482,7 @@ const wizardHTML = `<!doctype html>
     <div class="row warn">
       <span class="dot"></span>
       <span><span class="name">No request yet</span><br>
-        <span class="what">Paste the device's join link in step 2. You'll see which device it is and approve it with one click.</span></span>
+        <span class="what">Paste the device's join link in step 3. You'll see which device it is and approve it with one click.</span></span>
     </div>
     {{end}}
   </div>
@@ -344,8 +495,8 @@ const wizardHTML = `<!doctype html>
   {{end}}
   {{end}}
 
-  {{/* ───────────────────────── STEP 4 ───────────────────────── */}}
-  {{if eq .Step 4}}
+  {{/* ─────────────────── STEP 5, FIRST BOX ──────────────────── */}}
+  {{if eq .Key "check"}}
   <h1>Does it really use the Pi-hole?</h1>
   <p class="lede">Two checks: this box's own view, then one you can see with your own eyes.</p>
 
@@ -361,7 +512,7 @@ const wizardHTML = `<!doctype html>
       </div>
       {{end}}
     {{else}}
-      <div class="row warn"><span class="dot"></span><span class="what">No device has been approved yet. Go back to step 3.</span></div>
+      <div class="row warn"><span class="dot"></span><span class="what">No device has been approved yet. Go back to step 4.</span></div>
     {{end}}
   </div>
 
@@ -388,22 +539,23 @@ const wizardHTML = `<!doctype html>
   {{if .AllDone}}
   <div class="verdict ok">
     <strong>You're set.</strong>
-    <p>Every lookup from that device now goes through your own resolver, filtered by your own Pi-hole. Add the rest of your devices the same way, from step 2.</p>
+    <p>Every lookup from that device now goes through your own resolver, filtered by your own Pi-hole. Add the rest of your devices the same way, from step 3.</p>
     <p><a class="big" href="/dashboard">Go to the dashboard →</a></p>
   </div>
   {{end}}
   {{end}}
 
   <nav class="steps">
-    {{if .PrevURL}}<a class="prev" href="{{.PrevURL}}">← Back to step {{.PrevStep}}</a>{{else}}<span class="prev" style="color:var(--dim)">Step 1 of 4</span>{{end}}
+    {{if .PrevURL}}<a class="prev" href="{{.PrevURL}}">← Back to step {{.PrevStep}}</a>{{else}}<span class="prev" style="color:var(--dim)">Step 1 of {{.Total}}</span>{{end}}
     <span class="spacer"></span>
     {{if .NextURL}}<a class="next {{if not .StepDone}}soft{{end}}" href="{{.NextURL}}">{{if .StepDone}}Next →{{else}}Skip ahead →{{end}}</a>
     {{else if .AllDone}}<a class="next" href="/dashboard">Dashboard →</a>
-    {{else}}<a class="next soft" href="/setup?step=2">Add another device</a>{{end}}
+    {{else if eq .Role "first"}}<a class="next soft" href="/setup?step=3">Add another device</a>{{end}}
   </nav>
 
   <footer>Checked at {{.GeneratedAt}} · updates on its own · {{if .Login}}open to your home network, behind the dashboard password{{else}}served only to this computer{{end}}.</footer>
 </main>
+{{template "copyjs"}}
 <script>
   // Reload when the facts on this page change, and only then. Polling a
   // one-line key keeps a stuck stack from making the page flicker.

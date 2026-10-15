@@ -353,6 +353,26 @@ const addCardHTML = `{{define "addcss"}}
   .add-how { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 6px; font-size: 14px; }
   .add-how p { margin: 8px 0; }
   .add-how .add-fine { color: var(--dim); }
+  .box-steps { padding-left: 22px; margin: 0; }
+  .box-steps li { margin: 0 0 14px; }
+  pre.copy { background: #0b0d11; border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin: 8px 0 0;
+    white-space: pre-wrap; word-break: break-all; font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .copybtn { font: inherit; font-size: 13px; font-weight: 600; border-radius: 8px; padding: 6px 12px; margin: 8px 0 0;
+    cursor: pointer; border: 1px solid var(--line); background: #1f2430; color: var(--ink); }
+  .copybtn[hidden] { display: none; }
+  .box-name { background: #0b0d11; color: var(--ink); border: 1px solid var(--line); border-radius: 8px;
+    padding: 8px 10px; font: inherit; font-size: 14px; width: 100%; max-width: 260px; }
+{{end}}{{define "copyjs"}}
+<script>
+document.querySelectorAll('.copybtn').forEach(function (b) {
+  if (!navigator.clipboard || b.dataset.ready) return;
+  b.dataset.ready = '1';
+  b.hidden = false;
+  b.addEventListener('click', function () {
+    navigator.clipboard.writeText(document.getElementById(b.dataset.copy).textContent.trim()).then(function () { b.textContent = 'Copied'; });
+  });
+});
+</script>
 {{end}}{{define "addcard"}}
 <form class="add-form" method="post" action="/devices/add">
   <input type="hidden" name="csrf" value="{{.CSRF}}">
