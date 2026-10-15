@@ -164,7 +164,8 @@ type page struct {
 
 func main() {
 	// The same binary is the mesh gate (mesh.go), which runs in nvpn's
-	// namespace and has no shell for a healthcheck.
+	// namespace and has no shell for a healthcheck, and the home-network DNS
+	// forwarder (dnslan.go).
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "mesh-gate":
@@ -172,6 +173,11 @@ func main() {
 			return
 		case "mesh-health":
 			os.Exit(meshHealth())
+		case "dns-lan":
+			runDNSLAN()
+			return
+		case "dns-lan-health":
+			os.Exit(dnsLANHealth())
 		default:
 			log.Fatalf("hub: unknown command %q", os.Args[1])
 		}

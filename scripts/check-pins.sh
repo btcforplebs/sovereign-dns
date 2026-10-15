@@ -533,7 +533,7 @@ while IFS= read -r k; do
     FTLCONF_webserver_api_password|FTLCONF_dns_upstreams|FTLCONF_dns_interface|\
     FTLCONF_dns_listeningMode|FTLCONF_dns_dnssec|FTLCONF_ntp_ipv4_active|\
     FTLCONF_ntp_ipv6_active|FTLCONF_ntp_sync_active|FTLCONF_dns_rateLimit_count|\
-    FTLCONF_dns_rateLimit_interval|FTLCONF_webserver_port) ;;
+    FTLCONF_dns_rateLimit_interval|FTLCONF_webserver_port|FTLCONF_misc_dnsmasq_lines) ;;
     *) fail "pihole sets $k, an FTL setting this gate has no rule for (add one if it is safe)" ;;
   esac
 done < <(sed -nE "s/^[[:space:]]*(-[[:space:]]*)?[\"']?(FTLCONF_[A-Za-z0-9_]+).*/\\2/p" "$loaded" | sort -u)
@@ -596,6 +596,9 @@ hub	ports	${HUB_BIND:-127.0.0.1}:${HUB_PORT:-8080}:8080
 hub	networks	default
 hub	networks	dns-internal
 hub-mesh	network_mode	service:nvpn
+dns-lan	networks	dns-internal
+dns-lan	ports	${DNS_LAN_BIND:-127.0.0.1}:53:5353/udp
+dns-lan	ports	${DNS_LAN_BIND:-127.0.0.1}:53:5353/tcp
 web	ports	127.0.0.1:${WEB_UI_PORT:-8082}:8081
 web	networks	default
 web	volumes	source=nvpn-config;target=/root/.config/nvpn;type=volume;volume={}
@@ -619,7 +622,7 @@ for cf in $compose_files; do surface_files+=" $(yaml "$cf")"; done
 for f in $surface_files; do
   while IFS=$'\t' read -r s k v; do
     case "$s" in
-      docs|hub|hub-mesh|web|nvpn|pihole|unbound) ;;
+      docs|hub|hub-mesh|dns-lan|web|nvpn|pihole|unbound) ;;
       @network:dns-internal|@network:default)
         case "$k" in driver|internal|ipam|name) ;; *) fail "network ${s#@network:} sets $k, which this gate has no rule for (enable_ipv6 would give the bridge an address [::] listeners answer on)" ;; esac
         continue ;;
@@ -627,7 +630,7 @@ for f in $surface_files; do
       *) fail "a compose file defines service $s, which this gate has no rule for"; continue ;;
     esac
     case "$k" in
-      build|cap_add|command|container_name|depends_on|devices|entrypoint|environment|healthcheck|image|logging|network_mode|networks|ports|restart|volumes) ;;
+      build|cap_add|command|container_name|depends_on|devices|entrypoint|environment|healthcheck|image|logging|network_mode|networks|ports|profiles|restart|volumes) ;;
       *) fail "$s sets $k, a service key this gate has no rule for" ;;
     esac
     [[ -z "$v" ]] && continue
@@ -640,7 +643,7 @@ done
 # kills Pi-hole and with it DNS for the whole mesh. The driver is fixed too: a
 # syslog, gelf or fluentd driver would ship every log line off the box. Raw mode
 # sees the unexpanded alias, so it checks the alias and the anchor instead.
-for s in docs hub hub-mesh web nvpn pihole unbound; do
+for s in docs hub hub-mesh dns-lan web nvpn pihole unbound; do
   blk=$(awk -v s="$s" '$0 == "  " s ":" { a = 1; next }
                        a && /^  [^[:space:]#]/ { a = 0 }
                        a' "$loaded")
@@ -680,6 +683,24 @@ if [[ -n "$hubmesh_blk" ]]; then
   surface /dev/stdin <"$loaded" | grep -Fqx "hub-mesh	network_mode	service:nvpn" \
     || fail "hub-mesh must set network_mode: service:nvpn"
 fi
+
+# Required, not just allowed: dns-lan runs the forwarder. The same image with
+# no command is a whole hub, which with no password has no login, on an address
+# the home network can reach.
+dnslan_blk=$(awk '$0 == "  dns-lan:" { a = 1; next } a && /^  [^[:space:]#]/ { a = 0 } a' "$loaded")
+if [[ -n "$dnslan_blk" ]]; then
+  grep -Eq '^    command: \[?"?dns-lan"?\]?$' <<<"$dnslan_blk" \
+    || awk '/^    command:$/ { c = 1; next } c && /^      - / { print; exit } c { exit }' <<<"$dnslan_blk" | grep -Eq '^      - "?dns-lan"?$' \
+    || fail "dns-lan must run command: [\"dns-lan\"]; any other command runs a hub with no login on the home network"
+  grep -Eq '^    entrypoint:' <<<"$dnslan_blk" && fail "dns-lan must not set entrypoint: the forwarder is /hub dns-lan"
+fi
+
+# Required, not just allowed: Pi-hole's one extra dnsmasq line adds nvpn's
+# dns-internal interface (for dns-lan) and nothing else. dnsmasq lines can open
+# any listener or move any upstream.
+while IFS= read -r v; do
+  [[ "$v" == "interface=eth0" ]] || fail "pihole FTLCONF_misc_dnsmasq_lines must be exactly \"interface=eth0\", not '$v'"
+done < <(sed -nE "s/^[[:space:]]*(-[[:space:]]*)?[\"']?FTLCONF_misc_dnsmasq_lines[\"']?[[:space:]]*[:=][[:space:]]*//p" "$loaded" | sed -E "s/^[\"']//; s/[\"'][[:space:]]*$//")
 
 # Required, not just allowed: pihole serves the mesh only from inside nvpn's netns.
 surface /dev/stdin <"$loaded" | grep -Fqx "pihole	network_mode	service:nvpn" \

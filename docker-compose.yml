@@ -131,6 +131,12 @@ services:
       # Bind only the mesh tunnel interface; 127.0.0.1:53 stays free for nvpn.
       FTLCONF_dns_interface: ${NVPN_TUN_IFACE:-utun100}
       FTLCONF_dns_listeningMode: BIND
+      # Also answer on nvpn's dns-internal address (172.28.53.10, eth0 in this
+      # namespace), which only containers on dns-internal can reach. dns-lan
+      # below forwards the home network's queries there. Nothing outside
+      # Docker reaches that address. scripts/check-pins.sh allows exactly
+      # this line.
+      FTLCONF_misc_dnsmasq_lines: "interface=eth0"
       FTLCONF_dns_dnssec: "true"
       # Per-client rate limit, raised from FTL's 1000 a minute. Every device on
       # the mesh is one client, and the busiest one already peaks near 833 a
@@ -272,6 +278,42 @@ services:
       timeout: 5s
       retries: 3
       start_period: 30s
+
+  # DNS for the home network: lets the router hand this box out as every
+  # device's DNS server, with no app on any of them. Off unless
+  # scripts/dns-lan.sh turns it on (it sets COMPOSE_PROFILES=dns-lan and
+  # DNS_LAN_BIND in .env). Pi-hole sits in nvpn's namespace, where a port the
+  # host publishes cannot land, so this forwarder takes the queries on the
+  # box's home-network address and hands each one to Pi-hole at
+  # 172.28.53.10, carrying the asking device's address so Pi-hole's log and
+  # rate limit see each device and not this container. Answers private
+  # addresses only, so a router port forward does not make an open resolver.
+  # Published on one address (DNS_LAN_BIND), never 0.0.0.0: on Linux,
+  # systemd-resolved already holds 127.0.0.53:53, and a wildcard bind on
+  # port 53 then fails. Same image as the hub. See hub/dnslan.go.
+  dns-lan:
+    build:
+      context: ./hub
+    container_name: sovereign-dns-dns-lan
+    logging: *logging
+    restart: unless-stopped
+    profiles: ["dns-lan"]
+    command: ["dns-lan"]
+    depends_on:
+      pihole:
+        condition: service_healthy
+    networks:
+      dns-internal:
+        ipv4_address: 172.28.53.13
+    ports:
+      - "${DNS_LAN_BIND:-127.0.0.1}:53:5353/udp"
+      - "${DNS_LAN_BIND:-127.0.0.1}:53:5353/tcp"
+    healthcheck:
+      test: ["CMD", "/hub", "dns-lan-health"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   # Self-hosted docs site (mdBook) — explains the whole stack in plain
   # language plus the technical detail behind each layer. Runs standalone;
