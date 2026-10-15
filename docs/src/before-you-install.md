@@ -22,11 +22,13 @@ Once it's running:
   private, encrypted network (Nostr VPN), on home Wi-Fi, mobile data or a
   hotel.
 
-> **Phones: check yours.** Today this is sure to work on computers. iPhones
-> and iPads join the network, but the dashboard still warns that they may
-> not send their lookups through the box yet. After you add any phone,
-> check that its lookups show up in Pi-hole
-> ([Quickstart, Step 7](quickstart.md#step-7-see-the-ads-disappear)).
+> **What's been tested:** the box on a Mac, with an iPhone and a Mac as
+> devices. Android, Linux and Windows are built but not tested yet.
+> **Phones need the right app build.** A phone uses the box only when it
+> runs a Nostr VPN build with network DNS (the same code the box runs).
+> The stock app-store app joins your network but still does its own
+> lookups. After you add a phone, check that its lookups show up in
+> Pi-hole ([Quickstart, Step 7](quickstart.md#step-7-see-the-ads-disappear)).
 
 It is **not** a full VPN for your browsing. Only the lookups go to the
 box. The websites themselves still see your device's normal IP address.
@@ -46,8 +48,8 @@ See [Your IP address: who sees what](your-ip.md) for the full picture.
 - **Docker**, the free program that runs the box's software. Install it
   and open it once before you start
   ([how to get Docker](https://docs.docker.com/get-docker/)).
-- **The Nostr VPN app** on each phone or laptop you want to protect. Use
-  the latest version. After you add a device, check that its lookups really
+- **The Nostr VPN app** on each phone or laptop you want to protect. On a
+  phone, it has to be a build with network DNS (see the note above). After you add a device, check that its lookups really
   reach the box (Step 7 of the [Quickstart](quickstart.md)).
 - **No changes to your router.** You don't open or forward any ports.
   See [No open ports needed](#no-open-ports-needed).
@@ -65,14 +67,17 @@ See [Your IP address: who sees what](your-ip.md) for the full picture.
 5. **On a box with no screen** (a Raspberry Pi over SSH), it asks whether
    to open the dashboard to your home network, behind a second password.
 6. **It downloads the ready-made VPN part**, or builds it if it can't.
-   Then it starts six small programs: the VPN, the VPN's control panel,
-   the ad blocker (Pi-hole), the lookup engine (Unbound), the dashboard
-   and the built-in guide.
+   Then it starts a handful of small programs: the VPN, the VPN's
+   control panel, the ad blocker (Pi-hole), the lookup engine (Unbound),
+   the dashboard and the built-in guide.
 7. **The box starts its own private network** with itself in charge, and
    tells every device that joins to send its lookups to the box.
 8. **It prints "Done"** and the dashboard address, `http://localhost:8080`.
-9. **You add your devices** one at a time from the dashboard. Nothing
-   joins without you pressing **Add**.
+9. **The dashboard's setup asks "First box or another one?"** Pick *This
+   is my first box*, unless you already run a box and this one should
+   join it as a backup.
+10. **You add your devices** one at a time (*Add your next device*).
+    Nothing joins without you pressing **Add**.
 
 The box starts again by itself whenever the computer restarts, as long
 as Docker starts with it. Docker Desktop on a Mac or Windows PC has a
@@ -103,13 +108,17 @@ The commands below assume you ran the installer in your home folder, so
 the box lives in `~/sovereign-dns`. If you ran it somewhere else, use that
 folder instead.
 
-Do these in order. Step 1 matters: if you remove the box while your
+Do these in order. Steps 1 and 2 matter: if you remove the box while your
 devices are still told to use it, they can't open websites.
 
-1. **Turn network DNS off.** On the dashboard (`http://localhost:8080`),
+1. **If you turned on whole-house DNS** (`dns-lan.sh`), change your
+   router's DNS setting back first, then run
+   `bash scripts/dns-lan.sh off` in the `sovereign-dns` folder.
+   Otherwise everyone on your Wi-Fi loses DNS when the box goes.
+2. **Turn network DNS off.** On the dashboard (`http://localhost:8080`),
    use the **Network DNS** switch and turn it off. Your devices go back
    to their normal DNS within a few seconds.
-2. **Stop the box.** In a terminal on the box:
+3. **Stop the box.** In a terminal on the box:
 
    ```bash
    cd ~/sovereign-dns && docker compose down
@@ -118,9 +127,9 @@ devices are still told to use it, they can't open websites.
    To also delete its data (your private network's identity, the device
    list and your Pi-hole settings) so it can't be started again as it
    was, use `docker compose down -v` instead. That can't be undone.
-3. **Delete the `sovereign-dns` folder** and `install.sh` if you want
+4. **Delete the `sovereign-dns` folder** and `install.sh` if you want
    them gone.
-4. **On each phone or laptop,** turn off or remove the Nostr VPN app,
+5. **On each phone or laptop,** turn off or remove the Nostr VPN app,
    or leave the network in it.
 
 ## If DNS stops working
@@ -135,6 +144,11 @@ without you noticing.
 
 - **Need a device back online right now?** Turn off Nostr VPN on that
   device. It goes back to normal DNS straight away.
+- **Need everyone back online while you fix it?** If the box is still
+  running, turn the dashboard's **Network DNS** switch off. If you use
+  whole-house DNS, set your router's DNS back to automatic.
+- **Run a second box** so this doesn't happen when one is off or asleep
+  ([Quickstart, A second DNS box](quickstart.md#a-second-dns-box)).
 - **Wake or turn on the box,** then wait a minute.
 - **Still broken?** On the box, run:
 

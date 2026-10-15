@@ -19,11 +19,13 @@ Once it's running:
 It is not a full VPN: websites still see your device's own IP address. See
 [who sees what](docs/src/your-ip.md).
 
-> **Phones: check yours.** Today this is sure to work on computers. iPhones
-> and iPads join the network, but the dashboard still warns that they may
-> not send their lookups through the box yet. After you add any phone,
-> check that its lookups show up in Pi-hole
-> ([Quickstart, Step 7](docs/src/quickstart.md#step-7-see-the-ads-disappear)).
+> **What's been tested:** the box on a Mac, with an iPhone and a Mac as
+> devices. Android, Linux and Windows are built but not tested yet.
+> **Phones need the right app build.** A phone uses the box only when it
+> runs a Nostr VPN build with network DNS (the same code the box runs).
+> The stock app-store app joins your network but still does its own
+> lookups. After you add a phone, check that its lookups show up in
+> Pi-hole ([Quickstart, Step 7](docs/src/quickstart.md#step-7-see-the-ads-disappear)).
 
 ## Read this before you install
 
@@ -38,8 +40,9 @@ read. In short:
   online straight away.
 - **No open ports.** The box connects out, and your devices find it through
   the private network.
-- **Undoing it** takes four steps, and the first one matters: turn network DNS
-  off on the dashboard *before* you remove the box. See
+- **Undoing it** takes a few steps, and the first ones matter: change your
+  router back if you use whole-house DNS, and turn network DNS off on the
+  dashboard, *before* you remove the box. See
   [How to undo it](docs/src/before-you-install.md#how-to-undo-it).
 
 ## Where to run it
@@ -53,7 +56,9 @@ read. In short:
 
 **A home computer that stays on is the recommended setup.** A laptop works
 for trying it out, but when it sleeps every device you've added stops
-opening websites. Hardware minimums, Raspberry Pi storage advice (use a 64 GB
+opening websites. You can also run **two boxes** (say a Raspberry Pi and a
+Mac), so DNS keeps working while one is off or asleep. See
+[A second box](#a-second-box). Hardware minimums, Raspberry Pi storage advice (use a 64 GB
 card, not 32 GB) and prices checked on 2026-10-15 are in
 **[Where to run it](docs/src/where-to-run.md)**.
 
@@ -100,7 +105,7 @@ it prints the address to open from your laptop or phone, on the same Wi-Fi:
 ```text
 From another computer on your home network, open:
     http://<box-address>:8080
-    http://raspberrypi.local:8080   (if your computer finds it by name)
+    http://<box-name>.local:8080   (if your computer finds it by name)
 and sign in with the dashboard password.
 ```
 
@@ -128,17 +133,20 @@ itself, since it has no password of its own. Two things to know: the
 password crosses your home network unencrypted (plain `http`, like the
 Pi-hole page), and anyone who knows it can add a device.
 
-**From your phone, anywhere.** `bash scripts/hub-mesh.sh on` opens the
-dashboard to the devices on your NostrVPN network, at
-`http://<the box's mesh IP>:8080`, with the same password (it asks for one
-if you have none yet). Pi-hole's own page is already there at
-`http://<the box's mesh IP>/admin`, behind the Pi-hole password. Neither is
-reachable from the internet or your home network; `hub-mesh.sh off` closes
-the dashboard again, and `hub-mesh.sh url` prints both addresses.
+## First box or another one?
 
-## Add your phone or laptop
+When the dashboard first opens, its setup asks **First box or another
+one?**
 
-On the dashboard, click **Add a device**, then:
+- **This is my first box:** it runs your private network. Your phones,
+  laptops and any other DNS box join it.
+- **I already have a box:** this one joins your first box's network as a
+  second DNS box. See [A second box](#a-second-box).
+
+## Add your next device
+
+On the dashboard (or step 3 of the setup, *Add your next device*), pick
+**A phone or computer**, then:
 
 1. **On your phone:** open the Nostr VPN app → *Join Network* → *Share*, and
    send the link to the box (AirDrop works). No AirDrop? Tap *Copy Request*
@@ -153,6 +161,76 @@ Nothing gets added until you press Add.
 
 Then check it really works: on that device, open Pi-hole and look for its
 lookups in the log ([Quickstart, Step 7](docs/src/quickstart.md#step-7-see-the-ads-disappear)).
+
+## A second box
+
+A second box keeps your network answering when the first one is off,
+asleep or being updated. Install it the same way, and when its setup asks
+**First box or another one?**, pick **I already have a box**. Then two
+pastes, one each way:
+
+1. On the **first** box, under **Add another DNS box**, copy the **join
+   code** and paste it into the new box's setup. Press **Join**. The code
+   isn't a password: it only tells the new box which network to ask for.
+2. The new box then shows its **ID** (`npub1…`). Paste that into the first
+   box, under the join code, and press **Add this box**. Nothing joins
+   until you do.
+
+Only pick *I already have a box* on a box no device uses yet. It leaves the
+network it made for itself, and setup refuses if devices already use it.
+Details: [Quickstart, A second DNS box](docs/src/quickstart.md#a-second-dns-box).
+
+## Turn network DNS on or off
+
+The dashboard has a **Network DNS** switch. **On** (the default) means
+every device you've added sends its lookups to the box. **Off** means they
+go back to their normal DNS, within a few seconds. Turn it off before you
+take the box away for good, or whenever you need everyone back online
+while the box is broken. The switch asks before it turns DNS off, and
+before it turns DNS on while Pi-hole or Unbound is down.
+
+## Your dashboard from your phone, anywhere
+
+Any device on your network (your phone on mobile data, say) can open the
+dashboard and Pi-hole through Nostr VPN. Nothing is opened to the internet
+or to your home Wi-Fi. In the `sovereign-dns` folder on the box, run:
+
+```bash
+bash scripts/hub-mesh.sh on    # asks for a dashboard password if you have none yet
+bash scripts/hub-mesh.sh url   # print the addresses again
+bash scripts/hub-mesh.sh off   # close it again
+```
+
+It prints the address, `http://<the box's mesh IP>:8080`. Open it on your
+phone with Nostr VPN connected, and sign in with the dashboard password.
+Pi-hole is at `http://<the box's mesh IP>/admin`, behind the Pi-hole
+password.
+
+## DNS for the whole house (no app needed)
+
+Your router can hand the box out as DNS to everything on your home Wi-Fi:
+TVs, guests, anything that can't run Nostr VPN. Off by default. In the
+`sovereign-dns` folder on the box, run:
+
+```bash
+bash scripts/dns-lan.sh on      # start, test a lookup, then print the router steps
+bash scripts/dns-lan.sh status  # is it on, and does a lookup through it work?
+bash scripts/dns-lan.sh off     # stop (change your router back FIRST)
+```
+
+- **Use a Linux box for this, like a Raspberry Pi.** On a Mac or Windows
+  box (Docker Desktop) the box can't tell your home network from the
+  internet, and Pi-hole sees the whole house as one device. So the script
+  refuses there.
+- **It prints the router steps.** Reserve the box's address in the router,
+  then put that address in the router's DNS setting. For a second DNS,
+  use your other box's home address or leave it empty. Never use Google
+  or Cloudflare there: devices quietly use them and skip the blocking.
+- **If this box is off, nobody in the house can load websites.** Keep it
+  on.
+- **Never forward port 53 on your router.**
+- **Turning it off:** change your router's DNS back **first**, then run
+  `dns-lan.sh off`. Otherwise the house loses DNS straight away.
 
 ## Everyday use
 

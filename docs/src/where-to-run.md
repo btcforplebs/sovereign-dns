@@ -14,6 +14,21 @@ world sees.
 | Router changes | None | None | None |
 | Good for | Most people | Trying it out | No spare computer at home, or you'd rather not use your home IP |
 
+## Two boxes
+
+You can run more than one box, for example a Raspberry Pi plus a Mac. The
+second one joins the first box's network and keeps DNS answering when the
+first is off, asleep or being updated. Set up the first one normally,
+then see [Quickstart, A second DNS box](quickstart.md#a-second-dns-box).
+
+## DNS for the whole house
+
+A box at home can also answer for everything on your Wi-Fi, with no app
+(`bash scripts/dns-lan.sh on`, then change one setting on your router).
+Do this on a **Linux** box such as a Raspberry Pi. On a Mac or Windows
+box, Docker Desktop hides where lookups come from, so the script refuses.
+Not on a VPS, and never forward port 53.
+
 ## At home, on a computer that stays on
 
 This is the recommended setup. Plug it into your router with a cable if

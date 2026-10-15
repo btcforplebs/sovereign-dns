@@ -9,8 +9,9 @@ it runs on a rented server.
 
 ## What it hides
 
-This section assumes a device whose lookups really go through the box.
-That's computers today. iPhones and iPads may not yet, so check yours
+This section assumes a device whose lookups really go through the box:
+a computer, or a phone running a Nostr VPN build with network DNS. The
+stock app-store app doesn't send them yet, so check yours
 ([Quickstart, Step 7](quickstart.md#step-7-see-the-ads-disappear)).
 
 - **Which websites your devices look up, from the network they're on.**
@@ -43,6 +44,7 @@ That's computers today. iPhones and iPads may not yet, so check yours
 | **Address-check servers** (STUN: `stun.iris.to`, plus servers run by Google and Cloudflare) | The IP of the box or device asking "what's my public address?" | Any lookups. They only answer that one question. |
 | **Public relay nodes** (`fips1.iris.to`, `fips2.iris.to`) | The box's IP and its device key. They introduce your devices to the box, and when no direct link can form they carry your encrypted traffic. | The contents. The traffic is encrypted end to end. |
 | **The other devices in your network** | Each other's public and local IP addresses, so they can connect directly | Each other's lookups. Only whoever runs the box sees those, in Pi-hole. |
+| **Your home Wi-Fi, with whole-house DNS on** (`dns-lan.sh`) | Lookups from devices on the Wi-Fi go to the box in plain, unencrypted DNS, so anyone who can watch your home network can read them. Lookups from devices running Nostr VPN still travel encrypted. | |
 | **Whoever runs the box** (you) | Every lookup from every device, in the Pi-hole log | |
 
 ## Choices that change the picture
