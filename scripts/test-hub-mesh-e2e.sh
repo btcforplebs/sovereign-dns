@@ -84,9 +84,13 @@ networks:
         - subnet: $NET.0/24
 EOF
 
-NVPN_IMAGE=$(sed -nE 's/^[[:space:]]*image:[[:space:]]*//p' docker-compose.prebuilt.yml | head -n1)
+# Only nvpn and web come prebuilt: the hub, Unbound and docs build from this
+# tree, which is what is under test.
+NVPN_IMAGE=$(awk '$0 == "  nvpn:" { a = 1; next } a && /^    image: / { print $2; exit }' docker-compose.prebuilt.yml)
+[[ -n "$NVPN_IMAGE" ]] || { echo "e2e: no nvpn image in docker-compose.prebuilt.yml" >&2; exit 1; }
+printf 'services:\n  nvpn:\n    build: !reset null\n    image: %s\n  web:\n    build: !reset null\n    image: %s\n' "$NVPN_IMAGE" "$NVPN_IMAGE" >"$tmp/nvpn-prebuilt.yml"
 export NVPN_IMAGE PIHOLE_PASSWORD=$PIHOLE_PW HUB_PASSWORD=$HUB_PW HUB_MESH=on
-C=(docker compose -p "$P" -f docker-compose.yml -f docker-compose.prebuilt.yml -f "$ovr")
+C=(docker compose -p "$P" -f docker-compose.yml -f "$tmp/nvpn-prebuilt.yml" -f "$ovr")
 
 pass=0 failn=0
 ok() { pass=$((pass + 1)); printf 'ok    %s\n' "$1"; }

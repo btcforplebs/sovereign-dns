@@ -98,18 +98,17 @@ Prices change. Check the provider's page before you buy.
 |---|---|---|
 | Processor | Any 64-bit computer (arm64 or x86-64). Raspberry Pi 4 or newer. | Raspberry Pi 5, a mini-PC, or any Mac from the last few years |
 | Memory | 2 GB on Linux (a Pi with 2 GB works). A Mac or Windows PC needs about 4 GB free for Docker Desktop. | 4 GB or more |
-| Free disk | About 8 GB when it can download the ready-made VPN part | 20 GB or more free. On a Raspberry Pi, a **64 GB** card or a USB SSD |
+| Free disk | About 8 GB when it can download the ready-made software | 20 GB or more free. On a Raspberry Pi, a **64 GB** card or a USB SSD |
 | Operating system | 64-bit Linux (Raspberry Pi OS 64-bit, Ubuntu, Debian), or macOS with Docker Desktop | |
 | Network | A steady internet connection. A cable to the router is better than Wi-Fi. | |
 
 **About Raspberry Pi storage:** a 32 GB card is tight. On 2026-10-14, a
 Raspberry Pi 4 building the VPN part from source got its 32 GB card down
-to 1.2 GB free before the build finished. The ready-made download avoids
-most of that build, but the box still builds its dashboard and guide on
-the device, and Docker keeps old copies around. Use 64 GB or more.
+to 1.2 GB free before the build finished. The ready-made downloads avoid
+that build entirely, but Docker keeps old copies around. Use 64 GB or more.
 
-Use a **64-bit** operating system. The ready-made download exists only for
-64-bit computers. On anything else, the installer builds the VPN part
+Use a **64-bit** operating system. The ready-made downloads exist only for
+64-bit computers. On anything else, the installer builds everything
 itself, which is slow and uses much more space.
 
 ### Home hardware prices, checked 2026-10-15

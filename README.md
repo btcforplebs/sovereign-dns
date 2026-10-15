@@ -310,10 +310,10 @@ cp .env.example .env          # set PIHOLE_PASSWORD at minimum
 docker compose up -d --build  # first build compiles nvpn + web panel
 ```
 
-To use the ready-made nvpn image instead of compiling it (when
+To use the ready-made images instead of building every service (when
 `docker-compose.prebuilt.yml` exists), add this line to `.env` before
 `docker compose up -d --build`. Every later `docker compose` command in the
-folder then uses the same image:
+folder then uses the same images:
 
 ```bash
 COMPOSE_FILE=docker-compose.yml:docker-compose.prebuilt.yml
@@ -376,10 +376,11 @@ The Pi-hole admin UI is also served on the mesh at
   branch), and every image is pinned by digest. `scripts/check-pins.sh`
   fails if anything is unpinned, and `make-installer.sh` won't build an
   installer until it passes.
-- The ready-made nvpn image (`docker-compose.prebuilt.yml`) is built by this
-  repo's CI from that same commit and the same `nvpn/` folder, for amd64 and
-  arm64, and pinned by digest. Its tag names the commit and a hash of
-  `nvpn/`, and `check-pins.sh` fails if either changes without a repin, so it
-  cannot quietly fall behind the source. Trusting it means trusting this
+- The ready-made images (`docker-compose.prebuilt.yml`) are built by this
+  repo's CI from the same folders an install builds (`nvpn/` at that same
+  commit, `unbound/`, `hub/`, `docs/`), for amd64 and arm64, and pinned by
+  digest. Each tag names a hash of its folder (and the commit, for nvpn), and
+  `check-pins.sh` fails if one changes without a repin, so none can quietly
+  fall behind the source. Trusting it means trusting this
   repo's GitHub Actions build. If you would rather not, build from source
   (`SOVEREIGN_DNS_BUILD_FROM_SOURCE=1`).

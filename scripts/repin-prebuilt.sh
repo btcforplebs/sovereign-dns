@@ -1,103 +1,109 @@
 #!/usr/bin/env bash
-# Pins the ready-made nvpn image that installs download instead of compiling
-# nvpn on the device (about 35 minutes on a Raspberry Pi 4). Writes
-# docker-compose.prebuilt.yml and regenerates install.sh.
+# Pins the ready-made images that installs download instead of building every
+# service on the device (nvpn alone takes about 35 minutes on a Raspberry Pi 4,
+# the docs site's mdbook another 10+). Writes docker-compose.prebuilt.yml and
+# regenerates install.sh.
 #
-#   scripts/repin-prebuilt.sh sha256:<index digest>
+#   scripts/repin-prebuilt.sh
 #
-# The digest is the one the "nvpn image" workflow prints after a publish run.
-# Before writing anything, this asks ghcr.io, anonymously, the way an install
-# will, and refuses unless:
-#   - the image index stored under that digest really hashes to it,
+# For every image in scripts/lib/prebuilt-images.sh, the tag this tree builds
+# (its folder's hash, plus the nvpn commit for nvpn) names exactly one build.
+# The "prebuilt images" workflow publishes it on main. Before writing anything,
+# this asks ghcr.io, anonymously, the way an install will, and refuses unless:
+#   - the tag exists, and the image index stored under its digest really
+#     hashes to that digest,
 #   - it has a linux/amd64 and a linux/arm64 image,
-#   - the tag this tree builds (scripts/lib/nvpn-image.sh: the nvpn commit
-#     plus a hash of nvpn/) points at that same digest,
 #   - GitHub holds a signed build-provenance attestation for that digest,
-#     made by this repo's nvpn-image workflow running on main (needs the gh
-#     CLI, logged in).
-# The tag is what ties the bits to this tree, so a digest published from an
-# older nvpn/ or another commit is refused here and again by check-pins.sh.
+#     made by this repo's prebuilt images workflow running on main (needs the
+#     gh CLI, logged in).
+# The tag is what ties the bits to this tree, so an image published from an
+# older folder or another commit never matches, here or in check-pins.sh.
 #
 # To go back to building from source everywhere: delete
 # docker-compose.prebuilt.yml and run scripts/make-installer.sh.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-# shellcheck source=lib/nvpn-image.sh
-source scripts/lib/nvpn-image.sh
+# shellcheck source=lib/prebuilt-images.sh
+source scripts/lib/prebuilt-images.sh
 
 die() { echo "repin-prebuilt: $*" >&2; exit 1; }
-[[ $# -eq 1 && "$1" =~ ^sha256:[0-9a-f]{64}$ ]] || die "usage: $0 sha256:<64 hex>"
-digest=$1
+[[ $# -eq 0 ]] || die "usage: $0 (no arguments: every tag comes from the tree)"
 command -v python3 >/dev/null 2>&1 || die "needs python3 (to read the registry's JSON)"
-command -v gh >/dev/null 2>&1 || die "needs the GitHub CLI, gh (to check the build attestation)"
+command -v gh >/dev/null 2>&1 || die "needs the GitHub CLI, gh (to check the build attestations)"
 
-repo=$(nvpn_image_repo)
-tag=$(nvpn_image_tag)
-name=${repo#ghcr.io/}
 accept='application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json'
-
-token=$(curl -fsS "https://ghcr.io/token?service=ghcr.io&scope=repository:$name:pull" \
-          | sed -E 's/.*"token":"([^"]+)".*/\1/') \
-  || die "ghcr.io gave no pull token for $name (is the package public?)"
-
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
-curl -fsS -H "Authorization: Bearer $token" -H "Accept: $accept" \
-  "https://ghcr.io/v2/$name/manifests/$digest" -o "$tmp/index.json" \
-  || die "ghcr.io has no image index $digest in $name"
 
-# Content addressing: what came back must hash to what was asked for.
-if command -v sha256sum >/dev/null 2>&1; then got=$(sha256sum <"$tmp/index.json")
-else got=$(shasum -a 256 <"$tmp/index.json"); fi
-[[ "sha256:${got%% *}" == "$digest" ]] || die "what ghcr.io returned for $digest hashes to sha256:${got%% *}"
-
-platforms=$(python3 -I -c '
+# pin <image>: prints repo:tag@digest after every check above.
+pin() {
+  local img=$1 repo tag name token digest got platforms want
+  repo=$(prebuilt_repo "$img"); tag=$(prebuilt_tag "$img")
+  name=${repo#ghcr.io/}
+  token=$(curl -fsS "https://ghcr.io/token?service=ghcr.io&scope=repository:$name:pull" \
+            | sed -E 's/.*"token":"([^"]+)".*/\1/') \
+    || die "ghcr.io gave no pull token for $name (is the package public?)"
+  digest=$(curl -fsSI -H "Authorization: Bearer $token" -H "Accept: $accept" \
+             "https://ghcr.io/v2/$name/manifests/$tag" 2>/dev/null \
+           | tr -d '\r' | sed -n 's/^[Dd]ocker-[Cc]ontent-[Dd]igest: //p') || true
+  [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] \
+    || die "ghcr.io has no tag $repo:$tag: this tree's $img image has not been published (it publishes on every push to main; or run the prebuilt images workflow)"
+  curl -fsS -H "Authorization: Bearer $token" -H "Accept: $accept" \
+    "https://ghcr.io/v2/$name/manifests/$digest" -o "$tmp/$img.json" \
+    || die "ghcr.io has no image index $digest in $name"
+  # Content addressing: what came back must hash to what was asked for.
+  if command -v sha256sum >/dev/null 2>&1; then got=$(sha256sum <"$tmp/$img.json")
+  else got=$(shasum -a 256 <"$tmp/$img.json"); fi
+  [[ "sha256:${got%% *}" == "$digest" ]] || die "what ghcr.io returned for $repo@$digest hashes to sha256:${got%% *}"
+  platforms=$(python3 -I -c '
 import json, sys
 idx = json.load(open(sys.argv[1]))
 for m in idx.get("manifests", []):
     p = m.get("platform") or {}
     print("%s/%s" % (p.get("os"), p.get("architecture")))
-' "$tmp/index.json") || die "$digest is not an image index"
-for want in linux/amd64 linux/arm64; do
-  grep -Fqx "$want" <<<"$platforms" || die "$digest has no $want image (it has: $(echo $platforms))"
+' "$tmp/$img.json") || die "$repo@$digest is not an image index"
+  for want in linux/amd64 linux/arm64; do
+    grep -Fqx "$want" <<<"$platforms" || die "$repo@$digest has no $want image (it has: $(echo $platforms))"
+  done
+  # Who built it: only a run of this repo's own workflow, from main, can have
+  # signed this. A digest pushed by hand, or by a run on another branch, fails.
+  gh attestation verify "oci://$repo@$digest" \
+      --repo btcforplebs/sovereign-dns \
+      --signer-workflow btcforplebs/sovereign-dns/.github/workflows/nvpn-image.yml \
+      --source-ref refs/heads/main >/dev/null \
+    || die "no build attestation from the prebuilt images workflow on main for $repo@$digest"
+  echo "$repo:$tag@$digest"
+}
+
+# Every image first, file second: a failure leaves the old pins untouched.
+for img in $(prebuilt_images); do
+  pin "$img" >"$tmp/$img.ref"
+  echo "ok: $(cat "$tmp/$img.ref")"
 done
 
-live=$(curl -fsSI -H "Authorization: Bearer $token" -H "Accept: $accept" \
-         "https://ghcr.io/v2/$name/manifests/$tag" 2>/dev/null \
-       | tr -d '\r' | sed -n 's/^[Dd]ocker-[Cc]ontent-[Dd]igest: //p') || true
-[[ -n "$live" ]] || die "ghcr.io has no tag $tag: this tree's image has not been published (run the nvpn image workflow with publish on)"
-[[ "$live" == "$digest" ]] || die "$repo:$tag points at $live, not $digest. Pin the digest the tag points at, from the run that published this tree"
-
-# Who built it: only a run of this repo's own workflow, from main, can have
-# signed this. A digest pushed by hand, or by a run on another branch, fails.
-gh attestation verify "oci://$repo@$digest" \
-    --repo btcforplebs/sovereign-dns \
-    --signer-workflow btcforplebs/sovereign-dns/.github/workflows/nvpn-image.yml \
-    --source-ref refs/heads/main >/dev/null \
-  || die "no build attestation from the nvpn-image workflow on main for $digest"
-
-ref="$repo:$tag@$digest"
-cat >docker-compose.prebuilt.yml <<EOF
+{
+  cat <<'EOF2'
 # GENERATED by scripts/repin-prebuilt.sh; do not edit by hand.
 #
-# The ready-made NostrVPN image the installer downloads instead of compiling
-# nvpn on the device. CI built it (.github/workflows/nvpn-image.yml) from this
-# repo's nvpn/ folder at the NVPN_COMMIT in docker-compose.yml, for linux/amd64
-# and linux/arm64. The tag names that commit and a hash of nvpn/, so
-# scripts/check-pins.sh fails if either moves without a repin. The digest is
-# what Docker checks every downloaded byte against.
+# The ready-made images the installer downloads instead of building each
+# service on the device. CI built each one (.github/workflows/nvpn-image.yml)
+# from one folder of this repo (nvpn/, unbound/, hub/, docs/; nvpn/ at the
+# NVPN_COMMIT in docker-compose.yml), for linux/amd64 and linux/arm64. Each tag
+# names a hash of its folder, so scripts/check-pins.sh fails if a folder moves
+# without a repin. The digest is what Docker checks every downloaded byte
+# against.
 #
 # The installer loads this file on top of docker-compose.yml, by writing
-# COMPOSE_FILE into .env, when this device can pull the image. Otherwise, and
-# when SOVEREIGN_DNS_BUILD_FROM_SOURCE=1, it builds nvpn from source as before.
+# COMPOSE_FILE into .env, when this device can pull every image. Otherwise, and
+# when SOVEREIGN_DNS_BUILD_FROM_SOURCE=1, it builds them from source as before.
 # Delete this file to make every install build from source.
 services:
-  nvpn:
-    build: !reset null
-    image: $ref
-  web:
-    build: !reset null
-    image: $ref
-EOF
-echo "wrote docker-compose.prebuilt.yml: $ref"
+EOF2
+  for img in $(prebuilt_images); do
+    for s in $(prebuilt_services "$img"); do
+      printf '  %s:\n    build: !reset null\n    image: %s\n' "$s" "$(cat "$tmp/$img.ref")"
+    done
+  done
+} >docker-compose.prebuilt.yml
+echo "wrote docker-compose.prebuilt.yml"
 scripts/make-installer.sh

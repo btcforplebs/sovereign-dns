@@ -13,30 +13,35 @@ person who tags the release.
 - [ ] Fetch both from the published URL with `curl` and run
       `shasum -a 256 -c install.sh.sha256` on what came back.
 
-## The ready-made nvpn image
+## The ready-made images
 
-Installs download a prebuilt nvpn image instead of compiling nvpn (about 35
-minutes on a Raspberry Pi 4) whenever `docker-compose.prebuilt.yml` exists
-and pins an image for the device's architecture. Without that file, every
-install builds from source, as before.
+Installs download prebuilt images for every service the stack builds (nvpn
+and the web panel, Unbound, the hub and its gates, the docs site) instead of
+building them on the device, whenever `docker-compose.prebuilt.yml` exists and
+every image has a build for the device's architecture. nvpn alone takes about
+35 minutes to compile on a Raspberry Pi 4. Without that file, every install
+builds from source, as before.
 
-`scripts/check-pins.sh` fails when the pin no longer matches the tree: a new
-`NVPN_COMMIT`, or any edit under `nvpn/`, changes the tag the tree builds
-(`scripts/lib/nvpn-image.sh`). Then either repin, or delete
+Each image is built from one folder (`nvpn/`, `unbound/`, `hub/`, `docs/`),
+and its tag names a hash of that folder (plus `NVPN_COMMIT` for nvpn;
+`scripts/lib/prebuilt-images.sh`). `scripts/check-pins.sh` fails when a pin no
+longer matches the tree: any edit in one of those folders, a docs page
+included, changes its tag. Then either repin, or delete
 `docker-compose.prebuilt.yml` and regenerate `install.sh` so installs build
-from source until the new image exists.
+from source until the new images exist.
 
-To publish and pin one:
+To publish and pin:
 
-- [ ] On `main`, at the commit to release: Actions → **nvpn image** → Run
-      workflow, with **publish** ticked. It builds linux/amd64 and
-      linux/arm64 natively and pushes them to
-      `ghcr.io/btcforplebs/sovereign-dns-nvpn`, then prints the digest.
-- [ ] First publish only: make the package public in its GitHub settings.
-      A private package makes every install fall back to source.
-- [ ] `scripts/repin-prebuilt.sh sha256:<digest>`. It checks with ghcr.io,
-      anonymously, that the digest is real, has both architectures, and is
-      what this tree's tag points at, then writes the override and
-      regenerates `install.sh`.
+- [ ] Merge to `main`. Every push to `main` runs Actions → **prebuilt
+      images**, which builds the images whose tag is not on ghcr.io yet,
+      for linux/amd64 and linux/arm64 natively, pushes them to
+      `ghcr.io/btcforplebs/sovereign-dns-<folder>`, and signs their build
+      provenance. (Run workflow with **publish** ticked does the same by hand.)
+- [ ] First publish of a package only: make it public in its GitHub
+      settings. A private package makes every install fall back to source.
+- [ ] `scripts/repin-prebuilt.sh`. For each image it asks ghcr.io,
+      anonymously, for the tag this tree names, checks the index hashes to its
+      digest, has both architectures, and carries the workflow's attestation
+      from `main`, then writes the override and regenerates `install.sh`.
 - [ ] `scripts/check-pins.sh --verify-remote` passes, then commit and release
       as above.

@@ -47,8 +47,8 @@ dockerfiles=$(git ls-files '*[Dd]ockerfile*')
 # and any of them can be passed with -f.
 compose_files=$(git ls-files '*compose*.yml' '*compose*.yaml')
 [[ -n "$compose_files" ]] || fail "no tracked compose file found"
-# Optional: the override that swaps the nvpn source build for a ready-made
-# image (written by scripts/repin-prebuilt.sh, checked near the end).
+# Optional: the override that swaps the source builds for ready-made
+# images (written by scripts/repin-prebuilt.sh, checked near the end).
 prebuilt=docker-compose.prebuilt.yml
 
 # Read each compose file the way compose reads it. `docker compose config
@@ -710,41 +710,61 @@ done < <(sed -nE "s/^[[:space:]]*(-[[:space:]]*)?[\"']?FTLCONF_misc_dnsmasq_line
 surface /dev/stdin <"$loaded" | grep -Fqx "pihole	network_mode	service:nvpn" \
   || fail "pihole must set network_mode: service:nvpn in the compose files the installer loads"
 
-# The prebuilt override (optional). It may do one thing: swap nvpn and web
-# from the source build to one ready-made image. That image must be the one
-# this tree builds: its tag names NVPN_COMMIT and a hash of nvpn/
-# (scripts/lib/nvpn-image.sh), and its digest is what Docker checks every
-# downloaded byte against. A tree that moved on (a new commit, an edited
-# entrypoint.sh) fails here until someone repins, or deletes the file so
-# installs build from source again.
+# The prebuilt override (optional). It may do one thing: swap each service the
+# stack builds from source for one ready-made image. Each image must be the one
+# this tree builds: its tag names a hash of its folder (and NVPN_COMMIT for
+# nvpn; scripts/lib/prebuilt-images.sh), and its digest is what Docker checks
+# every downloaded byte against. A tree that moved on (a new commit, an edited
+# entrypoint.sh, a docs page) fails here until someone repins, or deletes the
+# file so installs build from source again.
 if grep -Fqx -- "$prebuilt" <<<"$compose_files"; then
-  # shellcheck source=lib/nvpn-image.sh
-  source scripts/lib/nvpn-image.sh
-  want=$(nvpn_image_repo):$(nvpn_image_tag) || want=
-  [[ "$want" == *:nvpn-* ]] || fail "$prebuilt: could not work out which image this tree builds"
-  imgs=$(sed -nE 's/^[[:space:]]*image:[[:space:]]*//p' "$prebuilt" | sed -E 's/[[:space:]]+#.*$//; s/[[:space:]]+$//' | sort -u)
-  img=$(head -n1 <<<"$imgs")
+  # shellcheck source=lib/prebuilt-images.sh
+  source scripts/lib/prebuilt-images.sh
   # Exact shape, default-deny: anything else in this file (a port, a mount,
   # another service) would ride into every install that takes the fast path.
-  shape=$(grep -Ev '^[[:space:]]*(#|$)' "$prebuilt" | sed -E 's/^([[:space:]]*image:).*/\1 IMG/')
-  expected=$(printf '%s\n' 'services:' '  nvpn:' '    build: !reset null' '    image: IMG' '  web:' '    build: !reset null' '    image: IMG')
-  if [[ "$shape" != "$expected" ]]; then
-    fail "$prebuilt must be exactly what scripts/repin-prebuilt.sh writes: services nvpn and web, each with 'build: !reset null' and one image"
-  elif [[ $(wc -l <<<"$imgs") -ne 1 ]]; then
-    fail "$prebuilt: nvpn and web must use the same image"
-  elif ! grep -Eq -- "$digest\$" <<<"$img"; then
-    fail "$prebuilt image $img"
-  elif [[ "${img%@*}" != "$want" ]]; then
-    fail "$prebuilt pins ${img%@*}, but this tree builds $want. The image no longer matches nvpn/ or NVPN_COMMIT: publish the new one and run scripts/repin-prebuilt.sh, or delete $prebuilt so installs build from source"
+  expected=$(echo services:; for i in $(prebuilt_images); do for s in $(prebuilt_services "$i"); do
+               printf '  %s:\n    build: !reset null\n    image: IMG-%s\n' "$s" "$i"; done; done)
+  shape=$(grep -Ev '^[[:space:]]*(#|$)' "$prebuilt" \
+            | awk 'match($0, /^  [a-z-]+:$/) { s = substr($0, 3, length($0) - 3) } { print s "\t" $0 }')
+  got=$(cut -f2- <<<"$shape" | sed -E 's/^([[:space:]]*image:).*/\1 IMG/')
+  if [[ "$got" != "$(sed -E 's/^([[:space:]]*image:).*/\1 IMG/' <<<"$expected")" ]]; then
+    fail "$prebuilt must be exactly what scripts/repin-prebuilt.sh writes: $(for i in $(prebuilt_images); do prebuilt_services "$i"; done | tr '\n' ' ')each with 'build: !reset null' and one image"
+  else
+    for i in $(prebuilt_images); do
+      want=$(prebuilt_repo "$i"):$(prebuilt_tag "$i") || want=
+      [[ "$want" == *:"$i"-* ]] || { fail "$prebuilt: could not work out which $i image this tree builds"; continue; }
+      for s in $(prebuilt_services "$i"); do
+        img=$(awk -F'\t' -v s="$s" '$1 == s && $2 ~ /^    image:/ { sub(/^    image:[[:space:]]*/, "", $2); sub(/[[:space:]]+#.*$/, "", $2); print $2 }' <<<"$shape")
+        if ! grep -Eq -- "$digest\$" <<<"$img"; then
+          fail "$prebuilt $s image $img"
+        elif [[ "${img%@*}" != "$want" ]]; then
+          fail "$prebuilt pins ${img%@*} for $s, but this tree builds $want. The image no longer matches $i/$([[ "$i" == nvpn ]] && echo " or NVPN_COMMIT"): publish the new one (every push to main does) and run scripts/repin-prebuilt.sh, or delete $prebuilt so installs build from source"
+        fi
+        # The services sharing an image run one digest, not two pins of a tag.
+        first=$(awk -F'\t' -v s="$(prebuilt_services "$i" | cut -d' ' -f1)" '$1 == s && $2 ~ /^    image:/ { sub(/^    image:[[:space:]]*/, "", $2); print $2 }' <<<"$shape")
+        [[ "$img" == "$first" ]] || fail "$prebuilt: $s and $(prebuilt_services "$i" | cut -d' ' -f1) must run the same $i image"
+        # The source build this replaces must be the one CI built: the image's
+        # own folder as the whole context, its Dockerfile, and no build args
+        # beyond nvpn's (whose values the gate above holds to the Dockerfile).
+        blk=$(awk -v s="$s" '$0 == "  " s ":" { a = 1; next } a && /^  [^[:space:]#]/ { a = 0 } a' "$(yaml docker-compose.yml)")
+        ctx=$(sed -nE 's/^      context:[[:space:]]*//p' <<<"$blk"); ctx=${ctx#"$root"/}; ctx=${ctx#./}
+        [[ "$ctx" == "$i" ]] || fail "docker-compose.yml: $s builds from '$ctx', but its prebuilt image is built from $i/"
+        df=$(sed -nE 's/^      dockerfile:[[:space:]]*//p' <<<"$blk")
+        [[ -z "$df" || "$df" == Dockerfile ]] || fail "docker-compose.yml: $s builds $df, but its prebuilt image is built from $i/Dockerfile"
+        [[ "$i" == nvpn ]] || ! grep -Eq '^      args:' <<<"$blk" \
+          || fail "docker-compose.yml: $s sets build args, which its prebuilt image was not built with"
+      done
+    done
   fi
   # And the merge must really drop the source build: `!reset` needs compose
   # 2.24 or later, and an older compose would keep build: beside image:.
   if [[ "$mode" == rendered ]]; then
-    for s in nvpn web; do
+    for i in $(prebuilt_images); do for s in $(prebuilt_services "$i"); do
+      img=$(awk -F'\t' -v s="$s" '$1 == s && $2 ~ /^    image:/ { sub(/^    image:[[:space:]]*/, "", $2); sub(/[[:space:]]+#.*$/, "", $2); print $2 }' <<<"$shape")
       blk=$(awk -v s="$s" '$0 == "  " s ":" { a = 1; next } a && /^  [^[:space:]#]/ { a = 0 } a' "$(yaml "$prebuilt")")
       grep -Eq '^    build:' <<<"$blk" && fail "$prebuilt: merged with docker-compose.yml, $s still has a build: section"
       grep -Fqx -- "    image: $img" <<<"$blk" || fail "$prebuilt: merged with docker-compose.yml, $s does not run $img"
-    done
+    done; done
   fi
 fi
 
@@ -762,7 +782,7 @@ if [[ "${1:-}" == "--verify-remote" ]]; then
     [[ "${ref%%@*}" =~ :[A-Za-z0-9._-]+$ && "${ref%%@*}" != *:*/* ]] || { mismatch "$ref: no tag beside the digest, not checked"; continue; }
     name=${ref%%:*}; rest=${ref#*:}; tag=${rest%%@*}; pin=${rest#*@}
     [[ "$name" == */* ]] || name="library/$name"
-    # Docker Hub, plus GitHub's registry for the prebuilt nvpn image. Both hand
+    # Docker Hub, plus GitHub's registry for the prebuilt images. Both hand
     # out anonymous pull tokens for public images.
     reg=registry-1.docker.io; auth="https://auth.docker.io/token?service=registry.docker.io&scope=repository:$name:pull"
     if [[ "${name%%/*}" == ghcr.io ]]; then

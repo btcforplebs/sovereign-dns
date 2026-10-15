@@ -174,20 +174,20 @@ it keeps your password and settings.
 
 ## Step 4: Wait while it builds (a few minutes, or 10 to 40)
 
-If a ready-made copy of the encrypted network software exists for your
-computer, you'll see:
+If ready-made copies of the box's software exist for your computer,
+you'll see:
 
 ```text
-Downloading the ready-made NostrVPN image (Docker checks it against its pinned fingerprint)...
+Downloading the ready-made images (Docker checks each against its pinned fingerprint)...
 ```
 
 then:
 
 ```text
-Building and starting (a few minutes on a Raspberry Pi; later runs are fast)...
+Starting (a few minutes on a Raspberry Pi; later runs are fast)...
 ```
 
-If there isn't one, the installer builds it from source instead, and you'll
+If there aren't, the installer builds them from source instead, and you'll
 see:
 
 ```text
