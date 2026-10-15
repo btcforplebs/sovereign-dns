@@ -14,7 +14,8 @@
 # workflow on main, with "publish" ticked). Pushes the missing images to
 # ghcr.io/btcforplebs/sovereign-dns-<folder> under the tag the tree names, and
 # signs build provenance for each index digest, which
-# scripts/repin-prebuilt.sh checks before pinning. A package's first publish
+# scripts/repin-prebuilt.sh checks before pinning, including that the commit
+# it names builds the tag. A package's first publish
 # creates it as private: make it public in the package settings, or installs
 # cannot pull it and fall back to source.
 #
@@ -224,6 +225,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Pushed by digest only, with no per-architecture tag: nothing in the
+      # registry names these bytes except the index below, which is built from
+      # the digests this job hands over, never from a tag that could be moved
+      # in between.
       - name: Build and push ${{ matrix.img }} linux/${{ matrix.arch }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -231,14 +236,25 @@ jobs:
         run: |
           set -euo pipefail
           source scripts/lib/prebuilt-images.sh
-          repo=$(prebuilt_repo "$IMG"); tag=$(prebuilt_tag "$IMG")
+          repo=$(prebuilt_repo "$IMG")
           labels=(--label "org.opencontainers.image.source=https://github.com/${{ github.repository }}"
                   --label "org.opencontainers.image.revision=${{ github.sha }}")
           if [[ "$IMG" == nvpn ]]; then labels+=(--label "nvpn.commit=$(nvpn_image_commit)"); fi
           printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
           docker buildx create --use --driver docker-container --driver-opt "image=$BUILDKIT_IMAGE"
-          docker buildx build --platform "linux/${{ matrix.arch }}" --push "${labels[@]}" \
-            -t "$repo:$tag-${{ matrix.arch }}" "$IMG"
+          docker buildx build --platform "linux/${{ matrix.arch }}" "${labels[@]}" \
+            --output "type=image,name=$repo,push-by-digest=true,name-canonical=true,push=true" \
+            --metadata-file "$RUNNER_TEMP/meta.json" "$IMG"
+          mkdir -p "$RUNNER_TEMP/digest"
+          python3 -c 'import json,sys; d=json.load(open(sys.argv[1]))["containerimage.digest"]; assert d.startswith("sha256:") and len(d) == 71, d; print(d)' \
+            "$RUNNER_TEMP/meta.json" > "$RUNNER_TEMP/digest/${{ matrix.arch }}"
+          cat "$RUNNER_TEMP/digest/${{ matrix.arch }}"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: digest-${{ matrix.img }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digest/${{ matrix.arch }}
+          if-no-files-found: error
+          retention-days: 1
 
   index:
     needs: [plan, publish]
@@ -250,14 +266,20 @@ jobs:
       contents: read
       packages: write
       # Signed build provenance for the index digest: repin-prebuilt.sh
-      # refuses a digest this workflow, on main, did not attest.
+      # refuses a digest this workflow, on main, did not attest, and holds the
+      # commit it names to the tag it pins.
       id-token: write
       attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: One tag for both architectures
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: digest-${{ matrix.img }}-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/digest
+      - name: One tag for both architectures, from their digests
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           IMG: ${{ matrix.img }}
@@ -265,16 +287,23 @@ jobs:
           set -euo pipefail
           source scripts/lib/prebuilt-images.sh
           repo=$(prebuilt_repo "$IMG"); tag=$(prebuilt_tag "$IMG")
+          refs=()
+          for arch in amd64 arm64; do
+            d=$(cat "$RUNNER_TEMP/digest/$arch")
+            [[ "$d" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "bad $arch digest '$d'" >&2; exit 1; }
+            refs+=("$repo@$d")
+          done
           printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          docker buildx imagetools create -t "$repo:$tag" "$repo:$tag-amd64" "$repo:$tag-arm64"
-          digest=$(docker buildx imagetools inspect "$repo:$tag" --format '{{json .Manifest}}' | python3 -c 'import json,sys; print(json.load(sys.stdin)["digest"])')
+          docker buildx imagetools create --metadata-file "$RUNNER_TEMP/index.json" -t "$repo:$tag" "${refs[@]}"
+          digest=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["containerimage.digest"])' "$RUNNER_TEMP/index.json")
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "bad index digest '$digest'" >&2; exit 1; }
           echo "REPO=$repo" >> "$GITHUB_ENV"
           echo "DIGEST=$digest" >> "$GITHUB_ENV"
           {
             echo "### Published $repo:$tag"
-            echo "Digest: \`$digest\`"
+            echo "Digest: \`$digest\` (amd64 ${refs[0]#*@}, arm64 ${refs[1]#*@})"
             echo
-            echo "Make the package public (first publish only). Once every image is published, pin them: \`scripts/repin-prebuilt.sh\`"
+            echo "Make the package public (first publish only), then pin: \`scripts/repin-prebuilt.sh\`"
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Attest build provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2

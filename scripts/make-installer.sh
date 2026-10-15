@@ -203,7 +203,8 @@ fi
 
 # Fast path: download ready-made images instead of building every service
 # here (nvpn alone takes about 35 minutes on a Raspberry Pi 4, the docs site
-# another 10 or more). docker-compose.prebuilt.yml pins each one by digest, so
+# another 10 or more). docker-compose.prebuilt.yml pins each one it has by
+# digest (an image left out builds from source), so
 # Docker checks every byte it downloads against the pin. No such file, an
 # image with no build for this device, a compose too old for the override, or
 # a failed download all fall back to the source build, and so does
@@ -240,7 +241,7 @@ fi
 echo
 from_source_msg="Building and starting (the first run compiles from source and can take 10-15 minutes, 20-40 on a Raspberry Pi; later runs are fast)..."
 if [[ "$prebuilt" == "1" ]]; then
-  echo "Starting (a few minutes on a Raspberry Pi; later runs are fast)..."
+  echo "Starting (a few minutes on a Raspberry Pi; anything without a ready-made image builds first; later runs are fast)..."
   # If the ready-made images downloaded but the stack then fails to start,
   # leaving COMPOSE_FILE in .env would keep every recovery (`docker compose
   # up -d`, or running this installer again) on the same broken image. Drop

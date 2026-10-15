@@ -17,18 +17,19 @@ person who tags the release.
 
 Installs download prebuilt images for every service the stack builds (nvpn
 and the web panel, Unbound, the hub and its gates, the docs site) instead of
-building them on the device, whenever `docker-compose.prebuilt.yml` exists and
-every image has a build for the device's architecture. nvpn alone takes about
-35 minutes to compile on a Raspberry Pi 4. Without that file, every install
-builds from source, as before.
+building them on the device, for every image `docker-compose.prebuilt.yml`
+pins (when each has a build for the device's architecture). nvpn alone takes
+about 35 minutes to compile on a Raspberry Pi 4. An image left out of the file
+builds from source; without the file, everything does, as before.
 
 Each image is built from one folder (`nvpn/`, `unbound/`, `hub/`, `docs/`),
 and its tag names a hash of that folder (plus `NVPN_COMMIT` for nvpn;
 `scripts/lib/prebuilt-images.sh`). `scripts/check-pins.sh` fails when a pin no
 longer matches the tree: any edit in one of those folders, a docs page
-included, changes its tag. Then either repin, or delete
-`docker-compose.prebuilt.yml` and regenerate `install.sh` so installs build
-from source until the new images exist.
+included, changes its tag. Then run `scripts/repin-prebuilt.sh` in the same
+PR: the new image is not published yet, so it leaves that image out and its
+services build from source. After the merge publishes it, repin again to put
+it back.
 
 To publish and pin:
 
@@ -41,7 +42,9 @@ To publish and pin:
       settings. A private package makes every install fall back to source.
 - [ ] `scripts/repin-prebuilt.sh`. For each image it asks ghcr.io,
       anonymously, for the tag this tree names, checks the index hashes to its
-      digest, has both architectures, and carries the workflow's attestation
-      from `main`, then writes the override and regenerates `install.sh`.
+      digest, has both architectures, carries the workflow's attestation from
+      `main`, and that the commit the attestation names builds that same tag.
+      Then it writes the override and regenerates `install.sh`. Images not
+      published (or not public) are left out.
 - [ ] `scripts/check-pins.sh --verify-remote` passes, then commit and release
       as above.

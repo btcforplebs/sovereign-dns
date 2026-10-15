@@ -710,27 +710,35 @@ done < <(sed -nE "s/^[[:space:]]*(-[[:space:]]*)?[\"']?FTLCONF_misc_dnsmasq_line
 surface /dev/stdin <"$loaded" | grep -Fqx "pihole	network_mode	service:nvpn" \
   || fail "pihole must set network_mode: service:nvpn in the compose files the installer loads"
 
-# The prebuilt override (optional). It may do one thing: swap each service the
-# stack builds from source for one ready-made image. Each image must be the one
-# this tree builds: its tag names a hash of its folder (and NVPN_COMMIT for
-# nvpn; scripts/lib/prebuilt-images.sh), and its digest is what Docker checks
-# every downloaded byte against. A tree that moved on (a new commit, an edited
-# entrypoint.sh, a docs page) fails here until someone repins, or deletes the
-# file so installs build from source again.
+# The prebuilt override (optional). It may do one thing: swap the services of
+# some or all of the images the stack builds from source for one ready-made
+# image each. An image left out is built from source; an image in it must be
+# the one this tree builds: its tag names a hash of its folder (and
+# NVPN_COMMIT for nvpn; scripts/lib/prebuilt-images.sh), and its digest is
+# what Docker checks every downloaded byte against. A tree that moved on (a
+# new commit, an edited entrypoint.sh, a docs page) fails here until someone
+# repins: scripts/repin-prebuilt.sh drops images not yet published for the new
+# tree, so it works inside the PR that made the edit.
 if grep -Fqx -- "$prebuilt" <<<"$compose_files"; then
   # shellcheck source=lib/prebuilt-images.sh
   source scripts/lib/prebuilt-images.sh
   # Exact shape, default-deny: anything else in this file (a port, a mount,
   # another service) would ride into every install that takes the fast path.
-  expected=$(echo services:; for i in $(prebuilt_images); do for s in $(prebuilt_services "$i"); do
+  # An image is in the file when its first service is. Then all of its
+  # services must be, in the order repin writes.
+  present=$(for i in $(prebuilt_images); do
+              grep -Fqx -- "  $(prebuilt_services "$i" | cut -d' ' -f1):" "$prebuilt" && echo "$i"; done || true)
+  expected=$(echo services:; for i in $present; do for s in $(prebuilt_services "$i"); do
                printf '  %s:\n    build: !reset null\n    image: IMG-%s\n' "$s" "$i"; done; done)
   shape=$(grep -Ev '^[[:space:]]*(#|$)' "$prebuilt" \
             | awk 'match($0, /^  [a-z-]+:$/) { s = substr($0, 3, length($0) - 3) } { print s "\t" $0 }')
   got=$(cut -f2- <<<"$shape" | sed -E 's/^([[:space:]]*image:).*/\1 IMG/')
   if [[ "$got" != "$(sed -E 's/^([[:space:]]*image:).*/\1 IMG/' <<<"$expected")" ]]; then
-    fail "$prebuilt must be exactly what scripts/repin-prebuilt.sh writes: $(for i in $(prebuilt_images); do prebuilt_services "$i"; done | tr '\n' ' ')each with 'build: !reset null' and one image"
+    fail "$prebuilt must be exactly what scripts/repin-prebuilt.sh writes: for each image it pins, all of its services ($(for i in $(prebuilt_images); do echo "$i: $(prebuilt_services "$i");"; done | tr '\n' ' ')in that order), each with 'build: !reset null' and one image"
+  elif [[ -z "$present" ]]; then
+    fail "$prebuilt pins no image; delete it so installs build from source"
   else
-    for i in $(prebuilt_images); do
+    for i in $present; do
       want=$(prebuilt_repo "$i"):$(prebuilt_tag "$i") || want=
       [[ "$want" == *:"$i"-* ]] || { fail "$prebuilt: could not work out which $i image this tree builds"; continue; }
       for s in $(prebuilt_services "$i"); do
@@ -738,7 +746,7 @@ if grep -Fqx -- "$prebuilt" <<<"$compose_files"; then
         if ! grep -Eq -- "$digest\$" <<<"$img"; then
           fail "$prebuilt $s image $img"
         elif [[ "${img%@*}" != "$want" ]]; then
-          fail "$prebuilt pins ${img%@*} for $s, but this tree builds $want. The image no longer matches $i/$([[ "$i" == nvpn ]] && echo " or NVPN_COMMIT"): publish the new one (every push to main does) and run scripts/repin-prebuilt.sh, or delete $prebuilt so installs build from source"
+          fail "$prebuilt pins ${img%@*} for $s, but this tree builds $want. The image no longer matches $i/$([[ "$i" == nvpn ]] && echo " or NVPN_COMMIT"): run scripts/repin-prebuilt.sh, which pins it once published (every push to main publishes) and until then leaves it out, so $i builds from source"
         fi
         # The services sharing an image run one digest, not two pins of a tag.
         first=$(awk -F'\t' -v s="$(prebuilt_services "$i" | cut -d' ' -f1)" '$1 == s && $2 ~ /^    image:/ { sub(/^    image:[[:space:]]*/, "", $2); print $2 }' <<<"$shape")
@@ -759,7 +767,7 @@ if grep -Fqx -- "$prebuilt" <<<"$compose_files"; then
   # And the merge must really drop the source build: `!reset` needs compose
   # 2.24 or later, and an older compose would keep build: beside image:.
   if [[ "$mode" == rendered ]]; then
-    for i in $(prebuilt_images); do for s in $(prebuilt_services "$i"); do
+    for i in $present; do for s in $(prebuilt_services "$i"); do
       img=$(awk -F'\t' -v s="$s" '$1 == s && $2 ~ /^    image:/ { sub(/^    image:[[:space:]]*/, "", $2); sub(/[[:space:]]+#.*$/, "", $2); print $2 }' <<<"$shape")
       blk=$(awk -v s="$s" '$0 == "  " s ":" { a = 1; next } a && /^  [^[:space:]#]/ { a = 0 } a' "$(yaml "$prebuilt")")
       grep -Eq '^    build:' <<<"$blk" && fail "$prebuilt: merged with docker-compose.yml, $s still has a build: section"

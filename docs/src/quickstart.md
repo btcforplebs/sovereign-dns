@@ -184,7 +184,7 @@ Downloading the ready-made images (Docker checks each against its pinned fingerp
 then:
 
 ```text
-Starting (a few minutes on a Raspberry Pi; later runs are fast)...
+Starting (a few minutes on a Raspberry Pi; anything without a ready-made image builds first; later runs are fast)...
 ```
 
 If there aren't, the installer builds them from source instead, and you'll
