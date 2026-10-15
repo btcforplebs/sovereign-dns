@@ -277,8 +277,8 @@ and the other two on the box.
    network yet. Treat the link like a one-time password: it carries a
    secret the device uses to accept its approval, so don't send it through
    chat or email. On its own it changes nothing on the box.
-2. **Paste it on the box.** On the dashboard (or step 2 of the setup
-   guide), paste the link into **Add a device**. If the box's computer has
+2. **Paste it on the box.** On the dashboard (or step 3 of the setup
+   guide, *A phone or computer*), paste the link into **Add a device**. If the box's computer has
    a camera and you use Chrome or Edge, you can press **Scan its QR code**
    and hold the phone's QR code up to it instead. The hub shows the
    device's name and its device ID. Press **Add device**, but only if you
@@ -327,6 +327,25 @@ From here, add each of your other devices the same way (Step 6).
   you need, or see what each device looked up.
 - **The Control Panel** at `http://localhost:8082` (on the box) is where
   you approve, rename or remove devices.
+
+### A second DNS box
+
+A second box keeps your network answering when the first one is off,
+asleep or being updated. Install Sovereign-DNS on the other machine the
+same way (Steps 1 to 5). Its setup asks **First box or another one?**:
+pick **I already have a box**. Then two pastes, one each way:
+
+1. On the **first** box, under **Add another DNS box** (on the dashboard,
+   or step 3 of its setup, *Another DNS box*), copy the **join code**.
+   Paste it into the new box's setup and press **Join**. The code isn't a
+   password: it only tells the new box which network to ask for.
+2. The new box then shows its own **ID** (`npub1…`). Paste that into the
+   first box, under the join code, and press **Add this box**. That is the
+   approval; nothing joins until you do it.
+
+The new box's setup says **You're set** a few seconds later. It leaves the
+network it made for itself, so pick *I already have a box* only on a box
+no device uses yet. The setup refuses on a box that already has devices.
 
 ### Your dashboard from your phone, anywhere
 

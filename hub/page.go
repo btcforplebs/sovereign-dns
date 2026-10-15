@@ -228,6 +228,13 @@ const pageHTML = `<!doctype html>
     {{end}}
   </div>
 
+  {{if and .AddReady .JoinCode}}
+  <h2 id="add-box">Add another DNS box</h2>
+  <div class="card">
+    {{template "boxcard" .}}
+  </div>
+  {{end}}
+
   {{if .Devices}}
   <h2>Devices on this network</h2>
   <div class="card">

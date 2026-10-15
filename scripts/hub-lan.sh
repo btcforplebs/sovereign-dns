@@ -20,6 +20,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 # shellcheck source=lib/hub-password.sh
 source scripts/lib/hub-password.sh
+# shellcheck source=lib/lan-ip.sh
+source scripts/lib/lan-ip.sh
 
 die() { printf '%s\n' "$*" >&2; exit 1; }
 [[ -f .env ]] || die "No .env here. Run this from the sovereign-dns folder the installer made."
@@ -29,20 +31,6 @@ restart=1
 [[ "${2:-}" == "--no-restart" ]] && restart=0
 
 hub_port() { local p; p=$(grep '^HUB_PORT=' .env | cut -d= -f2 || true); echo "${p:-8080}"; }
-
-# This box's address on the home network: the one it would use to reach the
-# internet, which is the LAN address behind a home router.
-lan_ip() {
-  local ip=""
-  if command -v ip >/dev/null 2>&1; then
-    ip=$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -n1)
-  elif command -v route >/dev/null 2>&1 && command -v ipconfig >/dev/null 2>&1; then
-    local ifc
-    ifc=$(route -n get default 2>/dev/null | awk '/interface:/ { print $2 }')
-    [[ -n "$ifc" ]] && ip=$(ipconfig getifaddr "$ifc" 2>/dev/null || true)
-  fi
-  echo "$ip"
-}
 
 print_urls() {
   local port ip name

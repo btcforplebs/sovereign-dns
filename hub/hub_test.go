@@ -68,7 +68,7 @@ func TestWizardShowsPanelError(t *testing.T) {
 // join list with no reason given.
 func TestWizardLaterStepsCarryPanelError(t *testing.T) {
 	mux := newMux(deadConfig(t))
-	for step := 2; step <= wizardSteps; step++ {
+	for step := 2; step <= len(firstBoxSteps); step++ {
 		body := get(t, mux, fmt.Sprintf("/setup?step=%d", step)).Body.String()
 		if !strings.Contains(body, `<div class="err">`) || !strings.Contains(body, "connection refused") {
 			t.Errorf("step %d does not show the panel error banner", step)
@@ -92,14 +92,21 @@ func TestStateKeyTracksPiholeURL(t *testing.T) {
 // write so a test can prove one did or did not happen.
 type fakePanel struct {
 	override   bool
-	ignore     bool // accept writes without applying them
-	noNode     bool // no DNS device chosen yet
-	decoyFirst bool // list an inactive network before the active one
-	noActive   bool // leave the top-level networkId blank
-	noNetworks bool // answer with an empty networks list
-	notAdmin   bool // this box is a member, not an admin
-	dropJoin   bool // accept an import without adding the device
-	selfEarly  bool // list the box itself before its state reads "local"
+	ignore     bool   // accept writes without applying them
+	noNode     bool   // no DNS device chosen yet
+	decoyFirst bool   // list an inactive network before the active one
+	noActive   bool   // leave the top-level networkId blank
+	noNetworks bool   // answer with an empty networks list
+	notAdmin   bool   // this box is a member, not an admin
+	dropJoin   bool   // accept an import without adding the device
+	selfEarly  bool   // list the box itself before its state reads "local"
+	alone      bool   // a fresh box: nobody but itself on its network
+	dropManual bool   // accept a manual join without switching networks
+	dropBox    bool   // accept an added box without listing it
+	joinedTo   string // network ID this box asked to join (manual join)
+	joinAdmin  string // that network's admin
+	admitted   bool   // the admin's roster has taken this box in
+	selfNpub   string // this box's own ID, when "npub1box" won't do
 	added      []string
 	writes     []*http.Request
 	bodies     []map[string]any
@@ -113,6 +120,9 @@ func (f *fakePanel) handler() http.Handler {
 			node = ""
 		}
 		participants := []map[string]any{{"alias": "laptop", "state": "online", "reachable": true}}
+		if f.alone {
+			participants = nil
+		}
 		if f.selfEarly {
 			participants = append(participants, map[string]any{"npub": "npub1box", "alias": "self", "state": "offline"})
 		}
@@ -132,15 +142,37 @@ func (f *fakePanel) handler() http.Handler {
 			}}, networks...)
 		}
 		active := "9683dbda"
+		if f.joinedTo != "" {
+			// What the real panel answers after /api/manual_add_network: the
+			// box's own network switched off, the first box's running, with
+			// the first box waiting and this box's own entry not yet in its
+			// roster until the first box adds it.
+			networks[0]["enabled"] = false
+			networks = append(networks, map[string]any{
+				"id": "network-2", "name": "Network", "networkId": f.joinedTo, "enabled": true,
+				"localIsAdmin": false, "adminNpubs": []string{f.joinAdmin}, "dnsNodeNpub": f.joinAdmin,
+				"participants": []map[string]any{
+					{"npub": f.joinAdmin, "state": "pending", "statusText": "waiting for admin"},
+					{"npub": "npub1box", "state": "local", "rosterAccepted": f.admitted},
+				},
+			})
+			active = f.joinedTo
+		} else {
+			networks[0]["enabled"] = true
+		}
 		if f.noActive {
 			active = ""
 		}
 		if f.noNetworks {
 			networks = []map[string]any{}
 		}
+		self := "npub1box"
+		if f.selfNpub != "" {
+			self = f.selfNpub
+		}
 		return map[string]any{
 			"daemonRunning": true,
-			"ownNpub":       "npub1box",
+			"ownNpub":       self,
 			"networkId":     active,
 			"networks":      networks,
 		}
@@ -167,6 +199,28 @@ func (f *fakePanel) handler() http.Handler {
 			// The real panel parses the link; the fake trusts the test's.
 			_, j, _ := parseJoinLink(body["request"].(string))
 			f.added = append(f.added, j.DeviceNpub)
+		}
+		json.NewEncoder(w).Encode(state())
+	})
+	mux.HandleFunc("/api/manual_add_network", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		f.writes = append(f.writes, r)
+		f.bodies = append(f.bodies, body)
+		if !f.dropManual {
+			f.joinedTo, _ = body["meshNetworkId"].(string)
+			f.joinAdmin, _ = body["adminNpub"].(string)
+		}
+		json.NewEncoder(w).Encode(state())
+	})
+	mux.HandleFunc("/api/add_participant", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		f.writes = append(f.writes, r)
+		f.bodies = append(f.bodies, body)
+		if !f.dropBox {
+			npub, _ := body["npub"].(string)
+			f.added = append(f.added, npub)
 		}
 		json.NewEncoder(w).Encode(state())
 	})

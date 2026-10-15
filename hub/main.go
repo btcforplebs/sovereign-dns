@@ -73,13 +73,15 @@ type tick struct {
 }
 
 type tickNetwork struct {
-	ID                  string `json:"id"` // config-local id; the panel's write routes key on this
-	Name                string `json:"name"`
-	NetworkID           string `json:"networkId"`
-	LocalIsAdmin        bool   `json:"localIsAdmin"`
-	DNSNodeNpub         string `json:"dnsNodeNpub"`
-	DNSOverride         bool   `json:"dnsOverride"`
-	LocalIsDNSNode      bool   `json:"localIsDnsNode"`
+	ID                  string   `json:"id"` // config-local id; the panel's write routes key on this
+	Name                string   `json:"name"`
+	NetworkID           string   `json:"networkId"`
+	Enabled             bool     `json:"enabled"`
+	LocalIsAdmin        bool     `json:"localIsAdmin"`
+	AdminNpubs          []string `json:"adminNpubs"`
+	DNSNodeNpub         string   `json:"dnsNodeNpub"`
+	DNSOverride         bool     `json:"dnsOverride"`
+	LocalIsDNSNode      bool     `json:"localIsDnsNode"`
 	InboundJoinRequests []struct {
 		Npub string `json:"npub"`
 	} `json:"inboundJoinRequests"`
@@ -92,6 +94,9 @@ type tickParticipant struct {
 	TunnelIP  string `json:"tunnelIp"`
 	Reachable bool   `json:"reachable"`
 	State     string `json:"state"`
+	// The box's own entry reads false while it waits for the admin's
+	// signed roster after a manual join (boxjoin.go), true once in.
+	RosterAccepted bool `json:"rosterAccepted"`
 	// Presence over the relays is not a data path. A device can be
 	// "online" here and still pass no traffic, so this is what
 	// separates an amber tile from a green one.
@@ -144,6 +149,15 @@ type page struct {
 	CheckName string
 	FirstRun  bool // no device besides this box has ever joined
 
+	// A second DNS box (boxjoin.go). JoinCode is what this box shows for
+	// another box to join it: only when it runs its own network. Member: this
+	// box asked to join another box's network; Admitted: that box's roster
+	// has taken it in. AdminNpub is that other box.
+	JoinCode  string
+	Member    bool
+	Admitted  bool
+	AdminNpub string
+
 	// Request-scoped, never part of /api/status: the form token, and which
 	// confirmation (if any) the dashboard is asking for.
 	CSRF string `json:"-"`
@@ -164,7 +178,8 @@ type page struct {
 
 func main() {
 	// The same binary is the mesh gate (mesh.go), which runs in nvpn's
-	// namespace and has no shell for a healthcheck.
+	// namespace and has no shell for a healthcheck, and the home-network DNS
+	// forwarder (dnslan.go).
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "mesh-gate":
@@ -172,6 +187,11 @@ func main() {
 			return
 		case "mesh-health":
 			os.Exit(meshHealth())
+		case "dns-lan":
+			runDNSLAN()
+			return
+		case "dns-lan-health":
+			os.Exit(dnsLANHealth())
 		default:
 			log.Fatalf("hub: unknown command %q", os.Args[1])
 		}
@@ -219,7 +239,7 @@ func main() {
 // main so tests can serve a request against a config whose probes point at
 // nothing.
 func newMux(cfg config) http.Handler {
-	tmpl := template.Must(template.Must(template.New("page").Parse(pageHTML)).Parse(addCardHTML))
+	tmpl := template.Must(template.Must(template.Must(template.New("page").Parse(pageHTML)).Parse(addCardHTML)).Parse(boxCardHTML))
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/status", func(w http.ResponseWriter, r *http.Request) {
@@ -246,6 +266,8 @@ func newMux(cfg config) http.Handler {
 	mux.HandleFunc("/setup", cfg.serveWizard)
 	mux.HandleFunc("/dns", cfg.serveDNS(tmpl))
 	mux.HandleFunc("/devices/add", cfg.serveAddDevice)
+	mux.HandleFunc("/devices/add-box", cfg.serveAddBox)
+	mux.HandleFunc("/setup/join", cfg.serveJoinFirstBox)
 	mux.Handle("/docs/", docsProxy(cfg.docsAddr))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
@@ -253,7 +275,9 @@ func newMux(cfg config) http.Handler {
 			return
 		}
 		data := cfg.buildPage(r.Context())
-		if data.FirstRun {
+		// A second box waiting for the first box to add it is not set up
+		// yet either, though its roster already lists that box.
+		if data.FirstRun || (data.Member && !data.Admitted) {
 			http.Redirect(w, r, "/setup", http.StatusFound)
 			return
 		}
@@ -404,6 +428,25 @@ func (c config) buildPage(ctx context.Context) page {
 		}
 		if net.NetworkID != "" {
 			p.NetworkID = net.NetworkID
+		}
+
+		if tickErr == nil && matched {
+			if net.LocalIsAdmin {
+				p.JoinCode = joinCode(state.OwnNpub, net.NetworkID)
+			} else {
+				p.Member = true
+				for _, a := range net.AdminNpubs {
+					if a != state.OwnNpub {
+						p.AdminNpub = a
+						break
+					}
+				}
+				for _, participant := range net.Participants {
+					if participant.Npub != "" && participant.Npub == state.OwnNpub {
+						p.Admitted = participant.RosterAccepted
+					}
+				}
+			}
 		}
 
 		carrying := 0
