@@ -246,12 +246,9 @@ func (c config) serveAddBox(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	name := strings.TrimSpace(r.PostForm.Get("name"))
+	name := cleanName(r.PostForm.Get("name"), 40)
 	if name == "" {
 		name = "DNS box 2"
-	}
-	if len(name) > 40 {
-		name = name[:40]
 	}
 
 	// The review step, as for a phone's join link: a pasted or scanned ID

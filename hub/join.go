@@ -36,6 +36,8 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 const (
@@ -44,6 +46,8 @@ const (
 	// (NOSTR_IDENTITY_DEVICE_APPROVAL_BOOTSTRAP_MAX_URI_LENGTH), so anything
 	// longer did not come from a Nostr VPN app.
 	joinLinkMaxLen = 384
+	// The longest device name the review page shows.
+	joinLabelMaxLen = 40
 )
 
 // joinLink is what the review step shows. The payload is unpadded base64url
@@ -82,10 +86,45 @@ func parseJoinLink(raw string) (string, joinLink, error) {
 	}
 	dec := json.NewDecoder(bytes.NewReader(payload))
 	dec.DisallowUnknownFields()
-	if err := dec.Decode(&j); err != nil || !strings.HasPrefix(j.DeviceNpub, "npub1") || j.Secret == "" {
+	if err := dec.Decode(&j); err != nil || !npubRe.MatchString(j.DeviceNpub) || j.Secret == "" {
 		return "", j, errors.New("That join link is damaged. Copy it again from the device.")
 	}
+	// Whoever made the QR code wrote the label, and the review page shows it
+	// next to the Add button, so it is only ever a plain short name.
+	j.Label = cleanName(j.Label, joinLabelMaxLen)
 	return joinLinkPrefix + rest, j, nil
+}
+
+// cleanName makes a name safe to show where someone decides whether to add
+// a device: control and format characters (bidi overrides, zero-width
+// spaces) and broken UTF-8 are dropped, runs of space become one, and it is
+// cut to max runes, never inside one.
+func cleanName(s string, max int) string {
+	var b strings.Builder
+	n, space := 0, false
+	for _, r := range strings.TrimSpace(s) {
+		switch {
+		case r == utf8.RuneError || unicode.In(r, unicode.Cc, unicode.Cf, unicode.Co, unicode.Cs):
+			continue
+		case unicode.IsSpace(r):
+			space = true
+			continue
+		}
+		if space && n > 0 {
+			if n+1 >= max {
+				break
+			}
+			b.WriteByte(' ')
+			n++
+		}
+		space = false
+		if n >= max {
+			break
+		}
+		b.WriteRune(r)
+		n++
+	}
+	return b.String()
 }
 
 // addDevicePage is the review step and the result of a failed add.

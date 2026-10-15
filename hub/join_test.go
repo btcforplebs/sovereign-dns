@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-const phoneNpub = "npub1phonephonephonephonephonephonephonephonephonephonephone"
+const phoneNpub = "npub1uyp9vdtya03pk6qqywx0h76tlcaf38t3ju9hls3f4rufj26skzus6gkucu"
 
 // makeLink encodes a join link the way nostr-identity does: unpadded
 // base64url JSON after the prefix.
@@ -57,7 +57,12 @@ func TestParseJoinLink(t *testing.T) {
 		"unknown field": makeLink(t, map[string]string{"deviceAppKeyNpub": phoneNpub, "requestSecret": "s", "admin": "x"}),
 		"no secret":     makeLink(t, map[string]string{"deviceAppKeyNpub": phoneNpub, "requestNpub": "npub1r"}),
 		"no npub":       makeLink(t, map[string]string{"deviceAppKeyNpub": "abc", "requestSecret": "s"}),
-		"too long":      joinLinkPrefix + strings.Repeat("A", joinLinkMaxLen),
+		// The review page tells the reader to compare this line with the
+		// device, so it must be exactly an npub and nothing a QR code adds.
+		"npub plus text": makeLink(t, map[string]string{"deviceAppKeyNpub": phoneNpub + " \u202e(verified)", "requestSecret": "s"}),
+		"short npub":     makeLink(t, map[string]string{"deviceAppKeyNpub": "npub1qqqq", "requestSecret": "s"}),
+		"upper npub":     makeLink(t, map[string]string{"deviceAppKeyNpub": strings.ToUpper(phoneNpub), "requestSecret": "s"}),
+		"too long":       joinLinkPrefix + strings.Repeat("A", joinLinkMaxLen),
 		// A look-alike rune in the prefix (U+017F, long s) is refused.
 		"long s prefix": strings.Replace(phoneLink(t), "request", "reque\u017ft", 1),
 	}
@@ -202,6 +207,25 @@ func TestOwnEntryIsNotADevice(t *testing.T) {
 	for _, d := range p.Devices {
 		if d.Npub == "npub1box" {
 			t.Fatalf("the box's own entry is listed as a device: %+v", p.Devices)
+		}
+	}
+}
+
+// The label is the QR code's author's words on the approval page: no bidi
+// overrides, zero-width or control characters, and short.
+func TestJoinLinkLabelIsCleaned(t *testing.T) {
+	for in, want := range map[string]string{
+		"Logen's iPhone":        "Logen's iPhone",
+		"  Moto \n\t g  ":       "Moto g",
+		"evil\u202e enohPi":     "evil enohPi",
+		"zero\u200bwidth\ufeff": "zerowidth",
+		"bell\x07":              "bell",
+		strings.Repeat("é", 60): strings.Repeat("é", joinLabelMaxLen),
+		"Logen's iPhone — already approved by the admin, just press Add": "Logen's iPhone — already approved by the",
+	} {
+		_, j, err := parseJoinLink(makeLink(t, map[string]string{"deviceAppKeyNpub": phoneNpub, "requestSecret": "s", "label": in}))
+		if err != nil || j.Label != want {
+			t.Errorf("label %q: got %q %v, want %q", in, j.Label, err, want)
 		}
 	}
 }

@@ -5,7 +5,7 @@ package main
 // Copyright 2017 Cozmo Wolfe; https://github.com/cozmo/jsQR). The hub serves
 // it at /assets/jsqr.js to read join QR codes where the browser has no
 // BarcodeDetector. It lives in a .go file because the hub image is built from
-// *.go alone. Never edit it here: qrvendor_test.go checks it still hashes to
+// *.go alone. Never edit it here: scan_test.go checks it still hashes to
 // the upstream file.
 
 const jsQRSHA256 = "bc40c8a15196236b2314db0856f72ca0b49980cd5413b8c852a7349f5fee0859"

@@ -6,7 +6,7 @@ package main
 // https://github.com/kazuhikoarase/qrcode-generator). The hub serves it at
 // /assets/qrcode.js to draw a box's own QR code. It lives in a .go file
 // because the hub image is built from *.go alone. Never edit it here:
-// qrvendor_test.go checks it still hashes to the upstream file.
+// scan_test.go checks it still hashes to the upstream file.
 
 const qrcodeGenSHA256 = "79ec86f82856005b1c887905cfccfcfbec3821ca61c7fd5a952faa5f778f791c"
 
