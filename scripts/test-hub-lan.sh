@@ -174,5 +174,28 @@ printf '%s\n' 'HUB_BIND=127.0.0.1' "HUB_PASSWORD=''" >"$m/.env"
 (cd "$m" && bash scripts/hub-mesh.sh on --no-restart </dev/null >/dev/null 2>&1)
 check "hub-mesh.sh on does not reuse an empty HUB_PASSWORD (exit 1, no terminal)" test "$?" = 1
 
+# ── dns-lan.sh: Docker Desktop cannot check senders, so it refuses there ──
+fresh n
+(cd "$tmp/n" && echo pihole-pw | SOVEREIGN_DNS_HUB_LAN=0 bash "$root/scripts/install.sh" >/dev/null 2>&1)
+dl=$tmp/n/sovereign-dns
+cp "$dl/.env" "$tmp/env.before"
+: >"$FAKE_LOG"
+(cd "$dl" && FAKE_DOCKER_OS="Docker Desktop" SOVEREIGN_DNS_LAN_IP=192.168.1.20 bash scripts/dns-lan.sh on </dev/null >"$tmp/dl-dd.out" 2>&1)
+check "dns-lan.sh on under Docker Desktop refuses (exit 1)" test "$?" = 1
+check "  ...and .env is untouched" cmp -s "$tmp/env.before" "$dl/.env"
+check "  ...and starts nothing" bash -c '! grep -q "compose up" "$1"' _ "$FAKE_LOG"
+check "  ...says no sender check is possible (open resolver)" grep -q "cannot tell your home network from the internet" "$tmp/dl-dd.out"
+check "  ...says the house is one client to the rate limit" grep -q "5000 lookups a minute applies to every device" "$tmp/dl-dd.out"
+check "  ...and how to override" grep -q "SOVEREIGN_DNS_LAN_DESKTOP=1 bash scripts/dns-lan.sh on" "$tmp/dl-dd.out"
+(cd "$dl" && FAKE_DOCKER_OS="Docker Desktop" SOVEREIGN_DNS_LAN_DESKTOP=1 SOVEREIGN_DNS_LAN_IP=192.168.1.20 bash scripts/dns-lan.sh on --no-restart </dev/null >"$tmp/dl-ddo.out" 2>&1)
+check "dns-lan.sh on under Docker Desktop with the override exits 0" test "$?" = 0
+check "  ...turns it on" env_has "$tmp/n" "COMPOSE_PROFILES=dns-lan"
+check "  ...still shows the warning" grep -q "^WARNING: this box runs Docker Desktop" "$tmp/dl-ddo.out"
+(cd "$dl" && bash scripts/dns-lan.sh off --no-restart </dev/null >/dev/null 2>&1)
+(cd "$dl" && SOVEREIGN_DNS_LAN_IP=192.168.1.20 bash scripts/dns-lan.sh on --no-restart </dev/null >"$tmp/dl-linux.out" 2>&1)
+check "dns-lan.sh on on Linux exits 0 with no override" test "$?" = 0
+check "  ...turns it on at that address" env_has "$tmp/n" "DNS_LAN_BIND=192.168.1.20"
+check "  ...with no Docker Desktop warning" bash -c '! grep -q "Docker Desktop" "$1"' _ "$tmp/dl-linux.out"
+
 printf '\n%d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skip"
 [[ "$fail" == 0 ]]

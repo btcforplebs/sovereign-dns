@@ -197,6 +197,7 @@ func TestSecondBoxJoinRefusals(t *testing.T) {
 	}{
 		{"devices already on this box", &fakePanel{}, url.Values{"code": {code}}, nil, http.StatusConflict, "cut them off"},
 		{"its own code", &fakePanel{alone: true, selfNpub: firstBoxNpub}, url.Values{"code": {firstBoxNpub + ":9683dbda"}}, nil, http.StatusBadRequest, "own join code"},
+		{"its own code, two networks and none marked running", &fakePanel{alone: true, selfNpub: firstBoxNpub, decoyFirst: true, noActive: true}, url.Values{"code": {firstBoxNpub + ":9683dbda"}}, nil, http.StatusBadRequest, "own join code"},
 		{"a bad code", &fakePanel{alone: true}, url.Values{"code": {"hello"}}, nil, http.StatusBadRequest, "a join code"},
 		{"no token", &fakePanel{alone: true}, url.Values{"csrf": {"nope"}, "code": {code}}, nil, http.StatusForbidden, ""},
 		{"another site", &fakePanel{alone: true}, url.Values{"code": {code}}, func(r *http.Request) { r.Header.Set("Origin", "http://evil.example") }, http.StatusForbidden, ""},

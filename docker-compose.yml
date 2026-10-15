@@ -132,10 +132,11 @@ services:
       FTLCONF_dns_interface: ${NVPN_TUN_IFACE:-utun100}
       FTLCONF_dns_listeningMode: BIND
       # Also answer on nvpn's dns-internal address (172.28.53.10, eth0 in this
-      # namespace), which only containers on dns-internal can reach. dns-lan
-      # below forwards the home network's queries there. Nothing outside
-      # Docker reaches that address. scripts/check-pins.sh allows exactly
-      # this line.
+      # namespace). dns-lan below forwards the home network's queries there.
+      # That address is not published: the internet cannot reach it, but on
+      # Linux the host itself can, and so can a home-network machine that
+      # adds a route to 172.28.53.0/24 through the host, with no sender
+      # check there. scripts/check-pins.sh allows exactly this line.
       FTLCONF_misc_dnsmasq_lines: "interface=eth0"
       FTLCONF_dns_dnssec: "true"
       # Per-client rate limit, raised from FTL's 1000 a minute. Every device on
@@ -287,7 +288,13 @@ services:
   # box's home-network address and hands each one to Pi-hole at
   # 172.28.53.10, carrying the asking device's address so Pi-hole's log and
   # rate limit see each device and not this container. Answers private
-  # addresses only, so a router port forward does not make an open resolver.
+  # addresses only. On Linux that holds even through a router port forward.
+  # On Docker Desktop (macOS, Windows) no sender check is possible: every
+  # query arrives from the VM's private gateway, so a port forward would make
+  # an open resolver, and the whole house is one client to Pi-hole's rate
+  # limit. scripts/dns-lan.sh refuses there unless told to. Never forward 53.
+  # No environment: the upstream is Pi-hole (172.28.53.10:53), built in, and
+  # scripts/check-pins.sh fails if one is added.
   # Published on one address (DNS_LAN_BIND), never 0.0.0.0: on Linux,
   # systemd-resolved already holds 127.0.0.53:53, and a wildcard bind on
   # port 53 then fails. Same image as the hub. See hub/dnslan.go.

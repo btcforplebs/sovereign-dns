@@ -23,8 +23,14 @@ package main
 //     default). Any ECS the device sent itself is removed first, so no device
 //     can pose as another.
 //   - The box would answer anyone who reaches it. Only private, loopback and
-//     link-local senders are served, so a port forward on the router does not
-//     turn the box into an open resolver for the internet.
+//     link-local senders are served. On Linux that holds even through a port
+//     forward on the router, because a forwarded packet keeps its internet
+//     source. On Docker Desktop (macOS, Windows) it does not: a published
+//     port hands this container every sender as the VM's own private
+//     gateway, so no sender check is possible there, every query carries
+//     that one address to Pi-hole, and the whole house shares one client's
+//     rate limit. scripts/dns-lan.sh refuses to turn this on under Docker
+//     Desktop unless told to, and says why. Never forward port 53.
 //
 // A query it cannot parse is dropped rather than passed on unchanged: passed
 // on, its own ECS (if any) would reach Pi-hole untouched. The answer goes back
@@ -47,8 +53,13 @@ const (
 	dnsLANListen  = ":5353"
 	dnsLANTimeout = 5 * time.Second
 	dnsMaxUDP     = 4096
-	optTypeOPT    = 41
-	ednsECSCode   = 8
+	// Queries in flight to Pi-hole, and TCP connections, at once. Beyond
+	// these a query is dropped (its sender retries) rather than each one
+	// costing a goroutine and a socket until the forwarder falls over.
+	dnsLANMaxUDP = 256
+	dnsLANMaxTCP = 64
+	optTypeOPT   = 41
+	ednsECSCode  = 8
 )
 
 var errBadMessage = errors.New("not a DNS query this forwarder can read")
@@ -257,6 +268,37 @@ func ecsOption(client netip.Addr) []byte {
 type dnsForwarder struct {
 	upstream string // Pi-hole, host:port
 	allowed  func(netip.Addr) bool
+	// Free slots for UDP queries and TCP connections in flight. nil: no cap
+	// (tests only; newDNSForwarder always sets both).
+	udpSlots, tcpSlots chan struct{}
+}
+
+func newDNSForwarder(upstream string) dnsForwarder {
+	return dnsForwarder{
+		upstream: upstream,
+		allowed:  lanClientAllowed,
+		udpSlots: make(chan struct{}, dnsLANMaxUDP),
+		tcpSlots: make(chan struct{}, dnsLANMaxTCP),
+	}
+}
+
+// take claims a slot, or reports that none is free. release gives it back.
+func take(slots chan struct{}) bool {
+	if slots == nil {
+		return true
+	}
+	select {
+	case slots <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func release(slots chan struct{}) {
+	if slots != nil {
+		<-slots
+	}
 }
 
 // exchangeUDP sends one query to Pi-hole and returns its answer.
@@ -299,7 +341,11 @@ func (f dnsForwarder) serveUDP(pc net.PacketConn) error {
 		if err != nil {
 			continue
 		}
+		if !take(f.udpSlots) {
+			continue
+		}
 		go func() {
+			defer release(f.udpSlots)
 			resp, err := f.exchangeUDP(context.Background(), q)
 			if err == nil {
 				resp, err = forClient(resp, hadOPT)
@@ -319,7 +365,14 @@ func (f dnsForwarder) serveTCP(l net.Listener) error {
 		if err != nil {
 			return err
 		}
-		go f.handleTCP(c)
+		if !take(f.tcpSlots) {
+			c.Close()
+			continue
+		}
+		go func() {
+			defer release(f.tcpSlots)
+			f.handleTCP(c)
+		}()
 	}
 }
 
@@ -402,7 +455,7 @@ func addrOf(a net.Addr) (netip.Addr, bool) {
 }
 
 func runDNSLAN() {
-	f := dnsForwarder{upstream: env("DNS_LAN_UPSTREAM", "172.28.53.10:53"), allowed: lanClientAllowed}
+	f := newDNSForwarder(env("DNS_LAN_UPSTREAM", "172.28.53.10:53"))
 	listen := env("DNS_LAN_LISTEN", dnsLANListen)
 	pc, err := net.ListenPacket("udp", listen)
 	if err != nil {

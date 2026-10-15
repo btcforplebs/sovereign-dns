@@ -327,3 +327,55 @@ func TestForwarderIgnoresOutsiders(t *testing.T) {
 	default:
 	}
 }
+
+// The forwarder the service runs has both caps, and serves private senders only.
+func TestNewDNSForwarderIsCapped(t *testing.T) {
+	f := newDNSForwarder("172.28.53.10:53")
+	if cap(f.udpSlots) != dnsLANMaxUDP || cap(f.tcpSlots) != dnsLANMaxTCP {
+		t.Errorf("caps: udp %d tcp %d, want %d and %d", cap(f.udpSlots), cap(f.tcpSlots), dnsLANMaxUDP, dnsLANMaxTCP)
+	}
+	if f.allowed(netip.MustParseAddr("8.8.8.8")) || !f.allowed(netip.MustParseAddr("192.168.1.5")) {
+		t.Error("newDNSForwarder does not use the private-senders rule")
+	}
+}
+
+// With Pi-hole not answering, queries wait in flight. Past the cap they are
+// dropped, not each given a goroutine and a socket.
+func TestForwarderCapsQueriesInFlight(t *testing.T) {
+	hole, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hole.Close()
+	got := make(chan struct{}, 64)
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			if _, _, err := hole.ReadFrom(buf); err != nil {
+				return
+			}
+			got <- struct{}{}
+		}
+	}()
+	f := dnsForwarder{upstream: hole.LocalAddr().String(), allowed: lanClientAllowed, udpSlots: make(chan struct{}, 4)}
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pc.Close()
+	go f.serveUDP(pc)
+	c, err := net.Dial("udp", pc.LocalAddr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	for i := 0; i < 20; i++ {
+		if _, err := c.Write(dnsMsg(uint16(0x0100 + i))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	time.Sleep(500 * time.Millisecond)
+	if n := len(got); n != 4 {
+		t.Errorf("Pi-hole got %d of 20 queries while it was silent, want the cap of 4", n)
+	}
+}

@@ -692,6 +692,10 @@ if [[ -n "$dnslan_blk" ]]; then
   grep -Eq '^    command: \[?"?dns-lan"?\]?$' <<<"$dnslan_blk" \
     || awk '/^    command:$/ { c = 1; next } c && /^      - / { print; exit } c { exit }' <<<"$dnslan_blk" | grep -Eq '^      - "?dns-lan"?$' \
     || fail "dns-lan must run command: [\"dns-lan\"]; any other command runs a hub with no login on the home network"
+  # No environment: DNS_LAN_UPSTREAM or DNS_LAN_LISTEN here could send the
+  # home network's queries past Pi-hole, unnoticed.
+  grep -Eq '^    environment:' <<<"$dnslan_blk" \
+    && fail "dns-lan must not set environment: its upstream is Pi-hole, built in (hub/dnslan.go)"
   grep -Eq '^    entrypoint:' <<<"$dnslan_blk" && fail "dns-lan must not set entrypoint: the forwarder is /hub dns-lan"
 fi
 

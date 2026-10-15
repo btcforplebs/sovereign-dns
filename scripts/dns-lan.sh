@@ -12,9 +12,15 @@
 #
 # --no-restart: only write .env.
 # SOVEREIGN_DNS_LAN_IP: the address to answer on, instead of the one found.
+# SOVEREIGN_DNS_LAN_DESKTOP=1: turn it on under Docker Desktop anyway (below).
 #
-# Only private (home-network) senders get answers (hub/dnslan.go), so a port
-# forward on the router does not make an open resolver. Never forward port 53.
+# Never forward port 53 on the router. On Linux (a Raspberry Pi, a Linux
+# server) only private (home-network) senders get answers (hub/dnslan.go), and
+# that holds even through a port forward. On Docker Desktop (macOS, Windows)
+# no sender check is possible: Docker Desktop hands the box every query from
+# its own private address, so a port forward there would make an open
+# resolver for the whole internet. That is why `on` refuses under Docker
+# Desktop unless SOVEREIGN_DNS_LAN_DESKTOP=1.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 # shellcheck source=lib/lan-ip.sh
@@ -86,17 +92,41 @@ If this box is off, nobody in the house can load websites. Keep it on.
 EOF
 }
 
-docker_desktop_note() {
-  if docker info --format '{{.OperatingSystem}}' 2>/dev/null | grep -q 'Docker Desktop'; then
-    echo
-    echo "Note: this is Docker Desktop, which hands every query to Pi-hole from one"
-    echo "address, so Pi-hole's log shows the whole house as one device. A Linux box"
-    echo "(like a Pi) shows each device."
-  fi
+docker_desktop() { docker info --format '{{.OperatingSystem}}' 2>/dev/null | grep -q 'Docker Desktop'; }
+
+# What Docker Desktop costs, said before anything changes.
+desktop_warning() {
+  cat <<'WARN'
+WARNING: this box runs Docker Desktop (macOS or Windows).
+
+Docker Desktop hands this box every DNS query from its own private address,
+so the box cannot tell your home network from the internet:
+  - If port 53 is ever forwarded on your router, anyone on the internet can
+    use this box as a DNS server, and it cannot refuse them.
+  - Pi-hole sees the whole house as one device: its log shows one client,
+    and its limit of 5000 lookups a minute applies to every device at once.
+    A busy house can reach it, and then Pi-hole refuses lookups and nobody
+    can load websites, with nothing on screen to say why.
+
+A Linux box (a Raspberry Pi, say) has none of these problems. It is the
+better home for home-network DNS.
+WARN
 }
 
 case "$mode" in
   on)
+    if docker_desktop; then
+      desktop_warning
+      if [[ "${SOVEREIGN_DNS_LAN_DESKTOP:-}" != 1 ]]; then
+        echo
+        echo "Nothing was changed. To turn it on here anyway, run:"
+        echo "    SOVEREIGN_DNS_LAN_DESKTOP=1 bash scripts/dns-lan.sh on"
+        exit 1
+      fi
+      echo
+      echo "SOVEREIGN_DNS_LAN_DESKTOP=1: turning it on anyway. Never forward port 53."
+      echo
+    fi
     ip=${SOVEREIGN_DNS_LAN_IP:-$(lan_ip)}
     [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] \
       || die "Could not find this box's home-network address. Set SOVEREIGN_DNS_LAN_IP=<address> and run again."
@@ -118,7 +148,10 @@ case "$mode" in
       fi
       echo "A test lookup through ${ip} worked."
       router_steps "$ip"
-      docker_desktop_note
+      if docker_desktop; then
+        echo
+        echo "Reminder: this is Docker Desktop. Never forward port 53 (see the warning above)."
+      fi
     fi
     ;;
   off)

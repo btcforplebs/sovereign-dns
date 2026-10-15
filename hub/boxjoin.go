@@ -168,7 +168,7 @@ func (c config) serveJoinFirstBox(w http.ResponseWriter, r *http.Request) {
 	case p.network == nil && p.noNetwork == "":
 		fail(http.StatusConflict, "Nothing was changed. The control panel isn't answering, so this box can't join yet.")
 		return
-	case p.ownNpub == admin:
+	case p.OwnNpub != "" && p.OwnNpub == admin:
 		fail(http.StatusBadRequest, "Nothing was changed. That is this box's own join code. Paste the code from your first box.")
 		return
 	case p.network != nil && !p.network.LocalIsAdmin:
@@ -223,7 +223,7 @@ func (c config) serveAddBox(w http.ResponseWriter, r *http.Request) {
 		fail(http.StatusConflict, "Nothing was changed. "+blocked)
 		return
 	}
-	if npub == p.ownNpub {
+	if p.OwnNpub != "" && npub == p.OwnNpub {
 		fail(http.StatusBadRequest, "Nothing was changed. That is this box's own ID. Paste the ID the new box shows.")
 		return
 	}
