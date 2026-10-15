@@ -65,8 +65,8 @@ if [[ -n "${NVPN_ADVERTISED_ENDPOINT:-}" ]]; then
     echo "sovereign-dns: warning: could not set the advertised endpoint"
 fi
 
-# nvpn dials two public FIPS transit seeds by default (185.18.221.232 and
-# 65.109.48.91, compiled into nvpn), which joins this box to a public FIPS mesh.
+# nvpn dials two public FIPS transit seeds by default (fips1.iris.to and
+# fips2.iris.to, compiled into nvpn), which joins this box to a public FIPS mesh.
 # NVPN_FIPS_BOOTSTRAP=off sets nvpn's own master switch, fips_bootstrap_enabled,
 # so the list is kept but never dialed. Emptying the list would not work: nvpn
 # re-adds the default seeds every time it loads the config. The file is edited
@@ -87,8 +87,8 @@ case "${NVPN_FIPS_BOOTSTRAP:-on}" in
     echo "sovereign-dns: public FIPS transit seeds: OFF (NVPN_FIPS_BOOTSTRAP=off)" ;;
   on)
     set_fips_bootstrap true
-    echo "sovereign-dns: public FIPS transit seeds: ON. This node dials 185.18.221.232 and"
-    echo "  65.109.48.91 and joins the public FIPS mesh. Set NVPN_FIPS_BOOTSTRAP=off to stop." ;;
+    echo "sovereign-dns: public FIPS transit seeds: ON. This node dials fips1.iris.to and"
+    echo "  fips2.iris.to and joins the public FIPS mesh. Set NVPN_FIPS_BOOTSTRAP=off to stop." ;;
   *)
     echo "sovereign-dns: NVPN_FIPS_BOOTSTRAP must be on or off, got '${NVPN_FIPS_BOOTSTRAP}'" >&2
     exit 1 ;;
