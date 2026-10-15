@@ -1,32 +1,66 @@
 # Sovereign DNS
 
-**Your own private, ad-blocking internet "phone book" for all your devices — at home and on the go.**
+**Your own private, ad-blocking internet "phone book" for all your devices, at home and on the go.**
 
 Every time your phone or laptop opens a website, it first asks a DNS server
 "where is this site?". Normally that question goes to your internet provider,
-Google, or Cloudflare, and they see every site you visit.
+Google or Cloudflare, and they see every site you visit.
 
-Sovereign DNS moves that job onto a small computer you own (a Raspberry Pi
-works great). Once it's running:
+Sovereign DNS moves that job onto a computer you control, called **the box**.
+Once it's running:
 
-- **Ads and trackers are blocked** on every device, inside apps too.
-- **Nobody else sees your lookups.** Your box asks the internet's root servers
-  directly, with no Google or Cloudflare in the middle.
-- **It follows you.** Your phone and laptop connect back to your box through a
-  private, encrypted link, so you're protected on café or hotel Wi-Fi too.
+- **Ads and trackers are blocked** on every device you add, inside apps too.
+- **Your lookups skip your internet provider, Google and Cloudflare.** The
+  box looks sites up itself, starting from the internet's root servers.
+- **It follows you.** Your phone and laptop reach the box through a private,
+  encrypted network (Nostr VPN), so it works on café Wi-Fi and mobile data
+  too. You don't change anything on your router.
 
-## What you need
+It is not a full VPN: websites still see your device's own IP address. See
+[who sees what](docs/src/your-ip.md).
 
-- **A computer that stays on.** A Raspberry Pi 4 or 5 with 2 GB of memory or
-  more is ideal. Any Linux machine works. A Mac or Windows PC works too, but
-  needs about 4 GB of free memory.
-- **Docker** installed and running. ([How to get Docker](https://docs.docker.com/get-docker/))
-- **About 8 GB of free disk space.**
-- **The Nostr VPN app** on each phone or laptop you want to protect.
+> **Phones: check yours.** Today this is sure to work on computers. iPhones
+> and iPads join the network, but the dashboard still warns that they may
+> not send their lookups through the box yet. After you add any phone,
+> check that its lookups show up in Pi-hole
+> ([Quickstart, Step 7](docs/src/quickstart.md#step-7-see-the-ads-disappear)).
+
+## Read this before you install
+
+**[Before you install](docs/src/before-you-install.md)** is a five-minute
+read. In short:
+
+- **What you need:** a computer that stays on, about 10 minutes, Docker, and
+  the Nostr VPN app on each phone or laptop.
+- **If the box is off or asleep, your devices can't open websites** until
+  it's back. That's on purpose: it never quietly hands your lookups to
+  someone else. Turning off Nostr VPN on a device gets that device back
+  online straight away.
+- **No open ports.** The box connects out, and your devices find it through
+  the private network.
+- **Undoing it** takes four steps, and the first one matters: turn network DNS
+  off on the dashboard *before* you remove the box. See
+  [How to undo it](docs/src/before-you-install.md#how-to-undo-it).
+
+## Where to run it
+
+| | At home, always-on computer | At home, on your laptop | On a VPS (rented server) |
+|---|---|---|---|
+| Examples | Raspberry Pi 4/5, Mac mini, old PC | The laptop you use | DigitalOcean, Akamai/Linode, Vultr, OVHcloud |
+| Works when you're away | Yes | Only while the laptop is awake | Yes |
+| Outside world sees | Your home IP | Your home IP | The VPS's IP |
+| Cost | Hardware once | Nothing | About $5 to $12 a month |
+
+**A home computer that stays on is the recommended setup.** A laptop works
+for trying it out, but when it sleeps every device you've added stops
+opening websites. Hardware minimums, Raspberry Pi storage advice (use a 64 GB
+card, not 32 GB) and prices checked on 2026-10-15 are in
+**[Where to run it](docs/src/where-to-run.md)**.
 
 ## Install
 
-Open a Terminal on the box and paste this one line:
+Install [Docker](https://docs.docker.com/get-docker/) first and open it once.
+Then open a terminal on the box and paste this one line:
 
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/btcforplebs/sovereign-dns/main/scripts/install.sh && bash install.sh
@@ -49,6 +83,9 @@ When it says **Done**, open a web browser **on that same box** and go to:
 > The dashboard only opens on the box itself, not from another computer.
 > That's on purpose: it keeps strangers on your network out of it.
 
+The full step-by-step walk-through is the
+[Quickstart](docs/src/quickstart.md).
+
 ### A box with no screen (like a Raspberry Pi)
 
 If you installed over SSH, or the box has no desktop, the installer asks:
@@ -62,17 +99,20 @@ it prints the address to open from your laptop or phone, on the same Wi-Fi:
 
 ```text
 From another computer on your home network, open:
-    http://192.168.1.50:8080
+    http://<box-address>:8080
     http://raspberrypi.local:8080   (if your computer finds it by name)
 and sign in with the dashboard password.
 ```
 
-(Your numbers will differ.) Every page asks for that password, because the
+(The installer shows the real address.) Every page asks for that password, because the
 dashboard can add devices to your network. On Linux (a Raspberry Pi, a Linux
 server) it also refuses any request from outside your home network, even with
 the password. On Docker Desktop (a Mac or Windows box) it can't tell where a
 request came from, so the password is the only guard there. Pick a long one,
 and never forward the dashboard's port on your router.
+
+On a VPS, don't open the dashboard to the network. Reach it through SSH
+instead: see [Where to run it](docs/src/where-to-run.md#on-a-vps).
 
 To change your mind later, run one of these inside the `sovereign-dns` folder:
 
@@ -111,6 +151,9 @@ On the dashboard, click **Add a device**, then:
 Treat that link like a one-time password: don't post it in a group chat.
 Nothing gets added until you press Add.
 
+Then check it really works: on that device, open Pi-hole and look for its
+lookups in the log ([Quickstart, Step 7](docs/src/quickstart.md#step-7-see-the-ads-disappear)).
+
 ## Everyday use
 
 - **See what's being blocked:** open the dashboard and click the ad-blocker
@@ -119,16 +162,23 @@ Nothing gets added until you press Add.
 - **Read the guide:** a plain-language guide is built in at
   **http://localhost:8081** on the box.
 
+## If DNS stops working
+
+- **The box is probably off or asleep.** Wake it and wait a minute.
+- **Need a device online right now?** Turn off Nostr VPN on that device.
+- **Still broken?** On the box, inside the `sovereign-dns` folder (it's in
+  the folder you ran the installer from, usually your home folder), run
+  `docker compose up -d`, wait a minute, then
+  `bash scripts/healthcheck.sh`. It tells you what's down and how to fix it.
+
+More in [Before you install](docs/src/before-you-install.md#if-dns-stops-working).
+
 ## Good to know
 
-- **If the box is off, your devices can't look up websites.** That's
-  deliberate: rather than quietly falling back to someone else's DNS, it stops.
-  Keep the box plugged in, or turn off the VPN on your phone until
-  it's back.
 - **Each device's owner is in charge of that device.** Someone can turn this
   off on their own phone. It protects people who want it; it doesn't police them.
-- **Something not working?** Run `bash sovereign-dns/scripts/healthcheck.sh`
-  on the box and it will tell you what's down.
+- **Running the installer again is safe.** It refreshes the box's files and
+  keeps your password, settings and devices.
 
 ---
 

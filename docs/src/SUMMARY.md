@@ -2,6 +2,9 @@
 
 [Introduction](README.md)
 
+- [Before you install](before-you-install.md)
+- [Where to run it](where-to-run.md)
+- [Your IP address: who sees what](your-ip.md)
 - [Quickstart](quickstart.md)
 - [Layer 1: Unbound](layer-1-unbound.md)
 - [Layer 2: Pi-hole](layer-2-pihole.md)

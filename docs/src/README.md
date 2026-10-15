@@ -37,5 +37,6 @@ than silently falling back to whatever DNS is available. You'll notice
 immediately instead of silently losing protection; flip the override off
 from your admin device to restore local DNS instantly.
 
-See [Quickstart](quickstart.md) to get running, or read each layer's page
-for the technical detail behind it.
+New here? Start with [Before you install](before-you-install.md), then
+[Where to run it](where-to-run.md). See [Quickstart](quickstart.md) to get
+running, or read each layer's page for the technical detail behind it.
