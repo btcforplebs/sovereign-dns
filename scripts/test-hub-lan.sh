@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Tests for scripts/hub-lan.sh and the installer's "open the dashboard to your
-# home network" step, run through the real scripts/install.sh.
+# home network" step, run through the real scripts/install.sh, and for
+# scripts/hub-mesh.sh, which shares the dashboard password with it.
 #
 #   bash scripts/test-hub-lan.sh
 #
@@ -120,6 +121,58 @@ EOF
 else
   skp "Ctrl-D cases" "no expect"
 fi
+
+# ── hub-mesh.sh, and the one password it shares with hub-lan.sh ──────────
+fresh m
+(cd "$tmp/m" && echo pihole-pw | SOVEREIGN_DNS_HUB_LAN=0 bash "$root/scripts/install.sh" >/dev/null 2>&1)
+m=$tmp/m/sovereign-dns
+no_pw() { ! grep -q '^HUB_PASSWORD=' "$1/.env"; }
+: >"$FAKE_LOG"
+(cd "$m" && bash scripts/hub-mesh.sh on </dev/null >/dev/null 2>&1)
+check "hub-mesh.sh on with no password and no terminal exits 1" test "$?" = 1
+check "  ...and opens nothing" bash -c '! grep -q "^HUB_MESH=on" "$1"' _ "$m/.env"
+(cd "$m" && SOVEREIGN_DNS_HUB_PASSWORD='mesh pass $HOME' bash scripts/hub-mesh.sh on </dev/null >"$tmp/mesh-on.out" 2>&1)
+check "hub-mesh.sh on exits 0" test "$?" = 0
+check "  ...writes HUB_MESH=on" env_has "$tmp/m" "HUB_MESH=on"
+check "  ...writes the password single-quoted, \$ and all" env_has "$tmp/m" "HUB_PASSWORD='mesh pass \$HOME'"
+check "  ...leaves the dashboard off the home network" env_has "$tmp/m" "HUB_BIND=127.0.0.1"
+check "  ...keeps .env at 0600" test "$(stat -f %Lp "$m/.env" 2>/dev/null || stat -c %a "$m/.env")" = 600
+check "  ...restarts the hub and its mesh gate, not the VPN" bash -c 'grep -q "compose up -d hub hub-mesh$" "$1" && ! grep -q "up -d.*nvpn" "$1"' _ "$FAKE_LOG"
+check "  ...and says where Pi-hole is" grep -q "/admin" "$tmp/mesh-on.out"
+(cd "$m" && bash scripts/hub-mesh.sh on --no-restart </dev/null >"$tmp/mesh-again.out" 2>&1)
+check "hub-mesh.sh on again reuses the password, no terminal needed" test "$?" = 0
+check "  ...and says so" grep -q "already picked" "$tmp/mesh-again.out"
+check "  ...with exactly one HUB_MESH line" test "$(grep -c '^HUB_MESH=' "$m/.env")" = 1
+(cd "$m" && SOVEREIGN_DNS_HUB_PASSWORD=lanpass99 bash scripts/hub-lan.sh on --no-restart </dev/null >/dev/null 2>&1)
+check "hub-lan.sh on while the mesh is open keeps HUB_MESH=on" env_has "$tmp/m" "HUB_MESH=on"
+(cd "$m" && bash scripts/hub-lan.sh off --no-restart </dev/null >/dev/null 2>&1)
+check "hub-lan.sh off while the mesh is open keeps the password" env_has "$tmp/m" "HUB_PASSWORD='lanpass99'"
+check "  ...and closes the home network" env_has "$tmp/m" "HUB_BIND=127.0.0.1"
+(cd "$m" && SOVEREIGN_DNS_HUB_PASSWORD=lanpass99 bash scripts/hub-lan.sh on --no-restart </dev/null >/dev/null 2>&1)
+(cd "$m" && bash scripts/hub-mesh.sh off --no-restart </dev/null >/dev/null 2>&1)
+check "hub-mesh.sh off while the home network is open keeps the password" env_has "$tmp/m" "HUB_PASSWORD='lanpass99'"
+check "  ...and writes HUB_MESH=off" env_has "$tmp/m" "HUB_MESH=off"
+(cd "$m" && bash scripts/hub-lan.sh off --no-restart </dev/null >/dev/null 2>&1)
+check "both off: no password left" no_pw "$m"
+(cd "$m" && SOVEREIGN_DNS_HUB_PASSWORD=meshpass9 bash scripts/hub-mesh.sh on --no-restart </dev/null >/dev/null 2>&1)
+(cd "$m" && bash scripts/hub-mesh.sh off --no-restart </dev/null >/dev/null 2>&1)
+check "hub-mesh.sh off alone drops the password" no_pw "$m"
+cp "$m/.env" "$tmp/env.before"
+(cd "$m" && SOVEREIGN_DNS_HUB_PASSWORD=short bash scripts/hub-mesh.sh on </dev/null >/dev/null 2>&1)
+check "hub-mesh.sh on refuses a short password (exit 1)" test "$?" = 1
+check "  ...and .env is untouched" cmp -s "$tmp/env.before" "$m/.env"
+
+# A hand-edited .env, quoted the way compose also accepts. The scripts must
+# read it as the hub does, or off would drop a password the hub still needs.
+printf '%s\n' 'HUB_MESH="on"' 'HUB_BIND=127.0.0.1' 'HUB_PASSWORD="hand typed pw"' >"$m/.env"
+(cd "$m" && bash scripts/hub-lan.sh off --no-restart </dev/null >/dev/null 2>&1)
+check "hub-lan.sh off with HUB_MESH=\"on\" keeps a hand-quoted password" env_has "$tmp/m" 'HUB_PASSWORD="hand typed pw"'
+printf '%s\n' 'HUB_MESH=on' 'HUB_BIND="0.0.0.0"' "HUB_PASSWORD='lanpass99'" >"$m/.env"
+(cd "$m" && bash scripts/hub-mesh.sh off --no-restart </dev/null >/dev/null 2>&1)
+check "hub-mesh.sh off with HUB_BIND=\"0.0.0.0\" keeps the password" env_has "$tmp/m" "HUB_PASSWORD='lanpass99'"
+printf '%s\n' 'HUB_BIND=127.0.0.1' "HUB_PASSWORD=''" >"$m/.env"
+(cd "$m" && bash scripts/hub-mesh.sh on --no-restart </dev/null >/dev/null 2>&1)
+check "hub-mesh.sh on does not reuse an empty HUB_PASSWORD (exit 1, no terminal)" test "$?" = 1
 
 printf '\n%d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skip"
 [[ "$fail" == 0 ]]

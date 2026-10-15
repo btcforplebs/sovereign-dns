@@ -53,7 +53,11 @@ const (
 	sessionTTL    = 30 * 24 * time.Hour
 	// Wrong passwords from one address before it has to wait, and how long.
 	maxFailures = 5
-	lockout     = 5 * time.Minute
+	// Wrong passwords through the mesh gate, all devices together, before
+	// the mesh has to wait. Above maxFailures so one phone's typos never
+	// lock out the others.
+	maxMeshFailures = 20
+	lockout         = 5 * time.Minute
 	// Addresses remembered for lockout at once. Every wrong password from a
 	// new address adds one. When full, expired entries go first, then ones
 	// still short of a lockout, and only then the oldest lockout, so a flood
@@ -70,6 +74,11 @@ type auth struct {
 	mu       sync.Mutex
 	sessions map[string]time.Time  // session id -> expiry
 	failures map[string]*failCount // remote IP -> recent wrong passwords
+	// Every wrong password that came through the mesh gate, whatever device
+	// it named (mesh.go). The device name is only as honest as whatever
+	// shares the gate's address, so this cap holds when the per-device one
+	// is dodged by naming a new device each time.
+	meshFailures failCount
 }
 
 type failCount struct {
@@ -193,6 +202,25 @@ func (a *auth) lockedOut(ip string) bool {
 	return f != nil && f.n >= maxFailures && time.Now().Before(f.until)
 }
 
+// meshLockedOut is true while the mesh as a whole has used up its wrong
+// guesses (maxMeshFailures).
+func (a *auth) meshLockedOut() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.meshFailures.n >= maxMeshFailures && time.Now().Before(a.meshFailures.until)
+}
+
+func (a *auth) recordMeshFailure() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	now := time.Now()
+	if now.After(a.meshFailures.until) {
+		a.meshFailures = failCount{}
+	}
+	a.meshFailures.n++
+	a.meshFailures.until = now.Add(lockout)
+}
+
 func (a *auth) recordFailure(ip string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -275,15 +303,23 @@ func (a *auth) serveLogin(w http.ResponseWriter, r *http.Request) {
 		}
 		view.Next = safeNext(r.PostForm.Get("next"))
 		ip := clientIP(r)
-		if a.lockedOut(ip) {
+		viaMesh := fromMeshGate(r)
+		if a.lockedOut(ip) || (viaMesh && a.meshLockedOut()) {
 			view.Error = "Too many wrong passwords. Wait five minutes and try again."
 			renderLogin(w, view, http.StatusTooManyRequests)
 			return
 		}
 		if !a.checkPassword(r.PostForm.Get("password")) {
 			a.recordFailure(ip)
+			if viaMesh {
+				a.recordMeshFailure()
+			}
 			time.Sleep(failureDelay)
-			log.Printf("hub: wrong hub password from %s", ip)
+			if viaMesh {
+				log.Printf("hub: wrong hub password from %s (as named by the mesh gate)", ip)
+			} else {
+				log.Printf("hub: wrong hub password from %s", ip)
+			}
 			view.Error = "That password is not right."
 			renderLogin(w, view, http.StatusUnauthorized)
 			return

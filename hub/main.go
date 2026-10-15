@@ -28,6 +28,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"strings"
 	"sync"
@@ -50,6 +51,7 @@ type config struct {
 	checkName    string // unique name a device can look up to prove it resolves through Pi-hole
 	csrfToken    string // per process; every form that changes something must echo it
 	auth         *auth  // login for home-network access (auth.go); nil or no password: none
+	mesh         bool   // HUB_MESH=on: the hub also answers the mesh, through the gate (mesh.go)
 }
 
 type setting struct {
@@ -117,6 +119,7 @@ type page struct {
 	PendingJoins  int
 	PanelURL      string
 	PiholeURL     string
+	MeshURL       string // this dashboard from any device on the mesh (HUB_MESH=on)
 	DocsURL       string
 	OwnNpub       string
 	NetworkID     string
@@ -160,16 +163,48 @@ type page struct {
 }
 
 func main() {
+	// The same binary is the mesh gate (mesh.go), which runs in nvpn's
+	// namespace and has no shell for a healthcheck.
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "mesh-gate":
+			runMeshGate()
+			return
+		case "mesh-health":
+			os.Exit(meshHealth())
+		default:
+			log.Fatalf("hub: unknown command %q", os.Args[1])
+		}
+	}
+
 	cfg := loadConfig()
 	a, err := newAuth(env("HUB_BIND", "127.0.0.1"), os.Getenv("HUB_PASSWORD"))
 	if err != nil {
 		log.Fatalf("hub: %v", err)
 	}
 	cfg.auth = a
+	cfg.mesh = meshOn()
+	if err := meshNeedsLogin(cfg.mesh, a); err != nil {
+		log.Fatalf("hub: %v", err)
+	}
 	if a.enabled() {
 		log.Printf("hub: home-network access on (published on %s), pages need the hub password", env("HUB_BIND", "127.0.0.1"))
 	}
 	mux := newMux(cfg)
+
+	if cfg.mesh {
+		gate, err := netip.ParseAddr(env("HUB_MESH_GATE", "172.28.53.10"))
+		if err != nil {
+			log.Fatalf("hub: HUB_MESH_GATE: %v", err)
+		}
+		log.Printf("hub: mesh access on (port %s, from the gate at %s), pages need the hub password", meshHubListen, gate)
+		meshServer := &http.Server{
+			Addr:              meshHubListen,
+			Handler:           meshHandler(gate, mux),
+			ReadHeaderTimeout: 10 * time.Second,
+		}
+		go func() { log.Fatal(meshServer.ListenAndServe()) }()
+	}
 
 	log.Printf("hub: listening on %s", cfg.listen)
 	server := &http.Server{
@@ -432,6 +467,9 @@ func (c config) buildPage(ctx context.Context) page {
 	}
 	if meshIP := strings.SplitN(state.TunnelIP, "/", 2)[0]; meshIP != "" && piholeUp {
 		p.PiholeURL = fmt.Sprintf("http://%s/admin", meshIP)
+	}
+	if meshIP := strings.SplitN(state.TunnelIP, "/", 2)[0]; meshIP != "" && c.mesh {
+		p.MeshURL = "http://" + net.JoinHostPort(meshIP, strings.TrimPrefix(meshGateListen, ":"))
 	}
 	return p
 }
