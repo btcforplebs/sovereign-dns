@@ -201,47 +201,56 @@ if ! grep -q '^HUB_BIND=' .env; then
   esac
 fi
 
-# Fast path: download the ready-made NostrVPN image instead of compiling nvpn
-# here (about 35 minutes on a Raspberry Pi 4). docker-compose.prebuilt.yml
-# pins it by digest, so Docker checks every byte it downloads against the pin.
-# No such file, an image with no build for this device, a compose too old for
-# the override, or a failed download all fall back to the source build, and so
-# does SOVEREIGN_DNS_BUILD_FROM_SOURCE=1.
+# Fast path: download ready-made images instead of building every service
+# here (nvpn alone takes about 35 minutes on a Raspberry Pi 4, the docs site
+# another 10 or more). docker-compose.prebuilt.yml pins each one it has by
+# digest (an image left out builds from source), so
+# Docker checks every byte it downloads against the pin. No such file, an
+# image with no build for this device, a compose too old for the override, or
+# a failed download all fall back to the source build, and so does
+# SOVEREIGN_DNS_BUILD_FROM_SOURCE=1.
 # COMPOSE_FILE in .env makes every later plain `docker compose` command in this
 # folder, including the ones the docs and the dashboard tell people to run,
 # load the same files. Without it, `docker compose up -d` would quietly rebuild
-# nvpn from source. Removed first, so a source install never keeps an old one.
+# everything from source. Removed first, so a source install never keeps an old one.
 (umask 077; grep -v '^COMPOSE_FILE=' .env > .env.tmp || true) && cat .env.tmp > .env && rm -f .env.tmp
 prebuilt=0
 if [[ "${SOVEREIGN_DNS_BUILD_FROM_SOURCE:-0}" == "1" ]]; then
   echo
-  echo "SOVEREIGN_DNS_BUILD_FROM_SOURCE=1: NostrVPN will be built from source."
+  echo "SOVEREIGN_DNS_BUILD_FROM_SOURCE=1: every service will be built from source."
 elif [[ -f docker-compose.prebuilt.yml ]]; then
-  image=$(sed -nE 's/^[[:space:]]*image:[[:space:]]*//p' docker-compose.prebuilt.yml | head -n1)
   echo
-  echo "Downloading the ready-made NostrVPN image (Docker checks it against its pinned fingerprint)..."
-  if docker compose -f docker-compose.yml -f docker-compose.prebuilt.yml config -q >/dev/null 2>&1 \
-     && docker pull "$image"; then
+  echo "Downloading the ready-made images (Docker checks each against its pinned fingerprint)..."
+  pulled=0
+  if docker compose -f docker-compose.yml -f docker-compose.prebuilt.yml config -q >/dev/null 2>&1; then
+    pulled=1
+    # All or nothing: half the stack prebuilt and half from source is a mix
+    # nobody tested.
+    for image in $(sed -nE 's/^[[:space:]]*image:[[:space:]]*//p' docker-compose.prebuilt.yml | sort -u); do
+      docker pull "$image" || { pulled=0; break; }
+    done
+  fi
+  if [[ "$pulled" == "1" ]]; then
     prebuilt=1
     echo "COMPOSE_FILE=docker-compose.yml:docker-compose.prebuilt.yml" >> .env
   else
-    echo "There is no ready-made NostrVPN image for this device, so it will be built from source instead."
+    echo "There are no ready-made images for this device, so everything will be built from source instead."
   fi
 fi
 
 echo
 from_source_msg="Building and starting (the first run compiles from source and can take 10-15 minutes, 20-40 on a Raspberry Pi; later runs are fast)..."
 if [[ "$prebuilt" == "1" ]]; then
-  echo "Building and starting (a few minutes on a Raspberry Pi; later runs are fast)..."
-  # If the ready-made image downloaded but the stack then fails to start,
+  echo "Starting (a few minutes on a Raspberry Pi; anything without a ready-made image builds first; later runs are fast)..."
+  # If the ready-made images downloaded but the stack then fails to start,
   # leaving COMPOSE_FILE in .env would keep every recovery (`docker compose
   # up -d`, or running this installer again) on the same broken image. Drop
   # it and build from source instead, which is what an install did before.
   if ! docker compose up -d --build; then
     (umask 077; grep -v '^COMPOSE_FILE=' .env > .env.tmp || true) && cat .env.tmp > .env && rm -f .env.tmp
     echo
-    echo "The ready-made NostrVPN image did not start, so it will be built from source instead."
-    echo "(To skip the ready-made image next time: SOVEREIGN_DNS_BUILD_FROM_SOURCE=1 bash install.sh)"
+    echo "The ready-made images did not start, so everything will be built from source instead."
+    echo "(To skip the ready-made images next time: SOVEREIGN_DNS_BUILD_FROM_SOURCE=1 bash install.sh)"
     echo "$from_source_msg"
     docker compose up -d --build
   fi

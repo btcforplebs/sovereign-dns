@@ -1,7 +1,7 @@
 # The gates that otherwise only run by hand or in the opt-in pre-commit hook:
 # install.sh is byte for byte what the tree builds, every pin is present, and
 # every pinned tag still points at its digest on its registry (Docker Hub, and
-# ghcr.io for the prebuilt nvpn image). Without --verify-remote, an override
+# ghcr.io for the prebuilt images). Without --verify-remote, an override
 # carrying this tree's tag and a wrong digest would pass every other gate.
 name: pins
 

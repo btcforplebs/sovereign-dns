@@ -41,10 +41,10 @@ See [Your IP address: who sees what](your-ip.md) for the full picture.
   purpose (see [If DNS stops working](#if-dns-stops-working)). See
   [Where to run it](where-to-run.md) for the options and what hardware is
   enough.
-- **About 10 minutes**, most of it waiting. That's with a ready-made
-  download of the VPN part, which most Macs, Linux PCs and 64-bit
-  Raspberry Pis get. If it has to build that part itself, allow 20 to 40
-  minutes on a Raspberry Pi.
+- **About 10 minutes**, most of it waiting. That's with the ready-made
+  downloads, which most Macs, Linux PCs and 64-bit Raspberry Pis get. If
+  it has to build everything itself, allow 20 to 40 minutes on a
+  Raspberry Pi.
 - **Docker**, the free program that runs the box's software. Install it
   and open it once before you start
   ([how to get Docker](https://docs.docker.com/get-docker/)).
@@ -66,7 +66,7 @@ See [Your IP address: who sees what](your-ip.md) for the full picture.
 4. **It asks you for a password** for the ad-block dashboard (Pi-hole).
 5. **On a box with no screen** (a Raspberry Pi over SSH), it asks whether
    to open the dashboard to your home network, behind a second password.
-6. **It downloads the ready-made VPN part**, or builds it if it can't.
+6. **It downloads the ready-made software**, or builds it if it can't.
    Then it starts a handful of small programs: the VPN, the VPN's
    control panel, the ad blocker (Pi-hole), the lookup engine (Unbound),
    the dashboard and the built-in guide.
