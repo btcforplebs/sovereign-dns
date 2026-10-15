@@ -77,6 +77,20 @@ jobs:
           docker run --rm --entrypoint /usr/local/bin/nvpn sdns-nvpn:ci --version
           docker run --rm --entrypoint /bin/sh sdns-nvpn:ci -c 'test -x /usr/local/bin/nvpn-web && test -f /usr/share/nostr-vpn/web/index.html'
 
+      # Manual runs without "publish" hand the image back as a run artifact,
+      # so a box can be tried on a pin before anything goes to the registry:
+      # download it, `docker load`, retag. Retained one day.
+      - name: Save the image as a run artifact (manual runs only)
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        run: docker save sdns-nvpn:ci | gzip -c > "nvpn-image-$TAG-${{ matrix.arch }}.tar.gz"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        with:
+          name: nvpn-image-${{ matrix.arch }}
+          path: nvpn-image-*.tar.gz
+          retention-days: 1
+          compression-level: 0
+
       - name: Installer fast path, against a local registry
         env:
           REGISTRY_IMAGE: registry:3.0.0@sha256:6c5666b861f3505b116bb9aa9b25175e71210414bd010d92035ff64018f9457e
