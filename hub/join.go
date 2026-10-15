@@ -5,8 +5,8 @@ package main
 // A new device makes its own join request. The Nostr VPN app shows it as a QR
 // code with Copy and Share buttons, and `nvpn join-request --no-qr` prints it
 // on a computer. It is a plain-text link, nvpn://join-request/<payload>. The
-// person at this box pastes it here (or scans it, where the browser has a
-// camera), sees which device it names, and adds it with one more click. The
+// person at this box pastes it here (or photographs its QR code with Scan QR
+// code), sees which device it names, and adds it with one more click. The
 // hub hands the link to the control panel's own /api/import_join_request, so
 // the admin check, the roster change and the delivery back to the device all
 // stay in nvpn's code, the same way dns.go leaves the DNS switch to the panel.
@@ -330,11 +330,10 @@ const addDeviceHTML = `<!doctype html>
 // wizard's step 2. It needs .CSRF and a "from" value; it is defined as a
 // named template so both pages render exactly the same form.
 //
-// The camera button only appears where the browser has BarcodeDetector
-// (Chrome and Edge on a computer with a camera). Everywhere else the card is
-// paste-only, which is the path the README documents. Pasting a join link
-// submits the form by itself, so the reader's one deliberate click is Add on
-// the review page.
+// The Scan QR code button runs scanJS (scan.go): it takes a photo of the code
+// (a file picker on a computer) and reads it in the page. Without JavaScript the card
+// is paste-only. Pasting or scanning a join link opens the review page by
+// itself, so the reader's one deliberate click is Add there.
 const addCardHTML = `{{define "addcss"}}
   .add-label { display: block; font-weight: 600; margin: 0 0 6px; }
   .add-form textarea { width: 100%; resize: vertical; background: #0b0d11; color: var(--ink);
@@ -347,8 +346,7 @@ const addCardHTML = `{{define "addcss"}}
     background: #1f2430; color: var(--ink); }
   .add-form .btn:hover { border-color: var(--accent); }
   .add-form .btn.primary { background: var(--accent); border-color: var(--accent); color: #0b1220; }
-  .add-video { width: 100%; max-width: 360px; border-radius: 8px; margin: 12px 0 0; display: block; }
-  .add-video[hidden], .add-note[hidden], .add-scan[hidden] { display: none; }
+  .add-note[hidden], .add-scan[hidden] { display: none; }
   .add-note { color: var(--dim); font-size: 14px; margin: 8px 0 0; }
   .add-how { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 6px; font-size: 14px; }
   .add-how p { margin: 8px 0; }
@@ -360,8 +358,9 @@ const addCardHTML = `{{define "addcss"}}
   .copybtn { font: inherit; font-size: 13px; font-weight: 600; border-radius: 8px; padding: 6px 12px; margin: 8px 0 0;
     cursor: pointer; border: 1px solid var(--line); background: #1f2430; color: var(--ink); }
   .copybtn[hidden] { display: none; }
-  .box-name { background: #0b0d11; color: var(--ink); border: 1px solid var(--line); border-radius: 8px;
-    padding: 8px 10px; font: inherit; font-size: 14px; width: 100%; max-width: 260px; }
+  .qr { width: 240px; max-width: 100%; margin: 10px 0 0; }
+  .qr svg { display: block; width: 100%; height: auto; border-radius: 8px; }
+  .qr[hidden] { display: none; }
 {{end}}{{define "copyjs"}}
 <script>
 document.querySelectorAll('.copybtn').forEach(function (b) {
@@ -382,15 +381,14 @@ document.querySelectorAll('.copybtn').forEach(function (b) {
             placeholder="nvpn://join-request/…" required></textarea>
   <div class="add-actions">
     <button class="btn primary" type="submit">Review device</button>
-    <button class="btn add-scan" type="button" hidden>Scan its QR code</button>
+    <button class="btn add-scan" type="button" data-scan data-csrf="{{.CSRF}}" data-from="{{.AddFrom}}" hidden>Scan QR code</button>
   </div>
-  <video class="add-video" playsinline muted hidden></video>
-  <p class="add-note" hidden></p>
 </form>
 <div class="add-how">
-  <p><strong>iPhone or Android:</strong> open Nostr VPN, go to <em>Join Network</em>, tap
-    <em>Share</em> and AirDrop it to this computer, then paste it above. No AirDrop? Tap
-    <em>Copy Request</em> and type or paste it here yourself.</p>
+  <p><strong>iPhone or Android:</strong> open Nostr VPN and go to <em>Join Network</em>. It shows
+    a QR code: press <strong>Scan QR code</strong> here and take a photo of it
+    (on a computer, pick a photo or screenshot of it). Easier to paste? Tap <em>Share</em> and AirDrop it to this computer, or <em>Copy Request</em>,
+    and paste it above.</p>
   <p><strong>Mac, Windows or Linux:</strong> with Nostr VPN installed, run
     <code>nvpn join-request --no-qr</code> and paste the line it prints.</p>
   <p class="add-fine">Treat the link like a one-time password: it's good for one join. Hand it
@@ -407,33 +405,7 @@ document.querySelectorAll('.copybtn').forEach(function (b) {
   box.addEventListener('paste', function () {
     setTimeout(function () { if (looksRight(box.value)) form.submit(); }, 0);
   });
-  if (!('BarcodeDetector' in window) || !navigator.mediaDevices) return;
-  var scan = form.querySelector('.add-scan');
-  var video = form.querySelector('.add-video');
-  var note = form.querySelector('.add-note');
-  scan.hidden = false;
-  scan.addEventListener('click', function () {
-    var detector = new BarcodeDetector({formats: ['qr_code']});
-    navigator.mediaDevices.getUserMedia({video: {facingMode: 'environment'}}).then(function (stream) {
-      video.srcObject = stream; video.hidden = false; video.play();
-      note.hidden = false; note.textContent = 'Hold the phone\'s join QR code up to the camera.';
-      var timer = setInterval(function () {
-        detector.detect(video).then(function (codes) {
-          for (var i = 0; i < codes.length; i++) {
-            if (looksRight(codes[i].rawValue)) {
-              clearInterval(timer);
-              stream.getTracks().forEach(function (t) { t.stop(); });
-              box.value = codes[i].rawValue.trim();
-              form.submit();
-              return;
-            }
-          }
-        }).catch(function () {});
-      }, 300);
-    }).catch(function () {
-      note.hidden = false; note.textContent = 'No camera available. Paste the link instead.';
-    });
-  });
 })();
 </script>
+<script src="/assets/scan.js"></script>
 {{end}}`

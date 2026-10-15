@@ -156,7 +156,7 @@ grep -q "Let the first box add it" <<<"$page" && grep -q "$B" <<<"$page" && ! gr
 r=$(hub hub-b web-b / -o /dev/null -w '%{http_code} %{redirect_url}')
 [[ "$r" == "302 "*"/setup" ]] && ok "  ...its / still leads to setup while it waits" || bad "  .../ while waiting: '$r'"
 
-r=$(hub hub web /devices/add-box -o /dev/null -w '%{http_code} %{redirect_url}' --data-urlencode "csrf=$TA" --data-urlencode "box=$B" --data-urlencode "name=box B" --data-urlencode "from=setup")
+r=$(hub hub web /devices/add-box -o /dev/null -w '%{http_code} %{redirect_url}' --data-urlencode "csrf=$TA" --data-urlencode "box=$B" --data-urlencode "name=box B" --data-urlencode "from=setup" --data-urlencode "confirm=yes")
 [[ "$r" == "303 "*"/setup?step=3" ]] && ok "box A adds box B by its ID ($r)" || bad "box A add-box: '$r', want 303 to step 3"
 
 done_b=""

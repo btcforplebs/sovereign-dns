@@ -167,6 +167,9 @@ func TestSecondBoxJoins(t *testing.T) {
 	if !strings.Contains(wait, "Let the first box add it") || !strings.Contains(wait, "npub1box") || strings.Contains(wait, "You're set") {
 		t.Fatalf("waiting step does not show this box's ID:\n%s", wait)
 	}
+	if !strings.Contains(wait, `data-qr="nvpn://device/npub1box"`) || !strings.Contains(wait, `src="/assets/qrcode.js"`) {
+		t.Fatalf("waiting step does not show this box's ID as a QR code:\n%s", wait)
+	}
 
 	// The first box adds it.
 	f.admitted = true
@@ -241,7 +244,21 @@ func TestFirstBoxAddsSecondBox(t *testing.T) {
 	if body := get(t, mux, "/dashboard").Body.String(); !strings.Contains(body, `action="/devices/add-box"`) || !strings.Contains(body, "npub1box:9683dbda") {
 		t.Fatalf("dashboard has no add-box card with the join code")
 	}
-	rec := postTo(mux, "/devices/add-box", url.Values{"csrf": {cfg.csrfToken}, "box": {" " + secondBoxNpub + "\n"}, "name": {"Pi"}, "from": {"setup"}}, func(r *http.Request) {
+	// A pasted or scanned ID only reviews: it names the box and sends nothing.
+	form := url.Values{"csrf": {cfg.csrfToken}, "box": {" " + deviceQRPrefix + secondBoxNpub + "\n"}, "name": {"Pi"}, "from": {"setup"}}
+	rec := postTo(mux, "/devices/add-box", form, nil)
+	review := rec.Body.String()
+	if rec.Code != http.StatusOK || len(f.writes) != 0 {
+		t.Fatalf("review: %d, %d writes\n%s", rec.Code, len(f.writes), review)
+	}
+	for _, want := range []string{secondBoxNpub, `name="box" value="` + secondBoxNpub + `"`, `name="confirm" value="yes"`,
+		`name="name" value="Pi"`, `name="from" value="setup"`, cfg.csrfToken, `href="/setup?step=3"`} {
+		if !strings.Contains(review, want) {
+			t.Fatalf("review page lacks %q:\n%s", want, review)
+		}
+	}
+	form.Set("confirm", "yes")
+	rec = postTo(mux, "/devices/add-box", form, func(r *http.Request) {
 		r.Header.Set("Cookie", "session=abc")
 	})
 	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/setup?step=3" {
@@ -255,7 +272,7 @@ func TestFirstBoxAddsSecondBox(t *testing.T) {
 		t.Errorf("browser cookie forwarded to the panel: %q", v)
 	}
 	// Again: already there, nothing sent.
-	rec = postTo(mux, "/devices/add-box", url.Values{"csrf": {cfg.csrfToken}, "box": {secondBoxNpub}}, nil)
+	rec = postTo(mux, "/devices/add-box", url.Values{"csrf": {cfg.csrfToken}, "box": {secondBoxNpub}, "confirm": {"yes"}}, nil)
 	if rec.Code != http.StatusSeeOther || len(f.writes) != 1 {
 		t.Fatalf("adding the same box twice: %d, %d writes", rec.Code, len(f.writes))
 	}
@@ -273,10 +290,11 @@ func TestAddBoxRefusals(t *testing.T) {
 		{"not an ID", &fakePanel{}, "npub1box", http.StatusBadRequest},
 		{"a join code instead of an ID", &fakePanel{}, firstBoxNpub + ":a0454be9", http.StatusBadRequest},
 		{"a phone link", &fakePanel{}, "nvpn://join-request/abc", http.StatusBadRequest},
+		{"its own ID from a QR code", &fakePanel{selfNpub: secondBoxNpub}, deviceQRPrefix + secondBoxNpub, http.StatusBadRequest},
 	}
 	for _, c := range cases {
 		cfg := panelConfig(t, c.f)
-		rec := postTo(newMux(cfg), "/devices/add-box", url.Values{"csrf": {cfg.csrfToken}, "box": {c.box}}, nil)
+		rec := postTo(newMux(cfg), "/devices/add-box", url.Values{"csrf": {cfg.csrfToken}, "box": {c.box}, "confirm": {"yes"}}, nil)
 		if rec.Code != c.status || len(c.f.writes) != 0 {
 			t.Errorf("%s: %d (want %d), %d writes", c.name, rec.Code, c.status, len(c.f.writes))
 		}
@@ -284,7 +302,7 @@ func TestAddBoxRefusals(t *testing.T) {
 
 	f := &fakePanel{dropBox: true}
 	cfg := panelConfig(t, f)
-	rec := postTo(newMux(cfg), "/devices/add-box", url.Values{"csrf": {cfg.csrfToken}, "box": {secondBoxNpub}}, nil)
+	rec := postTo(newMux(cfg), "/devices/add-box", url.Values{"csrf": {cfg.csrfToken}, "box": {secondBoxNpub}, "confirm": {"yes"}}, nil)
 	if rec.Code != http.StatusBadGateway || !strings.Contains(rec.Body.String(), "doesn&#39;t list the box") {
 		t.Fatalf("unapplied add: %d\n%s", rec.Code, rec.Body.String())
 	}
@@ -303,5 +321,36 @@ func TestJoinCodeOnlyOnAdmin(t *testing.T) {
 	p := panelConfig(t, &fakePanel{alone: true, joinedTo: "a0454be9", joinAdmin: firstBoxNpub}).buildPage(ctx)
 	if p.JoinCode != "" || !p.Member || p.Admitted || p.AdminNpub != firstBoxNpub {
 		t.Fatalf("waiting second box: code %q member %t admitted %t admin %q", p.JoinCode, p.Member, p.Admitted, p.AdminNpub)
+	}
+}
+
+func TestParseBoxIDForms(t *testing.T) {
+	for _, in := range []string{
+		secondBoxNpub,
+		" " + secondBoxNpub + "\n",
+		strings.ToUpper(secondBoxNpub),
+		deviceQRPrefix + secondBoxNpub,
+		"NVPN://Device/" + secondBoxNpub,
+		deviceQRPrefix + secondBoxNpub + "?name=Pi",
+		deviceQRPrefix + secondBoxNpub + "#x",
+		"nostr:" + secondBoxNpub,
+	} {
+		if got, err := parseBoxID(in); err != nil || got != secondBoxNpub {
+			t.Errorf("parseBoxID(%q) = %q, %v", in, got, err)
+		}
+	}
+	for _, in := range []string{
+		"",
+		deviceQRPrefix,
+		"nvpn://join-request/" + secondBoxNpub,
+		"nvpn://devices/" + secondBoxNpub,
+		"https://example.com/device/" + secondBoxNpub,
+		deviceQRPrefix + "x/" + secondBoxNpub,
+		firstBoxNpub + ":a0454be9",
+		"nostr:" + deviceQRPrefix + secondBoxNpub,
+	} {
+		if got, err := parseBoxID(in); err == nil {
+			t.Errorf("parseBoxID(%q) accepted %q", in, got)
+		}
 	}
 }
