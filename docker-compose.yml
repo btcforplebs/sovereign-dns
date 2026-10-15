@@ -23,7 +23,7 @@ services:
         # A full commit SHA, not a branch: the build checks it out exactly and
         # fails if the fetched commit is anything else. Change the pin here,
         # where it is visible, rather than in .env.
-        NVPN_COMMIT: a8ffb3caed1682ab57b1092212e5e368002fe8c5
+        NVPN_COMMIT: 7cf741c971486f57a15b4ba0a496e1ef3c31e171
     container_name: sovereign-dns-nvpn
     logging: *logging
     restart: unless-stopped
@@ -83,7 +83,7 @@ services:
       context: ./nvpn
       args:
         NVPN_REPO: https://github.com/btcforplebs/nostr-vpn.git
-        NVPN_COMMIT: a8ffb3caed1682ab57b1092212e5e368002fe8c5
+        NVPN_COMMIT: 7cf741c971486f57a15b4ba0a496e1ef3c31e171
     container_name: sovereign-dns-web
     logging: *logging
     restart: unless-stopped
