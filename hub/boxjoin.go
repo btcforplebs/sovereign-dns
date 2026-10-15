@@ -80,8 +80,21 @@ func parseJoinCode(raw string) (npub, networkID string, err error) {
 	return npub, networkID, nil
 }
 
+// parseBoxID takes a box's ID as pasted, or as read from its QR code
+// (deviceQRPrefix, scan.go). A "nostr:" prefix, which some apps add to a
+// copied npub, is dropped too.
 func parseBoxID(raw string) (string, error) {
-	npub := strings.ToLower(strings.TrimSpace(raw))
+	s := strings.TrimSpace(raw)
+	// Match and cut on the same bytes, as in parseJoinLink.
+	if n := len(deviceQRPrefix); len(s) > n && strings.ToLower(s[:n]) == deviceQRPrefix {
+		s = s[n:]
+		if i := strings.IndexAny(s, "?#"); i >= 0 {
+			s = s[:i]
+		}
+	} else if n := len("nostr:"); len(s) > n && strings.ToLower(s[:n]) == "nostr:" {
+		s = s[n:]
+	}
+	npub := strings.ToLower(strings.TrimSpace(s))
 	if npub == "" {
 		return "", errors.New("Paste the new box's device ID first.")
 	}
@@ -233,12 +246,20 @@ func (c config) serveAddBox(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	name := strings.TrimSpace(r.PostForm.Get("name"))
+	name := cleanName(r.PostForm.Get("name"), 40)
 	if name == "" {
-		name = "DNS box"
+		name = "DNS box 2"
 	}
-	if len(name) > 40 {
-		name = name[:40]
+
+	// The review step, as for a phone's join link: a pasted or scanned ID
+	// shows which box it names, and the Add button there posts it back with
+	// confirm=yes. Without it, nothing is sent to the panel.
+	if r.PostForm.Get("confirm") != "yes" {
+		renderBoxReview(w, boxReviewPage{
+			Box: npub, Name: name, NetworkName: p.NetworkName, CSRF: c.csrfToken,
+			From: r.PostForm.Get("from"), Return: back,
+		})
+		return
 	}
 
 	ctx := context.WithoutCancel(r.Context())
@@ -308,6 +329,77 @@ func (c config) panelWrite(ctx context.Context, path string, fields map[string]a
 	return state, nil
 }
 
+// boxReviewPage is the review step for adding a box by its ID.
+type boxReviewPage struct {
+	Box         string
+	Name        string
+	NetworkName string
+	CSRF        string
+	From        string
+	Return      string
+}
+
+func renderBoxReview(w http.ResponseWriter, v boxReviewPage) {
+	noFraming(w)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := boxReviewTmpl.Execute(w, v); err != nil {
+		log.Printf("hub: rendering box review page: %v", err)
+	}
+}
+
+var boxReviewTmpl = template.Must(template.New("boxreview").Parse(`<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Add a box · Sovereign-DNS</title>
+<style>
+  body { margin: 0; background: #0f1115; color: #e6e9ef;
+         font: 16px/1.6 ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 640px; margin: 0 auto; padding: 48px 24px 72px; }
+  .brand { color: #9aa4b8; font-size: 13px; text-transform: uppercase; letter-spacing: 0.09em; margin: 0 0 22px; }
+  h1 { font-size: 28px; line-height: 1.2; margin: 0 0 10px; letter-spacing: -0.02em; }
+  .lede { color: #9aa4b8; margin: 0 0 22px; }
+  .card { background: #171a21; border: 1px solid #262b36; border-radius: 12px; padding: 18px 20px; margin: 0 0 18px; }
+  .label { color: #9aa4b8; font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600; display: block; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; overflow-wrap: anywhere; }
+  .fine { color: #9aa4b8; font-size: 14px; margin: 12px 0 0; }
+  input[type=text] { background: #0b0d11; color: #e6e9ef; border: 1px solid #262b36; border-radius: 8px;
+    padding: 8px 10px; font: inherit; font-size: 15px; width: 100%; max-width: 280px; margin: 4px 0 0; }
+  .actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 6px; }
+  .btn { font: inherit; font-size: 15px; font-weight: 600; line-height: 1.2; border-radius: 9px; padding: 11px 20px;
+         cursor: pointer; text-decoration: none; display: inline-block; border: 1px solid #262b36;
+         background: #1f2430; color: #e6e9ef; }
+  .btn.primary { background: #6ea8fe; border-color: #6ea8fe; color: #0b1220; }
+</style>
+</head>
+<body>
+<main>
+  <p class="brand">Sovereign-DNS · add a box</p>
+  <h1>Add this box{{if .NetworkName}} to {{.NetworkName}}{{end}}?</h1>
+  <p class="lede">It joins your mesh as another DNS box. Only add a box you set up yourself.</p>
+  <form method="post" action="/devices/add-box">
+    <div class="card">
+      <span class="label">Box ID</span>
+      <code>{{.Box}}</code>
+      <p class="fine">Check that this matches the ID on the new box's setup page, under <em>Let the first box add it</em>.</p>
+      <label class="label" for="box-name" style="margin-top:14px">Name it</label>
+      <input type="text" id="box-name" name="name" value="{{.Name}}" maxlength="40">
+    </div>
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <input type="hidden" name="box" value="{{.Box}}">
+    <input type="hidden" name="from" value="{{.From}}">
+    <input type="hidden" name="confirm" value="yes">
+    <div class="actions">
+      <button class="btn primary" type="submit" autofocus>Add box</button>
+      <a class="btn" href="{{.Return}}">Cancel</a>
+    </div>
+  </form>
+</main>
+</body>
+</html>
+`))
+
 var boxResultTmpl = template.Must(template.New("box").Parse(`<!doctype html>
 <html lang="en">
 <head>
@@ -346,17 +438,19 @@ const boxCardHTML = `{{define "boxcard"}}
     <pre class="copy" id="join-code">{{.JoinCode}}</pre>
     <button class="btn copybtn" type="button" data-copy="join-code" hidden>Copy</button>
   </li>
-  <li>It then shows its own ID. Paste that here and add it. Adding it is the approval: nothing joins until you do.
+  <li>It then shows a QR code with its own ID. Press <strong>Scan QR code</strong> and take a photo of it (on a computer, pick a photo or screenshot of it). Or paste the ID it shows instead. Either way you see the box's ID and press Add: that is the approval, and nothing joins until you do.
+    <div class="add-actions" style="margin-bottom:10px">
+      <button class="btn primary add-scan" type="button" data-scan data-csrf="{{.CSRF}}" data-from="{{.AddFrom}}" hidden>Scan QR code</button>
+    </div>
     <form class="add-form" method="post" action="/devices/add-box">
       <input type="hidden" name="csrf" value="{{.CSRF}}">
       <input type="hidden" name="from" value="{{.AddFrom}}">
       <textarea name="box" rows="2" spellcheck="false" autocomplete="off" placeholder="npub1…" required aria-label="The new box's ID"></textarea>
-      <label class="add-label" style="margin-top:10px" for="box-name">Name it</label>
-      <input id="box-name" name="name" value="DNS box 2" maxlength="40" class="box-name">
-      <div class="add-actions"><button class="btn primary" type="submit">Add this box</button></div>
+      <div class="add-actions"><button class="btn" type="submit">Review this box</button></div>
     </form>
   </li>
 </ol>
 <p class="add-note">The join code is not a password. It only tells the new box which network to ask for, and on its own it lets nobody in.</p>
 {{template "copyjs"}}
+<script src="/assets/scan.js"></script>
 {{end}}`

@@ -60,6 +60,22 @@ func mockState(name string) mock {
 		m := up
 		addDevice("laptop", "10.44.5.138/16", false, "offline", "approved, never connected")
 		return m
+	case "joining":
+		// A second box that pasted the first box's join code and waits for
+		// the first box to add it (boxjoin.go). Its ID is a well-formed npub
+		// so the QR code it shows can be scanned by a first box.
+		const own = "npub16wtf93pgldp4hru0fkqayuydm7ge36tvxc2f3z6y7tet5nwfcq4s3rhveh"
+		const first = "npub162ve8d27trvv44cgxrmzeusa2ejdtwjc7wqdkmx3q9hn5g2slmrsae4kdp"
+		m := up
+		m.tick.OwnNpub = own
+		m.tick.NetworkID = "a0454be9"
+		m.tick.Networks = []tickNetwork{{ID: "network-2", Name: "home", NetworkID: "a0454be9", Enabled: true,
+			AdminNpubs: []string{first}, DNSNodeNpub: first,
+			Participants: []tickParticipant{
+				{Npub: first, State: "pending", StatusText: "waiting for admin"},
+				{Npub: own, State: "local"},
+			}}}
+		return m
 	case "covered":
 		m := up
 		addDevice("laptop", "10.44.5.138/16", true, "online", "connected")

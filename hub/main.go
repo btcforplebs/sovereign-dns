@@ -268,6 +268,9 @@ func newMux(cfg config) http.Handler {
 	mux.HandleFunc("/devices/add", cfg.serveAddDevice)
 	mux.HandleFunc("/devices/add-box", cfg.serveAddBox)
 	mux.HandleFunc("/setup/join", cfg.serveJoinFirstBox)
+	mux.HandleFunc("/assets/scan.js", serveScript("scan.js", scanJS))
+	mux.HandleFunc("/assets/jsqr.js", serveScript("jsqr.js", jsQRSource))
+	mux.HandleFunc("/assets/qrcode.js", serveScript("qrcode.js", qrcodeGenSource))
 	mux.Handle("/docs/", docsProxy(cfg.docsAddr))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {

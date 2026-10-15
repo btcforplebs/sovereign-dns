@@ -429,16 +429,29 @@ const wizardHTML = `<!doctype html>
     <p><a class="big" href="/dashboard">Go to the dashboard →</a></p>
   </div>
   {{else if .Member}}
-  <p class="lede">One more paste, the other way round. This is how the first box approves this one.</p>
+  <p class="lede">Now the other way round. This is how the first box approves this one.</p>
   <div class="card">
     <ol class="todo">
-      <li>On the first box, still under <em>Add your next device</em> → <em>Another DNS box</em>, paste this box's ID:
+      <li>On the first box, still under <em>Add your next device</em> → <em>Another DNS box</em>, press <strong>Scan QR code</strong> and take a photo of this code:
+        <div class="qr" data-qr="nvpn://device/{{.OwnNpub}}" hidden aria-label="This box's ID as a QR code" role="img"></div>
+        <p class="fine" style="margin:10px 0 0">Or paste this box's ID there instead:</p>
         <pre class="copy" id="own-id">{{.OwnNpub}}</pre>
         <button class="btn copybtn" type="button" data-copy="own-id" hidden>Copy</button>
       </li>
-      <li>Press <strong>Add this box</strong> there. This page notices on its own, usually within a few seconds.</li>
+      <li>Check the ID it shows matches the one above, and press <strong>Add box</strong> there. This page notices on its own, usually within a few seconds.</li>
     </ol>
   </div>
+  <script src="/assets/qrcode.js"></script>
+  <script>
+  document.querySelectorAll('[data-qr]').forEach(function (el) {
+    if (typeof qrcode !== 'function') return;
+    var q = qrcode(0, 'M');
+    q.addData(el.dataset.qr);
+    q.make();
+    el.innerHTML = q.createSvgTag({cellSize: 5, margin: 20, scalable: true});
+    el.hidden = false;
+  });
+  </script>
   <div class="verdict wait">
     <strong>Waiting for the first box{{if .AdminNpub}} ({{.AdminNpub | printf "%.18s"}}…){{end}}.</strong>
     <p class="fine">Still waiting after a minute with the ID added? Both boxes need to be on and online.</p>
