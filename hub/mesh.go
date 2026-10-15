@@ -27,6 +27,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"log"
 	"net"
 	"net/http"
@@ -49,7 +50,9 @@ const (
 var errMeshNoPassword = authError("HUB_MESH=on opens the hub to the mesh but HUB_PASSWORD is empty; refusing to serve an admin page with no login. Run scripts/hub-mesh.sh on (or off) to fix .env")
 
 // meshOn reads HUB_MESH. Only "on" opens anything; any other value is off.
-func meshOn() bool { return strings.EqualFold(env("HUB_MESH", "off"), "on") }
+// Exactly "on", as scripts/lib/hub-password.sh reads it: if the two read
+// .env differently, hub-mesh.sh off could drop a password the hub still needs.
+func meshOn() bool { return env("HUB_MESH", "off") == "on" }
 
 // meshNeedsLogin: the mesh port is never served without the password.
 func meshNeedsLogin(mesh bool, a *auth) error {
@@ -75,11 +78,20 @@ func meshHandler(gate netip.Addr, next http.Handler) http.Handler {
 		}
 		// From here on the device is the client: the lockout counts its wrong
 		// passwords, not every mesh device's together.
-		r2 := r.Clone(r.Context())
+		r2 := r.Clone(context.WithValue(r.Context(), meshGateKey{}, true))
 		r2.RemoteAddr = net.JoinHostPort(device.Unmap().String(), "0")
 		r2.Header.Del("X-Forwarded-For")
 		next.ServeHTTP(w, r2)
 	})
+}
+
+type meshGateKey struct{}
+
+// fromMeshGate: the request came through the mesh port, so its client
+// address is the one the gate named (auth.go caps those failures together).
+func fromMeshGate(r *http.Request) bool {
+	v, _ := r.Context().Value(meshGateKey{}).(bool)
+	return v
 }
 
 func remoteIP(remoteAddr string) (netip.Addr, bool) {

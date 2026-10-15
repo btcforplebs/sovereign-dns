@@ -43,6 +43,13 @@ hub_ask_password() {
   fi
 }
 
-hub_env_password() { grep -E "^HUB_PASSWORD='.+'$" .env | tail -n1 || true; }
+# Any non-empty one, quoted as hub-lan.sh writes it or by hand.
+hub_env_password() { grep -E "^HUB_PASSWORD=('[^']+'|\"[^\"]+\"|[^'\"].*)$" .env | tail -n1 || true; }
 
-hub_env_is() { grep -qx "$1=$2" .env; }
+# Quoted or not, the way compose reads it: HUB_MESH=on, "on" and 'on' are
+# all on. Must agree with the hub (meshOn in hub/mesh.go), or an off here
+# could drop a password the hub still needs.
+hub_env_is() {
+  local v=${2//./\\.}
+  grep -Eqx "$1=($v|\"$v\"|'$v')" .env
+}

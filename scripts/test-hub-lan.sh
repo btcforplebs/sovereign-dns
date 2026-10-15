@@ -162,5 +162,17 @@ cp "$m/.env" "$tmp/env.before"
 check "hub-mesh.sh on refuses a short password (exit 1)" test "$?" = 1
 check "  ...and .env is untouched" cmp -s "$tmp/env.before" "$m/.env"
 
+# A hand-edited .env, quoted the way compose also accepts. The scripts must
+# read it as the hub does, or off would drop a password the hub still needs.
+printf '%s\n' 'HUB_MESH="on"' 'HUB_BIND=127.0.0.1' 'HUB_PASSWORD="hand typed pw"' >"$m/.env"
+(cd "$m" && bash scripts/hub-lan.sh off --no-restart </dev/null >/dev/null 2>&1)
+check "hub-lan.sh off with HUB_MESH=\"on\" keeps a hand-quoted password" env_has "$tmp/m" 'HUB_PASSWORD="hand typed pw"'
+printf '%s\n' 'HUB_MESH=on' 'HUB_BIND="0.0.0.0"' "HUB_PASSWORD='lanpass99'" >"$m/.env"
+(cd "$m" && bash scripts/hub-mesh.sh off --no-restart </dev/null >/dev/null 2>&1)
+check "hub-mesh.sh off with HUB_BIND=\"0.0.0.0\" keeps the password" env_has "$tmp/m" "HUB_PASSWORD='lanpass99'"
+printf '%s\n' 'HUB_BIND=127.0.0.1' "HUB_PASSWORD=''" >"$m/.env"
+(cd "$m" && bash scripts/hub-mesh.sh on --no-restart </dev/null >/dev/null 2>&1)
+check "hub-mesh.sh on does not reuse an empty HUB_PASSWORD (exit 1, no terminal)" test "$?" = 1
+
 printf '\n%d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skip"
 [[ "$fail" == 0 ]]

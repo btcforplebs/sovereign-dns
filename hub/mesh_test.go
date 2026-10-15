@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -26,6 +27,11 @@ func meshReq(method, path, device string, body url.Values) *http.Request {
 
 func meshMux(t *testing.T) http.Handler {
 	t.Helper()
+	return meshHandler(testGate, newMux(meshConfig(t)))
+}
+
+func meshConfig(t *testing.T) config {
+	t.Helper()
 	cfg := deadConfig(t)
 	a, err := newAuth("127.0.0.1", testPassword)
 	if err != nil {
@@ -33,7 +39,7 @@ func meshMux(t *testing.T) http.Handler {
 	}
 	cfg.auth = a
 	cfg.mesh = true
-	return meshHandler(testGate, newMux(cfg))
+	return cfg
 }
 
 func TestMeshNeedsPassword(t *testing.T) {
@@ -51,7 +57,7 @@ func TestMeshNeedsPassword(t *testing.T) {
 }
 
 func TestMeshOnOnlyForOn(t *testing.T) {
-	for v, want := range map[string]bool{"on": true, "ON": true, " on ": true, "": false, "off": false, "yes": false, "1": false, "true": false} {
+	for v, want := range map[string]bool{"on": true, "ON": false, "On": false, "": false, "off": false, "yes": false, "1": false, "true": false} {
 		t.Setenv("HUB_MESH", v)
 		if got := meshOn(); got != want {
 			t.Errorf("HUB_MESH=%q: on=%v, want %v", v, got, want)
@@ -188,5 +194,26 @@ func TestMeshGateToHub(t *testing.T) {
 	r.Host = "10.44.200.1:8080"
 	if rec := serve(g, r); rec.Code != http.StatusSeeOther || !strings.HasPrefix(rec.Header().Get("Location"), "/login") {
 		t.Errorf("dashboard through the gate with no session: status %d, want the login page", rec.Code)
+	}
+}
+
+// Something else in the gate's namespace (Pi-hole, the VPN daemon) has the
+// gate's address and can name a new device every guess. The mesh as a whole
+// still runs out of guesses.
+func TestMeshLockoutHoldsWhenDevicesAreForged(t *testing.T) {
+	cfg := meshConfig(t)
+	h, lanH := meshHandler(testGate, newMux(cfg)), newMux(cfg)
+	wrong := url.Values{"password": {"not it at all"}}
+	for i := 0; i < maxMeshFailures; i++ {
+		serve(h, meshReq(http.MethodPost, "/login", fmt.Sprintf("10.44.%d.%d", 100+i/200, 1+i%200), wrong))
+	}
+	rec := serve(h, meshReq(http.MethodPost, "/login", "10.44.250.250", url.Values{"password": {testPassword}}))
+	if rec.Code != http.StatusTooManyRequests {
+		t.Errorf("after %d wrong passwords from %d named devices, the right one from a new name: status %d, want 429", maxMeshFailures, maxMeshFailures, rec.Code)
+	}
+	// The home network and the box itself are not the mesh: not locked.
+	lan := req(http.MethodPost, "/login", "192.168.4.30", url.Values{"password": {testPassword}})
+	if rec := serve(lanH, lan); rec.Code != http.StatusSeeOther {
+		t.Errorf("home-network sign-in during a mesh lockout: status %d, want 303", rec.Code)
 	}
 }
