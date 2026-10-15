@@ -43,12 +43,14 @@ The override is trust-based on members: a device owner can hand-edit their
 local nvpn config to opt out. That's intentional — this is a sovereignty
 tool, and every device answers to its own owner, not a central authority.
 
-## Honest caveat: no iOS coverage yet
+## Honest caveat: phones need a build with network DNS
 
-iOS does not implement the network DNS override. Enforcement lives only in
-the CLI daemon; the crate the iOS app builds on can publish the policy but
-never consumes it. Don't treat an iOS device's presence on the roster as
-DNS coverage — check `nvpn status` on the device itself.
+iOS and Android apply the override only when built from the same NostrVPN
+code this box pins (`NVPN_COMMIT`): the tunnel sends every lookup to the
+box and fails closed when it can't reach it. The stock app-store app has no
+network DNS yet, so it ignores the setting. Don't treat a phone's presence
+on the roster as DNS coverage — check that its lookups reach Pi-hole
+(quickstart Step 7).
 
 The override has an on/off switch on the hub dashboard
 (`http://localhost:8080`, "Network DNS"). It shows the current setting, asks
