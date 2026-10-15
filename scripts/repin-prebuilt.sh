@@ -43,24 +43,32 @@ trap 'rm -rf "$tmp"' EXIT
 # pin <image>: prints repo:tag@digest after every check above, or nothing
 # when the tag is not published.
 pin() {
-  local img=$1 repo tag name token digest got platforms want src
+  local img=$1 repo tag name token digest got platforms want src code
   repo=$(prebuilt_repo "$img"); tag=$(prebuilt_tag "$img")
   name=${repo#ghcr.io/}
-  # No anonymous token: the package does not exist yet, or is private. Either
-  # way an install could not pull it, so it is left out like an unpublished tag.
-  token=$(curl -fsS "https://ghcr.io/token?service=ghcr.io&scope=repository:$name:pull" 2>/dev/null \
-            | sed -E 's/.*"token":"([^"]+)".*/\1/') || token=
-  if [[ -z "$token" ]]; then
-    echo "skipped: $repo is not published or not public; $(prebuilt_services "$img") will build from source" >&2
-    return 0
-  fi
-  digest=$(curl -fsSI -H "Authorization: Bearer $token" -H "Accept: $accept" \
-             "https://ghcr.io/v2/$name/manifests/$tag" 2>/dev/null \
-           | tr -d '\r' | sed -n 's/^[Dd]ocker-[Cc]ontent-[Dd]igest: //p') || true
-  if [[ -z "$digest" ]]; then
-    echo "skipped: $repo:$tag is not published; $(prebuilt_services "$img") will build from source" >&2
-    return 0
-  fi
+  # No anonymous token (401/403/404): the package does not exist yet, or is
+  # private. Either way an install could not pull it, so it is left out like
+  # an unpublished tag. Anything else, a dropped connection included, stops
+  # the repin: an outage must not quietly un-pin images that work.
+  code=$(curl -sS -o "$tmp/$img.token" -w '%{http_code}' \
+           "https://ghcr.io/token?service=ghcr.io&scope=repository:$name:pull" 2>/dev/null) || code=000
+  case "$code" in
+    200) token=$(sed -E 's/.*"token":"([^"]+)".*/\1/' "$tmp/$img.token") ;;
+    401|403|404)
+      echo "skipped: $repo is not published or not public; $(prebuilt_services "$img") will build from source" >&2
+      return 0 ;;
+    *) die "ghcr.io token request for $name answered HTTP $code; not changing any pin" ;;
+  esac
+  [[ -n "$token" && "$token" != *'{'* ]] || die "ghcr.io gave an unreadable token for $name"
+  code=$(curl -sS -I -o "$tmp/$img.head" -w '%{http_code}' -H "Authorization: Bearer $token" -H "Accept: $accept" \
+           "https://ghcr.io/v2/$name/manifests/$tag" 2>/dev/null) || code=000
+  case "$code" in
+    200) digest=$(tr -d '\r' <"$tmp/$img.head" | sed -n 's/^[Dd]ocker-[Cc]ontent-[Dd]igest: //p') ;;
+    404)
+      echo "skipped: $repo:$tag is not published; $(prebuilt_services "$img") will build from source" >&2
+      return 0 ;;
+    *) die "ghcr.io answered HTTP $code for $repo:$tag; not changing any pin" ;;
+  esac
   [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || die "ghcr.io answered $repo:$tag with digest '$digest'"
   curl -fsS -H "Authorization: Bearer $token" -H "Accept: $accept" \
     "https://ghcr.io/v2/$name/manifests/$digest" -o "$tmp/$img.json" \
@@ -117,7 +125,12 @@ for img in $(prebuilt_images); do
   if [[ -s "$tmp/$img.ref" ]]; then any=1; echo "ok: $(cat "$tmp/$img.ref")"; fi
 done
 if [[ "$any" == 0 ]]; then
-  rm -f docker-compose.prebuilt.yml
+  # Staged, not just removed: the gates read the tracked file list.
+  if git ls-files --error-unmatch docker-compose.prebuilt.yml >/dev/null 2>&1; then
+    git rm -q -f docker-compose.prebuilt.yml
+  else
+    rm -f docker-compose.prebuilt.yml
+  fi
   echo "no image is published for this tree: removed docker-compose.prebuilt.yml, installs build from source"
   scripts/make-installer.sh
   exit 0

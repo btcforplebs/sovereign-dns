@@ -50,6 +50,12 @@ compose_files=$(git ls-files '*compose*.yml' '*compose*.yaml')
 # Optional: the override that swaps the source builds for ready-made
 # images (written by scripts/repin-prebuilt.sh, checked near the end).
 prebuilt=docker-compose.prebuilt.yml
+# Deleted by hand but still tracked: every check below would trip over the
+# missing file, and so would the installer's payload. One clear message.
+if grep -Fqx -- "$prebuilt" <<<"$compose_files" && [[ ! -f "$prebuilt" ]]; then
+  echo "unpinned: $prebuilt is deleted but still tracked: git rm $prebuilt (scripts/repin-prebuilt.sh does), then scripts/make-installer.sh"
+  exit 1
+fi
 
 # Read each compose file the way compose reads it. `docker compose config
 # --no-interpolate` resolves anchors, aliases, merge keys, flow style, include:
