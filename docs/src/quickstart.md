@@ -20,9 +20,11 @@ hotel. They reach the box through a private, encrypted network
 (NostrVPN). The dashboard calls this network your **mesh**. You don't
 have to change anything on your router.
 
-> **Today this covers computers.** iPhones and iPads join the network
-> but don't send their lookups through the box yet. Phone support is
-> being worked on (see [Step 6](#step-6-add-your-first-device)).
+> **Phones need the right app build.** Computers, iPhones, iPads and
+> Android phones send their lookups through the box when they run a
+> Nostr VPN build with network DNS (the same code this box runs). The
+> stock app-store app joins the network but doesn't use the box yet
+> (see [Step 6](#step-6-add-your-first-device)).
 
 ## Before you start
 
@@ -292,8 +294,8 @@ and the other two on the box.
    but can't reach the box yet. Make sure Nostr VPN is connected on the
    device, give it a minute and reload.
 
-> **Phones join, but iPhones and iPads don't use the box for DNS yet.**
-> The Worth knowing section on the dashboard has the details. Step 7 shows
+> **Phones use the box only with a Nostr VPN build that has network DNS.**
+> The stock app-store app joins but resolves on its own. Step 7 shows
 > you whether a device's lookups really reach the box.
 
 ## Step 7: See the ads disappear

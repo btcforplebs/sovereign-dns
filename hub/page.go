@@ -268,9 +268,9 @@ const pageHTML = `<!doctype html>
 
   <h2>Worth knowing</h2>
   <p class="caveat">
-    iPhones and iPads don't get the DNS override yet — released builds only
-    publish the policy, they don't apply it. Coverage today is desktop and
-    CLI-mesh devices.
+    Phones and tablets use the box only with a Nostr VPN build that has
+    network DNS (the same code this box runs). The stock app-store app
+    doesn't have it yet: it joins the network but resolves on its own.
   </p>
   <p class="caveat">
     If this stack goes down, DNS fails closed rather than silently falling back
