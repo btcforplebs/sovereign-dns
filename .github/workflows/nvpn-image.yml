@@ -83,29 +83,50 @@ jobs:
           source scripts/lib/prebuilt-images.sh
           accept='application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json'
           missing=()
+          # Missing: an answer that says so. Anything that could not be
+          # checked fails the plan instead: rebuilding on a blip would push
+          # the tag to a new digest (builds are not reproducible) and turn
+          # every pinned check red until a repin.
+          die() { echo "plan: $*" >&2; exit 1; }
           for img in $(prebuilt_images); do
             repo=$(prebuilt_repo "$img"); tag=$(prebuilt_tag "$img"); name=${repo#ghcr.io/}
-            # Anonymous, like an install. A private or absent package gives no
-            # token or no tag: build it.
-            token=$(curl -fsS "https://ghcr.io/token?service=ghcr.io&scope=repository:$name:pull" 2>/dev/null \
-                      | sed -E 's/.*"token":"([^"]+)".*/\1/') || token=
-            digest=
-            if [[ -n "$token" ]]; then
-              digest=$(curl -fsSI -H "Authorization: Bearer $token" -H "Accept: $accept" \
-                         "https://ghcr.io/v2/$name/manifests/$tag" 2>/dev/null \
-                       | tr -d '\r' | sed -n 's/^[Dd]ocker-[Cc]ontent-[Dd]igest: //p') || digest=
+            state=published
+            # Anonymous, like an install: no token for an absent or private
+            # package, no manifest for an unpublished tag.
+            code=$(curl -sS -o "$RUNNER_TEMP/token" -w '%{http_code}' \
+                     "https://ghcr.io/token?service=ghcr.io&scope=repository:$name:pull" 2>/dev/null) || code=000
+            case "$code" in
+              200) token=$(jq -r .token "$RUNNER_TEMP/token") ;;
+              401|403|404) state=missing ;;
+              *) die "ghcr.io token for $name: HTTP $code" ;;
+            esac
+            if [[ "$state" == published ]]; then
+              code=$(curl -sS -I -o "$RUNNER_TEMP/head" -w '%{http_code}' -H "Authorization: Bearer $token" -H "Accept: $accept" \
+                       "https://ghcr.io/v2/$name/manifests/$tag" 2>/dev/null) || code=000
+              case "$code" in
+                200) digest=$(tr -d '\r' <"$RUNNER_TEMP/head" | sed -n 's/^[Dd]ocker-[Cc]ontent-[Dd]igest: //p')
+                     [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || die "$repo:$tag has digest '$digest'" ;;
+                404) state=missing ;;
+                *) die "ghcr.io manifest $repo:$tag: HTTP $code" ;;
+              esac
             fi
-            # Published means attested by this workflow on main too: a tag left
-            # by a run that died before attesting is built and attested again.
-            if [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] && gh attestation verify "oci://$repo@$digest" \
-                 --repo "$GITHUB_REPOSITORY" \
-                 --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/nvpn-image.yml" \
-                 --source-ref refs/heads/main >/dev/null 2>&1; then
-              echo "- $repo:$tag: published" >> "$GITHUB_STEP_SUMMARY"
-            else
-              echo "- $repo:$tag: **missing**" >> "$GITHUB_STEP_SUMMARY"
-              missing+=("$img")
+            # Published also means attested by this workflow on main: a tag
+            # left by a run that died before attesting is built again. The
+            # API answers 404 when the digest has no attestation at all.
+            if [[ "$state" == published ]]; then
+              code=$(gh api -i "repos/$GITHUB_REPOSITORY/attestations/$digest" 2>/dev/null | head -n1 | awk '{print $2}') || true
+              case "$code" in
+                200) gh attestation verify "oci://$repo@$digest" \
+                       --repo "$GITHUB_REPOSITORY" \
+                       --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/nvpn-image.yml" \
+                       --source-ref refs/heads/main >/dev/null \
+                       || die "$repo@$digest has attestations but none verifies as this workflow's on main; look before anything republishes it" ;;
+                404) state=missing ;;
+                *) die "attestations API for $repo@$digest: HTTP ${code:-none}" ;;
+              esac
             fi
+            echo "- $repo:$tag: $state" >> "$GITHUB_STEP_SUMMARY"
+            if [[ "$state" == missing ]]; then missing+=("$img"); fi
           done
           echo "missing=$(printf '%s\n' "${missing[@]}" | jq -R . | jq -sc 'map(select(. != ""))')" >> "$GITHUB_OUTPUT"
           publish=false
@@ -256,7 +277,11 @@ jobs:
           if [[ "$IMG" == nvpn ]]; then labels+=(--label "nvpn.commit=$(nvpn_image_commit)"); fi
           printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
           docker buildx create --use --driver docker-container --driver-opt "image=$BUILDKIT_IMAGE"
+          # No BuildKit provenance/SBOM on the per-arch images: each must be a
+          # plain manifest, which the index step asserts (it lists exactly
+          # these digests). Provenance is attested on the index instead.
           docker buildx build --platform "linux/${{ matrix.arch }}" "${labels[@]}" \
+            --provenance=false --sbom=false \
             --output "type=image,name=$repo,push-by-digest=true,name-canonical=true,push=true" \
             --metadata-file "$RUNNER_TEMP/meta.json" "$IMG"
           mkdir -p "$RUNNER_TEMP/digest"
