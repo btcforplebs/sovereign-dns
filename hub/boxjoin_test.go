@@ -354,3 +354,23 @@ func TestParseBoxIDForms(t *testing.T) {
 		}
 	}
 }
+
+// A box's name is cleaned like a join label, on the review page and in the
+// alias the panel receives.
+func TestAddBoxNameIsCleaned(t *testing.T) {
+	f := &fakePanel{override: true}
+	cfg := panelConfig(t, f)
+	mux := newMux(cfg)
+	raw := "  Pi\u202e  in the\u200b hall " + strings.Repeat("x", 60)
+	want := "Pi in the hall " + strings.Repeat("x", 25)
+	form := url.Values{"csrf": {cfg.csrfToken}, "box": {secondBoxNpub}, "name": {raw}}
+	review := postTo(mux, "/devices/add-box", form, nil).Body.String()
+	if !strings.Contains(review, `name="name" value="`+want+`"`) {
+		t.Fatalf("review page does not carry the cleaned name %q:\n%s", want, review)
+	}
+	form.Set("confirm", "yes")
+	postTo(mux, "/devices/add-box", form, nil)
+	if len(f.bodies) != 1 || f.bodies[0]["alias"] != want {
+		t.Fatalf("panel got alias %v, want %q", f.bodies, want)
+	}
+}
