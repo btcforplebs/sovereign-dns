@@ -326,6 +326,33 @@ From here, add each of your other devices the same way (Step 6).
 - **The Control Panel** at `http://localhost:8082` (on the box) is where
   you approve, rename or remove devices.
 
+### Your dashboard from your phone, anywhere
+
+Any device you've added to your network (your phone on mobile data, a
+laptop at a café) can open the dashboard and Pi-hole through NostrVPN.
+Nothing is opened to the internet or to your home Wi-Fi; only devices on
+your network get there.
+
+1. On the box, in the `sovereign-dns` folder, run:
+
+   ```bash
+   bash scripts/hub-mesh.sh on
+   ```
+
+   If you already picked a dashboard password (for your home network), it
+   uses that one. Otherwise it asks you for one, at least 8 characters.
+   It prints the address, such as `http://10.44.12.34:8080`.
+2. On your phone, make sure NostrVPN is connected, then open that address
+   in the browser and sign in with the dashboard password.
+3. Pi-hole is the **Pi-hole** card on the dashboard, at the same address
+   on port 80: `http://10.44.12.34/admin`. Sign in with your Pi-hole
+   password from Step 3. Its **Query Log** shows every lookup, and you can
+   block or allow a site there.
+
+`bash scripts/hub-mesh.sh url` prints the addresses again;
+`bash scripts/hub-mesh.sh off` closes the dashboard to the mesh. A backup
+DNS box works the same way, at its own mesh address.
+
 ## If something goes wrong
 
 **Devices can't open any website.** Your box is probably off or asleep.

@@ -595,6 +595,7 @@ docs	networks	default
 hub	ports	${HUB_BIND:-127.0.0.1}:${HUB_PORT:-8080}:8080
 hub	networks	default
 hub	networks	dns-internal
+hub-mesh	network_mode	service:nvpn
 web	ports	127.0.0.1:${WEB_UI_PORT:-8082}:8081
 web	networks	default
 web	volumes	source=nvpn-config;target=/root/.config/nvpn;type=volume;volume={}
@@ -618,7 +619,7 @@ for cf in $compose_files; do surface_files+=" $(yaml "$cf")"; done
 for f in $surface_files; do
   while IFS=$'\t' read -r s k v; do
     case "$s" in
-      docs|hub|web|nvpn|pihole|unbound) ;;
+      docs|hub|hub-mesh|web|nvpn|pihole|unbound) ;;
       @network:dns-internal|@network:default)
         case "$k" in driver|internal|ipam|name) ;; *) fail "network ${s#@network:} sets $k, which this gate has no rule for (enable_ipv6 would give the bridge an address [::] listeners answer on)" ;; esac
         continue ;;
@@ -639,7 +640,7 @@ done
 # kills Pi-hole and with it DNS for the whole mesh. The driver is fixed too: a
 # syslog, gelf or fluentd driver would ship every log line off the box. Raw mode
 # sees the unexpanded alias, so it checks the alias and the anchor instead.
-for s in docs hub web nvpn pihole unbound; do
+for s in docs hub hub-mesh web nvpn pihole unbound; do
   blk=$(awk -v s="$s" '$0 == "  " s ":" { a = 1; next }
                        a && /^  [^[:space:]#]/ { a = 0 }
                        a' "$loaded")
@@ -666,6 +667,19 @@ fi
 hub_blk=$(awk '$0 == "  hub:" { a = 1; next } a && /^  [^[:space:]#]/ { a = 0 } a' "$loaded")
 grep -Eq '^[[:space:]]*(-[[:space:]]*)?HUB_BIND[[:space:]]*[:=][[:space:]]*["'"'"']?\$\{HUB_BIND:-127\.0\.0\.1\}["'"'"']?[[:space:]]*$' <<<"$hub_blk" \
   || fail "hub must set HUB_BIND: \${HUB_BIND:-127.0.0.1} in its environment, the same variable its port is published on"
+
+# Required, not just allowed: hub-mesh runs the gate, inside nvpn's netns. The
+# same image with no command is a whole hub, which with no password has no
+# login, and in nvpn's netns it would answer every device on the mesh.
+hubmesh_blk=$(awk '$0 == "  hub-mesh:" { a = 1; next } a && /^  [^[:space:]#]/ { a = 0 } a' "$loaded")
+if [[ -n "$hubmesh_blk" ]]; then
+  grep -Eq '^    command: \[?"?mesh-gate"?\]?$' <<<"$hubmesh_blk" \
+    || awk '/^    command:$/ { c = 1; next } c && /^      - / { print; exit } c { exit }' <<<"$hubmesh_blk" | grep -Eq '^      - "?mesh-gate"?$' \
+    || fail "hub-mesh must run command: [\"mesh-gate\"]; any other command runs a hub with no login on the mesh"
+  grep -Eq '^    entrypoint:' <<<"$hubmesh_blk" && fail "hub-mesh must not set entrypoint: the gate is /hub mesh-gate"
+  surface /dev/stdin <"$loaded" | grep -Fqx "hub-mesh	network_mode	service:nvpn" \
+    || fail "hub-mesh must set network_mode: service:nvpn"
+fi
 
 # Required, not just allowed: pihole serves the mesh only from inside nvpn's netns.
 surface /dev/stdin <"$loaded" | grep -Fqx "pihole	network_mode	service:nvpn" \

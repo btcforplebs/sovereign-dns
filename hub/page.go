@@ -199,6 +199,12 @@ const pageHTML = `<!doctype html>
       <span class="detail">Rename or remove devices, network settings.</span>
     </a>
     {{end}}
+    {{if .MeshURL}}
+    <a class="card" href="{{.MeshURL}}">
+      <span class="name">From your phone</span><br>
+      <span class="detail">{{.MeshURL}} opens this dashboard on any device on the network, with the dashboard password.</span>
+    </a>
+    {{end}}
     {{if .PiholeURL}}
     <a class="card" href="{{.PiholeURL}}">
       <span class="name">Pi-hole</span><br>

@@ -18,6 +18,8 @@
 # no password, and serves private (home-network) addresses only (hub/auth.go).
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# shellcheck source=lib/hub-password.sh
+source scripts/lib/hub-password.sh
 
 die() { printf '%s\n' "$*" >&2; exit 1; }
 [[ -f .env ]] || die "No .env here. Run this from the sovereign-dns folder the installer made."
@@ -80,10 +82,21 @@ docker_desktop_note() {
   fi
 }
 
+# Off the home network. The password goes too, unless the mesh still uses it
+# (scripts/hub-mesh.sh): with HUB_MESH=on and no password the hub would not
+# start at all.
+lan_off() {
+  if hub_env_is HUB_MESH on && [[ -n "$(hub_env_password)" ]]; then
+    set_env "HUB_BIND=127.0.0.1" "$(hub_env_password)"
+  else
+    set_env "HUB_BIND=127.0.0.1"
+  fi
+}
+
 no_password() {
   echo "No password given, so the dashboard stays on this computer only."
   echo "Run 'bash scripts/hub-lan.sh on' in the sovereign-dns folder to try again."
-  set_env "HUB_BIND=127.0.0.1"
+  lan_off
   restart_hub
 }
 
@@ -95,26 +108,10 @@ restart_hub() {
 
 case "$mode" in
   on)
-    pw=${SOVEREIGN_DNS_HUB_PASSWORD:-}
-    if [[ -z "$pw" ]]; then
-      [[ -t 0 ]] || die "No terminal to ask for a password. Set SOVEREIGN_DNS_HUB_PASSWORD and run again."
-      while :; do
-        echo "Pick a password for the dashboard, at least 8 characters (typing is hidden):"
-        # Ctrl-D (end of input) means "never mind": stay on this computer
-        # only, rather than stopping the install half done.
-        read -rs pw || { echo; no_password; exit 0; }
-        echo
-        echo "Type it again:"
-        read -rs pw2 || { echo; no_password; exit 0; }
-        echo
-        if [[ "$pw" != "$pw2" ]]; then echo "Those didn't match. Try again."; continue; fi
-        if [[ ${#pw} -lt 8 ]]; then echo "That's shorter than 8 characters. Try again."; continue; fi
-        if [[ "$pw" == *"'"* ]]; then echo "Please pick one without a ' (single quote) in it."; continue; fi
-        break
-      done
-    fi
-    [[ ${#pw} -ge 8 ]] || die "The dashboard password must be at least 8 characters."
-    [[ "$pw" != *"'"* && "$pw" != *$'\n'* ]] || die "The dashboard password can't contain a ' or a line break."
+    # Ctrl-D (end of input) means "never mind": stay on this computer only,
+    # rather than stopping the install half done.
+    hub_ask_password || { no_password; exit 0; }
+    pw=$hub_pw
     # Single quotes: compose reads the value exactly, with no $ expansion.
     set_env "HUB_BIND=0.0.0.0" "HUB_PASSWORD='${pw}'"
     docker_desktop_note
@@ -125,7 +122,7 @@ case "$mode" in
     if [[ "$restart" == 1 ]]; then echo; print_urls; fi
     ;;
   off)
-    set_env "HUB_BIND=127.0.0.1"
+    lan_off
     restart_hub
     # The installer prints the addresses itself once the stack is up. An
     # `if`, not `[[ ]] &&`: as the last command, a false test would be this

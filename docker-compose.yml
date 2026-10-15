@@ -225,16 +225,53 @@ services:
       # the network, plus the password that then guards it.
       HUB_BIND: ${HUB_BIND:-127.0.0.1}
       HUB_PASSWORD: ${HUB_PASSWORD:-}
+      # on: also answer the mesh, through hub-mesh below, at
+      # http://<this box's mesh IP>:8080 (scripts/hub-mesh.sh). Needs
+      # HUB_PASSWORD: the hub refuses to start without it (hub/mesh.go).
+      HUB_MESH: ${HUB_MESH:-off}
     depends_on:
       nvpn:
         condition: service_healthy
     # Both networks on purpose: the panel and docs sit on the default network,
-    # Pi-hole and Unbound only on dns-internal.
+    # Pi-hole and Unbound only on dns-internal. A fixed address on dns-internal
+    # because hub-mesh, inside nvpn's namespace, dials it there.
     networks:
-      - default
-      - dns-internal
+      default:
+      dns-internal:
+        ipv4_address: 172.28.53.12
     ports:
       - "${HUB_BIND:-127.0.0.1}:${HUB_PORT:-8080}:8080"
+
+  # The hub from the mesh. Mesh traffic arrives inside nvpn's namespace, where
+  # nothing the host publishes can be reached, so this gate runs there, like
+  # Pi-hole, and listens on port 8080 of the box's mesh address. It passes mesh
+  # devices (10.44.0.0/16 only) to the hub's mesh port, which exists only with
+  # HUB_MESH=on and a password, and needs the login on every page. Same image
+  # as the hub, so it has no shell either. Publishes nothing on the host and
+  # changes no firewall rule: only devices the network's admin added get here.
+  # Like Pi-hole, recreate it after anything that restarts nvpn; its
+  # healthcheck goes red when the tunnel is gone. See hub/mesh.go.
+  hub-mesh:
+    build:
+      context: ./hub
+    container_name: sovereign-dns-hub-mesh
+    logging: *logging
+    restart: unless-stopped
+    command: ["mesh-gate"]
+    network_mode: service:nvpn
+    depends_on:
+      nvpn:
+        condition: service_healthy
+      hub:
+        condition: service_started
+    environment:
+      NVPN_TUN_IFACE: ${NVPN_TUN_IFACE:-utun100}
+    healthcheck:
+      test: ["CMD", "/hub", "mesh-health"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
 
   # Self-hosted docs site (mdBook) — explains the whole stack in plain
   # language plus the technical detail behind each layer. Runs standalone;

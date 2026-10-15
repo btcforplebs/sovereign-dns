@@ -88,6 +88,14 @@ itself, since it has no password of its own. Two things to know: the
 password crosses your home network unencrypted (plain `http`, like the
 Pi-hole page), and anyone who knows it can add a device.
 
+**From your phone, anywhere.** `bash scripts/hub-mesh.sh on` opens the
+dashboard to the devices on your NostrVPN network, at
+`http://<the box's mesh IP>:8080`, with the same password (it asks for one
+if you have none yet). Pi-hole's own page is already there at
+`http://<the box's mesh IP>/admin`, behind the Pi-hole password. Neither is
+reachable from the internet or your home network; `hub-mesh.sh off` closes
+the dashboard again, and `hub-mesh.sh url` prints both addresses.
+
 ## Add your phone or laptop
 
 On the dashboard, click **Add a device**, then:
