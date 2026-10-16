@@ -4,7 +4,7 @@ ARG RUNTIME_IMAGE=debian:bookworm-20261005-slim@sha256:7c7b2c966bc9ee8cedfeef67e
 # Declared before the first FROM so the source stage, which checks this
 # commit out, and the builder stage, which stamps it into the versions, share
 # one default. Each stage re-declares it bare to read it.
-ARG NVPN_COMMIT=31868ac2e21b29179cf3e9fb0cedf64533d46091
+ARG NVPN_COMMIT=276b295a24f279c3ab7a4796856674708beb24c4
 
 FROM alpine/git:v2.54.0@sha256:ce84fd6a057b4dc5cf5009da2dd832f1c6d096c1984bf50496cf3c256402264d AS source
 ARG NVPN_REPO=https://github.com/btcforplebs/nostr-vpn.git
