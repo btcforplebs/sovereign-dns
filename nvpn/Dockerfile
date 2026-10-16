@@ -4,7 +4,7 @@ ARG RUNTIME_IMAGE=debian:bookworm-20261005-slim@sha256:7c7b2c966bc9ee8cedfeef67e
 
 FROM alpine/git:v2.54.0@sha256:ce84fd6a057b4dc5cf5009da2dd832f1c6d096c1984bf50496cf3c256402264d AS source
 ARG NVPN_REPO=https://github.com/btcforplebs/nostr-vpn.git
-ARG NVPN_COMMIT=a8ffb3caed1682ab57b1092212e5e368002fe8c5
+ARG NVPN_COMMIT=b61c1b8e3c7e254904c9d8c81e8fcab75e31a299
 WORKDIR /src
 # Fetch exactly one commit by SHA, then prove that is what was checked out.
 # A branch name would let two installs build different code.
