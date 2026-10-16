@@ -22,6 +22,7 @@ func lanConfig(t *testing.T) config {
 		t.Fatal(err)
 	}
 	cfg.auth = a
+	cfg.lanPanelPort = lanPanelPort(a)
 	return cfg
 }
 
@@ -114,12 +115,16 @@ func TestSignInThenDashboard(t *testing.T) {
 	}
 	body := rec.Body.String()
 	// Seen from another computer, the control panel's loopback link would open
-	// the reader's own computer. It must say where it is instead.
+	// the reader's own computer. It goes to the hub's panel port instead, under
+	// the name the reader used (lanpanel.go).
 	if strings.Contains(body, `href="http://localhost:8082"`) {
 		t.Error("remote dashboard links to localhost:8082, which opens the reader's own computer")
 	}
-	if !strings.Contains(body, "Opens only on the box itself") {
-		t.Error("remote dashboard does not say the control panel opens on the box only")
+	if !strings.Contains(body, `href="http://192.168.4.20:8083"`) {
+		t.Error("remote dashboard does not link the control panel at the box's panel port")
+	}
+	if strings.Contains(body, "Opens only on the box itself") {
+		t.Error("remote dashboard still calls the control panel box-only")
 	}
 	if !strings.Contains(body, `action="/logout"`) {
 		t.Error("no sign-out button")

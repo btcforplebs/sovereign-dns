@@ -77,7 +77,8 @@ services:
   # container (required for Docker's port publish to reach it at all) but
   # is only ever published to the host's loopback — this server has no
   # login of its own, so exposing it beyond localhost would let anyone who
-  # can reach that port approve/remove devices on your mesh.
+  # can reach that port approve/remove devices on your mesh. Other computers
+  # reach it through the hub, behind the hub password (hub/lanpanel.go).
   web:
     build:
       context: ./nvpn
@@ -245,6 +246,9 @@ services:
       # http://<this box's mesh IP>:8080 (scripts/hub-mesh.sh). Needs
       # HUB_PASSWORD: the hub refuses to start without it (hub/mesh.go).
       HUB_MESH: ${HUB_MESH:-off}
+      # The VPN control panel from the home network, behind the same password
+      # (hub/lanpanel.go). Served only while HUB_BIND is not loopback.
+      HUB_PANEL_PORT: ${HUB_PANEL_PORT:-8083}
     depends_on:
       nvpn:
         condition: service_healthy
@@ -257,6 +261,7 @@ services:
         ipv4_address: 172.28.53.12
     ports:
       - "${HUB_BIND:-127.0.0.1}:${HUB_PORT:-8080}:8080"
+      - "${HUB_BIND:-127.0.0.1}:${HUB_PANEL_PORT:-8083}:8092"
 
   # The hub from the mesh. Mesh traffic arrives inside nvpn's namespace, where
   # nothing the host publishes can be reached, so this gate runs there, like

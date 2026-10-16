@@ -18,9 +18,10 @@
 # SOVEREIGN_DNS_HUB_PASSWORD: the password, for running without a terminal.
 #
 # Only the hub moves. The VPN control panel keeps no password of its own, so it
-# stays on this box's loopback; from another computer, the hub adds devices by
-# their join link instead. The hub itself refuses to start on the network with
-# no password, and serves private (home-network) addresses only (hub/auth.go).
+# stays on this box's loopback; other computers reach it through the hub, at
+# port HUB_PANEL_PORT (8083) behind the same password (hub/lanpanel.go). The
+# hub itself refuses to start on the network with no password, and serves
+# private (home-network) addresses only (hub/auth.go).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 # shellcheck source=lib/hub-password.sh
@@ -36,6 +37,7 @@ restart=1
 [[ "${2:-}" == "--no-restart" ]] && restart=0
 
 hub_port() { local p; p=$(grep '^HUB_PORT=' .env | cut -d= -f2 || true); echo "${p:-8080}"; }
+panel_port() { local p; p=$(grep '^HUB_PANEL_PORT=' .env | cut -d= -f2 || true); echo "${p:-8083}"; }
 
 print_urls() {
   local port ip name
@@ -47,6 +49,7 @@ print_urls() {
     [[ -n "$ip" ]] && echo "    http://${ip}:${port}"
     [[ -n "$name" ]] && echo "    http://${name}.local:${port}   (if your computer finds it by name)"
     echo "and sign in with the dashboard password."
+    [[ -n "$ip" ]] && echo "The VPN control panel is at http://${ip}:$(panel_port), behind the same password."
   else
     echo "The dashboard opens on this computer only:  http://localhost:${port}"
   fi

@@ -258,7 +258,9 @@ or `http://raspberrypi.local:8080`, on a laptop or phone on the same Wi-Fi,
 and sign in with the dashboard password you picked. You can turn this on or
 off later with `bash scripts/hub-lan.sh on` (or `off`) in the
 `sovereign-dns` folder. From another computer, add devices with their join
-link (Step 6). The VPN control panel still opens only on the box.
+link (Step 6). The VPN control panel is the **Control Panel** card, at
+the same address on port 8083 (`http://192.168.1.50:8083`), behind the
+same password.
 
 <!-- MAINTAINERS: installer piece 2 turns the hub into a step-by-step
      wizard (parts running, add a device, approve it, check it uses the
