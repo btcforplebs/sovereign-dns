@@ -66,6 +66,7 @@ services:
     container_name: !reset null
     environment:
       HUB_MESH_TARGET: "$NET.12:8090"
+      HUB_MESH_PANEL_TARGET: "$NET.12:8091"
   docs:
     container_name: !reset null
     ports: !reset []
@@ -86,8 +87,10 @@ EOF
 
 # Only nvpn and web come prebuilt: the hub, Unbound and docs build from this
 # tree, which is what is under test.
-NVPN_IMAGE=$(awk '$0 == "  nvpn:" { a = 1; next } a && /^    image: / { print $2; exit }' docker-compose.prebuilt.yml)
-[[ -n "$NVPN_IMAGE" ]] || { echo "e2e: no nvpn image in docker-compose.prebuilt.yml" >&2; exit 1; }
+# NVPN_IMAGE=<image> uses a local nvpn image instead (one built from a
+# nostr-vpn branch under test, or while the prebuilt pin is being moved).
+NVPN_IMAGE=${NVPN_IMAGE:-$(awk '$0 == "  nvpn:" { a = 1; next } a && /^    image: / { print $2; exit }' docker-compose.prebuilt.yml)}
+[[ -n "$NVPN_IMAGE" ]] || { echo "e2e: no nvpn image in docker-compose.prebuilt.yml; set NVPN_IMAGE" >&2; exit 1; }
 printf 'services:\n  nvpn:\n    build: !reset null\n    image: %s\n  web:\n    build: !reset null\n    image: %s\n' "$NVPN_IMAGE" "$NVPN_IMAGE" >"$tmp/nvpn-prebuilt.yml"
 export NVPN_IMAGE PIHOLE_PASSWORD=$PIHOLE_PW HUB_PASSWORD=$HUB_PW HUB_MESH=on
 C=(docker compose -p "$P" -f docker-compose.yml -f "$tmp/nvpn-prebuilt.yml" -f "$ovr")
@@ -177,6 +180,22 @@ grep -qi "pi-hole" <<<"$body" && ok "  ...its login page" || bad "  .../admin/lo
 r=$("${C[@]}" exec -T phone curl -s --max-time 5 -X POST -H 'Content-Type: application/json' -d '{"password":"nope"}' "http://$MESH_IP/api/auth" || true)
 grep -q '"valid":false' <<<"$r" && ok "  ...and it refuses a wrong Pi-hole password" || bad "  ...Pi-hole auth with a wrong password: '$r'"
 
+# The VPN control panel from the phone, on port 8082, behind the same login.
+r=$(phone_curl "http://$MESH_IP:8082/")
+[[ "$r" == "303 http://$MESH_IP:8082/login"* ]] && ok "phone -> http://$MESH_IP:8082/ (control panel) asks for the dashboard password ($r)" || bad "phone -> :8082/ signed out: '$r', want 303 to /login"
+r=$(phone_curl -X POST -H "Origin: http://$MESH_IP:8082" "http://$MESH_IP:8082/api/tick")
+[[ "$r" == "401 "* ]] && ok "  ...its API too (401)" || bad "  ...panel API signed out: '$r', want 401"
+r=$(phone_curl -c /tmp/pjar -X POST --data-urlencode "password=$HUB_PW" -d next=/ -H "Origin: http://$MESH_IP:8082" "http://$MESH_IP:8082/login")
+[[ "$r" == "303 http://$MESH_IP:8082/" ]] && ok "  ...the dashboard password signs in ($r)" || bad "  ...signing in on :8082: '$r', want 303 to /"
+body=$("${C[@]}" exec -T phone curl -s --max-time 5 -b /tmp/pjar "http://$MESH_IP:8082/" || true)
+grep -qi '<div id="app"\|nostr' <<<"$body" && ok "  ...and the control panel's page opens" || bad "  ...control panel page after sign-in: ${body:0:120}"
+body=$("${C[@]}" exec -T phone curl -s --max-time 10 -b /tmp/pjar -X POST -H "Origin: http://$MESH_IP:8082" "http://$MESH_IP:8082/api/tick" || true)
+grep -q "\"ownNpub\":\"$BOX\"" <<<"$body" && ok "  ...its API answers as the box ($BOX)" || bad "  ...panel /api/tick through the mesh: ${body:0:160}"
+r=$("${C[@]}" exec -T phone curl -s -o /dev/null -w '%{http_code}' --max-time 10 -b /tmp/pjar -X POST -H "Origin: http://evil.example" "http://$MESH_IP:8082/api/tick" || true)
+[[ "$r" == 403 ]] && ok "  ...and refuses a cross-site write even when signed in (403)" || bad "  ...cross-site POST signed in: $r, want 403"
+r=$(phone_curl -H "X-Forwarded-For: $PHONE_IP" "http://$NET.12:8091/")
+[[ "$r" == "403 "* ]] && ok "phone -> the hub's panel port directly is refused (403)" || bad "phone -> hub :8091 directly: '$r', want 403"
+
 # Not from outside the mesh: the same ports at the box's Docker address.
 r=$(phone_curl "http://$NET.10:8080/")
 [[ "$r" == "403 "* ]] && ok "phone -> $NET.10:8080 (not the mesh) is refused (403)" || bad "phone -> gate off-mesh: '$r', want 403"
@@ -197,6 +216,8 @@ for _ in $(seq 1 30); do
   sleep 1
 done
 [[ "$r" == "502 "* ]] && ok "HUB_MESH=off: phone -> :8080 opens nothing (502, 'not open to the mesh')" || bad "HUB_MESH=off: '$r', want 502"
+r=$(phone_curl "http://$MESH_IP:8082/")
+[[ "$r" == "502 "* ]] && ok "  ...nor :8082, the control panel (502)" || bad "  ...HUB_MESH=off :8082: '$r', want 502"
 r=$(phone_curl -H "X-Forwarded-For: $PHONE_IP" "http://$NET.12:8090/")
 [[ "$r" == "000 "* ]] && ok "  ...the hub's mesh port is closed" || bad "  ...hub :8090 with HUB_MESH=off: '$r', want no answer"
 

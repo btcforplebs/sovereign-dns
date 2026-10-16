@@ -12,7 +12,8 @@
 # --no-restart: only write .env.
 # SOVEREIGN_DNS_HUB_PASSWORD: the password, for running without a terminal.
 #
-# The address is http://<this box's mesh IP>:8080. Pi-hole's own page is at
+# The address is http://<this box's mesh IP>:8080, and the VPN control panel
+# is at :8082 behind the same password. Pi-hole's own page is at
 # http://<this box's mesh IP>/admin with the Pi-hole password, mesh only, on
 # or off. Nothing is published on the home network or the internet: the
 # hub-mesh service listens inside the VPN container only (hub/mesh.go).
@@ -54,6 +55,7 @@ print_urls() {
   if hub_env_is HUB_MESH on; then
     echo "From any device on your NostrVPN network, open:"
     echo "    http://${ip}:8080        the dashboard (dashboard password)"
+    echo "    http://${ip}:8082        the VPN control panel: approve devices, admins, DNS boxes (dashboard password)"
   else
     echo "The dashboard is not open to the mesh. 'bash scripts/hub-mesh.sh on' opens it."
     echo "From any device on your NostrVPN network:"

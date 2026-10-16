@@ -136,7 +136,7 @@ func TestMeshGate(t *testing.T) {
 		_, _ = io.WriteString(w, "hub")
 	}))
 	defer hub.Close()
-	g := meshGate(strings.TrimPrefix(hub.URL, "http://"), netip.MustParsePrefix("10.44.0.0/16"))
+	g := meshGate(strings.TrimPrefix(hub.URL, "http://"), netip.MustParsePrefix("10.44.0.0/16"), closedText("The dashboard"))
 
 	for _, from := range []string{"172.28.53.12", "172.28.53.11", "192.168.1.5", "127.0.0.1", "10.45.0.1"} {
 		r := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -177,7 +177,7 @@ func TestMeshGateToHub(t *testing.T) {
 		return newMux(cfg)
 	}()))
 	defer hub.Close()
-	g := meshGate(strings.TrimPrefix(hub.URL, "http://"), netip.MustParsePrefix("10.44.0.0/16"))
+	g := meshGate(strings.TrimPrefix(hub.URL, "http://"), netip.MustParsePrefix("10.44.0.0/16"), closedText("The dashboard"))
 
 	r := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(url.Values{"password": {testPassword}}.Encode()))
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -215,5 +215,67 @@ func TestMeshLockoutHoldsWhenDevicesAreForged(t *testing.T) {
 	lan := req(http.MethodPost, "/login", "192.168.4.30", url.Values{"password": {testPassword}})
 	if rec := serve(lanH, lan); rec.Code != http.StatusSeeOther {
 		t.Errorf("home-network sign-in during a mesh lockout: status %d, want 303", rec.Code)
+	}
+}
+
+// The control panel from the mesh: behind the hub's login, and handed to the
+// panel with none of the caller's forwarding headers and without the hub's
+// session cookie. Host and Origin pass as the browser sent them, which is
+// what the panel's own same-origin check compares.
+func TestMeshPanelProxy(t *testing.T) {
+	var got []*http.Request
+	panel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = append(got, r.Clone(r.Context()))
+		fmt.Fprint(w, "panel "+r.URL.Path)
+	}))
+	t.Cleanup(panel.Close)
+	cfg := meshConfig(t)
+	h := meshHandler(testGate, cfg.auth.wrap(meshPanelProxy(panel.URL)))
+
+	serve := func(r *http.Request) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, r)
+		return rec
+	}
+	panelReq := func(method, path string) *http.Request {
+		r := meshReq(method, path, "10.44.12.66", nil)
+		r.Host = "10.44.12.7:8082"
+		return r
+	}
+
+	if rec := serve(panelReq(http.MethodGet, "/")); rec.Code != http.StatusSeeOther || !strings.HasPrefix(rec.Header().Get("Location"), "/login") {
+		t.Fatalf("signed out, GET /: %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+	if rec := serve(panelReq(http.MethodPost, "/api/set_network_dns_role")); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("signed out, POST to the panel API: %d, want 401", rec.Code)
+	}
+	direct := panelReq(http.MethodGet, "/")
+	direct.RemoteAddr = "10.44.12.66:5555" // not through the gate
+	if rec := serve(direct); rec.Code != http.StatusForbidden {
+		t.Fatalf("not from the gate: %d, want 403", rec.Code)
+	}
+	if len(got) != 0 {
+		t.Fatalf("the panel was reached %d times before signing in", len(got))
+	}
+
+	session := cfg.auth.newSession()
+	r := panelReq(http.MethodPost, "/api/tick")
+	r.AddCookie(&http.Cookie{Name: sessionCookie, Value: session})
+	r.Header.Set("Origin", "http://10.44.12.7:8082")
+	r.Header.Set("X-Forwarded-Host", "evil.example")
+	r.Header.Set("Forwarded", "for=1.2.3.4")
+	r.Header.Set("X-Real-Ip", "1.2.3.4")
+	rec := serve(r)
+	if rec.Code != http.StatusOK || rec.Body.String() != "panel /api/tick" || len(got) != 1 {
+		t.Fatalf("signed in: %d %q, panel saw %d", rec.Code, rec.Body.String(), len(got))
+	}
+	p := got[0]
+	if p.Host != "10.44.12.7:8082" || p.Header.Get("Origin") != "http://10.44.12.7:8082" {
+		t.Errorf("panel saw Host %q Origin %q, want the browser's", p.Host, p.Header.Get("Origin"))
+	}
+	for _, hd := range []string{"Cookie", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "Forwarded", "X-Real-Ip"} {
+		if v := p.Header.Get(hd); v != "" {
+			t.Errorf("panel got %s: %q", hd, v)
+		}
 	}
 }

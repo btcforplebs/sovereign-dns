@@ -481,11 +481,11 @@ const wizardHTML = `<!doctype html>
     {{if .PendingJoins}}
     <p><span class="badge">{{.PendingJoins}} device{{if gt .PendingJoins 1}}s{{end}} waiting</span></p>
     <ol class="todo">
-      {{if .Remote}}
+      {{if and .Remote (not .PanelOnMesh)}}
       <li>Easiest from here: go back to step 3 and paste the device's join link. That adds it in one click.</li>
       <li>Or, on the box itself, open the admin panel at <code>localhost:8082</code>.</li>
       {{else}}
-      <li>Open the admin panel: <a class="big" href="{{.PanelURL}}" target="_blank" rel="noopener">Open localhost:8082 →</a></li>
+      <li>Open the admin panel: <a class="big" href="{{.PanelURL}}" target="_blank" rel="noopener">Open the control panel →</a></li>
       {{end}}
       <li>Find <strong>Join requests</strong>. You should see one request: the device from step 2.</li>
       <li>Click <strong>Approve</strong>. Come back here. This page notices on its own.</li>

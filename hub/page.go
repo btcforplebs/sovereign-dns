@@ -113,7 +113,7 @@ const pageHTML = `<!doctype html>
   </div>
   {{if .PendingJoins}}
   <p style="margin-top:14px">
-    {{if .Remote}}
+    {{if and .Remote (not .PanelOnMesh)}}
     <span class="badge">{{.PendingJoins}} device(s) waiting to join</span>
     Approve in the control panel on the box itself, or add the device here with its join link (below).
     {{else}}
@@ -199,7 +199,7 @@ const pageHTML = `<!doctype html>
       <span class="name">Setup guide</span><br>
       <span class="detail">Add a device, approve it, check it really uses this box.</span>
     </a>
-    {{if .Remote}}
+    {{if and .Remote (not .PanelOnMesh)}}
     <div class="card">
       <span class="name">Control Panel</span><br>
       <span class="detail">Rename or remove devices, network settings. Opens only on the box itself, at localhost:8082: it has no password of its own.</span>

@@ -370,6 +370,11 @@ your network get there.
    password from Step 3. Its **Query Log** shows every lookup, and you can
    block or allow a site there.
 
+4. The VPN control panel is at the same address on port 8082:
+   `http://10.44.12.34:8082`, behind the same dashboard password. It is
+   where you approve devices, make another device an admin, and pick the
+   DNS box and its backups.
+
 `bash scripts/hub-mesh.sh url` prints the addresses again;
 `bash scripts/hub-mesh.sh off` closes the dashboard to the mesh. A backup
 DNS box works the same way, at its own mesh address.
