@@ -134,8 +134,9 @@ bash scripts/hub-lan.sh url   # print the addresses again
 ```
 
 From another computer you can add devices by their join link, and turn
-network DNS on or off. The VPN control panel still only opens on the box
-itself, since it has no password of its own. Two things to know: the
+network DNS on or off. The VPN control panel opens there too, at port
+8083 (`http://192.168.1.50:8083`, say), behind the same password; the
+dashboard's Control Panel card links it. Two things to know: the
 password crosses your home network unencrypted (plain `http`, like the
 Pi-hole page), and anyone who knows it can add a device.
 
@@ -384,7 +385,10 @@ the daemon: approve/reject join requests, add or remove devices and
 admins, rename networks. It has **no login of its own**,
 so compose publishes it only to the host's loopback
 (`127.0.0.1:${WEB_UI_PORT:-8082}`) — do not re-publish it to the LAN or
-the mesh.
+the mesh. From other computers the hub carries it behind the hub
+password: on the home network at port `${HUB_PANEL_PORT:-8083}` while
+`scripts/hub-lan.sh` is on (`hub/lanpanel.go`), and on the mesh at port
+8082 while `scripts/hub-mesh.sh` is on (`hub/mesh.go`).
 
 ### Pi-hole on the mesh
 

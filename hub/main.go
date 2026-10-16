@@ -52,6 +52,7 @@ type config struct {
 	csrfToken    string        // per process; every form that changes something must echo it
 	auth         *auth         // login for home-network access (auth.go); nil or no password: none
 	mesh         bool          // HUB_MESH=on: the hub also answers the mesh, through the gate (mesh.go)
+	lanPanelPort string        // the control panel on the home network, behind the login (lanpanel.go); "" when off
 	backups      *backupMemory // which networks have had a backup DNS box (alerts.go)
 }
 
@@ -143,13 +144,17 @@ type device struct {
 }
 
 type page struct {
-	Tiles         []tile
-	PendingJoins  int
-	PanelURL      string
-	PiholeURL     string
-	MeshURL       string // this dashboard from any device on the mesh (HUB_MESH=on)
-	MeshPanelURL  string // the VPN control panel from the mesh (HUB_MESH=on)
-	PanelOnMesh   bool   `json:"-"` // the reader came over the mesh, so PanelURL is MeshPanelURL
+	Tiles        []tile
+	PendingJoins int
+	PanelURL     string
+	PiholeURL    string
+	MeshURL      string // this dashboard from any device on the mesh (HUB_MESH=on)
+	MeshPanelURL string // the VPN control panel from the mesh (HUB_MESH=on)
+	PanelOnMesh  bool   `json:"-"` // the reader came over the mesh, so PanelURL is MeshPanelURL
+	// PanelOffHere: the reader is on another computer and no route to the
+	// control panel reaches them, so the page says where it is instead of
+	// linking to the box's loopback.
+	PanelOffHere  bool `json:"-"`
 	DocsURL       string
 	OwnNpub       string
 	NetworkID     string
@@ -248,7 +253,18 @@ func main() {
 	if a.enabled() {
 		log.Printf("hub: home-network access on (published on %s), pages need the hub password", env("HUB_BIND", "127.0.0.1"))
 	}
+	cfg.lanPanelPort = lanPanelPort(a)
 	mux := newMux(cfg)
+
+	if cfg.lanPanelPort != "" {
+		log.Printf("hub: control panel on the home network (port %s, published as %s), behind the hub password", lanPanelListen, cfg.lanPanelPort)
+		lanPanelServer := &http.Server{
+			Addr:              lanPanelListen,
+			Handler:           lanPanel(cfg.auth, cfg.panelAPI),
+			ReadHeaderTimeout: 10 * time.Second,
+		}
+		go func() { log.Fatal(lanPanelServer.ListenAndServe()) }()
+	}
 
 	if cfg.mesh {
 		gate, err := netip.ParseAddr(env("HUB_MESH_GATE", "172.28.53.10"))
@@ -345,11 +361,19 @@ func newMux(cfg config) http.Handler {
 func (c config) viewer(p *page, r *http.Request) {
 	p.Remote = !loopbackHost(r.Host)
 	p.Login = c.auth.enabled()
-	// Over the mesh the panel opens at its own mesh port, behind the same
-	// login (mesh.go); from the home network it still opens only on the box.
-	if fromMeshGate(r) && p.MeshPanelURL != "" {
+	// Over the mesh the panel opens at its own mesh port, and from the home
+	// network at the hub's panel port, both behind the same login (mesh.go,
+	// lanpanel.go).
+	switch {
+	case fromMeshGate(r) && p.MeshPanelURL != "":
 		p.PanelURL = p.MeshPanelURL
 		p.PanelOnMesh = true
+	case fromMeshGate(r):
+		p.PanelOffHere = true
+	case p.Remote && c.lanPanelPort != "":
+		p.PanelURL = lanPanelURL(r.Host, c.lanPanelPort)
+	case p.Remote:
+		p.PanelOffHere = true
 	}
 	// The docs' own port is on the box's loopback; from elsewhere, read them
 	// through the hub (docsProxy). The online guide needs no help.

@@ -599,6 +599,7 @@ surface_allowed=$(cat <<'ALLOW'
 docs	ports	127.0.0.1:${DOCS_PORT:-8081}:80
 docs	networks	default
 hub	ports	${HUB_BIND:-127.0.0.1}:${HUB_PORT:-8080}:8080
+hub	ports	${HUB_BIND:-127.0.0.1}:${HUB_PANEL_PORT:-8083}:8092
 hub	networks	default
 hub	networks	dns-internal
 hub-mesh	network_mode	service:nvpn

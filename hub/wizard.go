@@ -299,7 +299,7 @@ const wizardHTML = `<!doctype html>
     <div class="row {{if .PanelUp}}up{{else}}down{{end}}">
       <span class="dot"></span>
       <span><span class="name">Admin panel</span> — where you say yes<br>
-        <span class="what">The page at <code>localhost:8082</code> where devices get approved. Only the box itself can open it.</span></span>
+        <span class="what">The page where devices get approved: <code>localhost:8082</code> on the box, or from another computer with the dashboard password.</span></span>
       <span class="state">{{if .PanelUp}}Running{{else}}Not yet{{end}}</span>
     </div>
   </div>
@@ -481,7 +481,7 @@ const wizardHTML = `<!doctype html>
     {{if .PendingJoins}}
     <p><span class="badge">{{.PendingJoins}} device{{if gt .PendingJoins 1}}s{{end}} waiting</span></p>
     <ol class="todo">
-      {{if and .Remote (not .PanelOnMesh)}}
+      {{if .PanelOffHere}}
       <li>Easiest from here: go back to step 3 and paste the device's join link. That adds it in one click.</li>
       <li>Or, on the box itself, open the admin panel at <code>localhost:8082</code>.</li>
       {{else}}
