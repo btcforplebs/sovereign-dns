@@ -68,8 +68,12 @@ Install [Docker](https://docs.docker.com/get-docker/) first and open it once.
 Then open a terminal on the box and paste this one line:
 
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/btcforplebs/sovereign-dns/main/scripts/install.sh && bash install.sh
+rm -f install.sh && curl -fsSLO https://raw.githubusercontent.com/btcforplebs/sovereign-dns/main/scripts/install.sh && bash install.sh
 ```
+
+The `rm -f` clears out an `install.sh` left from an earlier install (even
+one that `sudo` made), so the fresh copy can always be saved. Paste the same
+line again later to update the box.
 
 It will ask you to pick a password (for the ad-blocking dashboard), then set
 everything up. When a ready-made copy of the encrypted network software exists
@@ -258,7 +262,7 @@ Then, in a terminal on the box, in the folder you ran the installer from
 (usually your home folder), paste this one line:
 
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/btcforplebs/sovereign-dns/main/scripts/uninstall.sh && bash uninstall.sh
+rm -f uninstall.sh && curl -fsSLO https://raw.githubusercontent.com/btcforplebs/sovereign-dns/main/scripts/uninstall.sh && bash uninstall.sh
 ```
 
 It says what it will do and asks once before changing anything. In order:

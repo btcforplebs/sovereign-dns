@@ -63,7 +63,7 @@ A window opens with a blinking cursor. That's all you need.
 Copy this line, paste it into the terminal and press <kbd>Return</kbd>:
 
 ```bash
-curl -fsSLO https://INSTALLER-URL/install.sh && bash install.sh
+rm -f install.sh && curl -fsSLO https://INSTALLER-URL/install.sh && bash install.sh
 ```
 
 <!-- MAINTAINERS: no public URL yet (Logen, 2026-10-11: local for now).
@@ -77,8 +77,10 @@ curl -fsSLO https://INSTALLER-URL/install.sh && bash install.sh
 > choose **Go → Home** and drag the file there), then paste
 > `bash install.sh` instead.
 
-The line does two things: it downloads one file, `install.sh`, into your
-home folder, and then runs it.
+The line does three things: it clears out any `install.sh` left from an
+earlier install (even one that `sudo` made, which would otherwise stop the
+new copy from being saved), downloads a fresh `install.sh` into your home
+folder, and runs it. Paste the same line again later to update the box.
 
 ### Optional: check the file before you run it
 
@@ -92,6 +94,7 @@ at a time:
    `install.sh.sha256`, which is published next to it:
 
    ```bash
+   rm -f install.sh install.sh.sha256
    curl -fsSLO https://INSTALLER-URL/install.sh
    curl -fsSLO https://INSTALLER-URL/install.sh.sha256
    ```

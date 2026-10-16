@@ -109,8 +109,23 @@ Close whatever is using it (or run this script once, then edit the *_PORT values
   done
 fi
 
+if printf 'QQo=' | base64 -d >/dev/null 2>&1; then dec() { base64 -d; }; else dec() { base64 -D; }; fi
+payload_line=$(awk '/^__PAYLOAD_BELOW__$/ { print NR + 1; exit }' "$0")
+[[ -n "$payload_line" ]] || die "This installer file is truncated — re-download it and run again."
+
 if [[ -d sovereign-dns ]]; then
   echo "Existing ./sovereign-dns found — refreshing its stack files. Your .env, password, and data are kept."
+  # An earlier run with sudo leaves files this user cannot overwrite, and tar
+  # would stop halfway through the update. Say so before touching anything.
+  blocked=$( { echo .; tail -n +"$payload_line" "$0" | dec | tar -tf -; } | while IFS= read -r f; do
+    f="sovereign-dns/${f#./}"; f="${f%/}"
+    if [[ -e "$f" && ! -w "$f" ]]; then echo "  $f"; fi
+  done | awk 'NR <= 5')
+  [[ -z "$blocked" ]] || die "Some files in ./sovereign-dns belong to another user (probably an earlier install
+run with sudo), so they can't be updated:
+$blocked
+Make them yours again, then paste the install line again:
+  sudo chown -R \"$(id -un)\" sovereign-dns"
 fi
 mkdir -p sovereign-dns
 # tar -x adds and overwrites files but never deletes one. A prebuilt override
@@ -118,9 +133,6 @@ mkdir -p sovereign-dns
 # so it goes before unpacking; the payload brings it back if it has one.
 rm -f sovereign-dns/docker-compose.prebuilt.yml
 
-if printf 'QQo=' | base64 -d >/dev/null 2>&1; then dec() { base64 -d; }; else dec() { base64 -D; }; fi
-payload_line=$(awk '/^__PAYLOAD_BELOW__$/ { print NR + 1; exit }' "$0")
-[[ -n "$payload_line" ]] || die "This installer file is truncated — re-download it and run again."
 tail -n +"$payload_line" "$0" | dec | tar -xf - -C sovereign-dns
 cd sovereign-dns
 

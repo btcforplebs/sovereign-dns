@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Remove this sovereign-dns box, in the order that keeps your devices online.
 #
-#   curl -fsSLO https://raw.githubusercontent.com/btcforplebs/sovereign-dns/main/scripts/uninstall.sh && bash uninstall.sh
+#   rm -f uninstall.sh && curl -fsSLO https://raw.githubusercontent.com/btcforplebs/sovereign-dns/main/scripts/uninstall.sh && bash uninstall.sh
 #
 # Run it where you ran install.sh (it looks for ./sovereign-dns), or as
 # `bash scripts/uninstall.sh` inside the sovereign-dns folder. In order:
