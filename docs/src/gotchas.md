@@ -47,7 +47,7 @@ planned post-MVP improvement.
 ## nvpn is pinned to a commit, not a release
 
 The stack builds `nostr-vpn` at one exact commit (`NVPN_COMMIT` in
-`docker-compose.yml`), taken from the `network-dns-gui` feature branch.
+`docker-compose.yml`), taken from `master` of the btcforplebs/nostr-vpn fork.
 The build fetches that commit and refuses anything that isn't a full
 40-character SHA, so two installs never build different code. Every
 container image is pinned by digest for the same reason. To move to a
