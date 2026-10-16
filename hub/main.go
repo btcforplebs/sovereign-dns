@@ -148,6 +148,8 @@ type page struct {
 	PanelURL      string
 	PiholeURL     string
 	MeshURL       string // this dashboard from any device on the mesh (HUB_MESH=on)
+	MeshPanelURL  string // the VPN control panel from the mesh (HUB_MESH=on)
+	PanelOnMesh   bool   `json:"-"` // the reader came over the mesh, so PanelURL is MeshPanelURL
 	DocsURL       string
 	OwnNpub       string
 	NetworkID     string
@@ -257,6 +259,13 @@ func main() {
 			ReadHeaderTimeout: 10 * time.Second,
 		}
 		go func() { log.Fatal(meshServer.ListenAndServe()) }()
+		log.Printf("hub: control panel on the mesh (port %s, from the gate at %s), behind the hub password", meshPanelHubListen, gate)
+		panelServer := &http.Server{
+			Addr:              meshPanelHubListen,
+			Handler:           meshHandler(gate, meshPanel(cfg.auth, cfg.panelAPI)),
+			ReadHeaderTimeout: 10 * time.Second,
+		}
+		go func() { log.Fatal(panelServer.ListenAndServe()) }()
 	}
 
 	log.Printf("hub: listening on %s", cfg.listen)
@@ -333,6 +342,12 @@ func newMux(cfg config) http.Handler {
 func (c config) viewer(p *page, r *http.Request) {
 	p.Remote = !loopbackHost(r.Host)
 	p.Login = c.auth.enabled()
+	// Over the mesh the panel opens at its own mesh port, behind the same
+	// login (mesh.go); from the home network it still opens only on the box.
+	if fromMeshGate(r) && p.MeshPanelURL != "" {
+		p.PanelURL = p.MeshPanelURL
+		p.PanelOnMesh = true
+	}
 	// The docs' own port is on the box's loopback; from elsewhere, read them
 	// through the hub (docsProxy).
 	if p.Remote && p.DocsURL != "" {
@@ -569,6 +584,7 @@ func (c config) buildPage(ctx context.Context) page {
 	}
 	if meshIP := strings.SplitN(state.TunnelIP, "/", 2)[0]; meshIP != "" && c.mesh {
 		p.MeshURL = "http://" + net.JoinHostPort(meshIP, strings.TrimPrefix(meshGateListen, ":"))
+		p.MeshPanelURL = "http://" + net.JoinHostPort(meshIP, strings.TrimPrefix(meshPanelGateListen, ":"))
 	}
 	return p
 }
