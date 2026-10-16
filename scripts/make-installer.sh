@@ -295,10 +295,20 @@ if [[ "$hub_up" == "1" && -t 0 && -t 1 && "${SOVEREIGN_DNS_SKIP_SETUP:-0}" != "1
   docker compose exec -e SETUP_URL="$setup_url" hub /hub setup --if-new || true
 fi
 
+# Last, after any joining above (joining gives the box a new mesh address):
+# ask the box for a lookup the way a device does, and say plainly whether it
+# answers. A box once installed with no errors and answered nothing.
+echo
+echo "Checking that this box answers DNS..."
+dns_ok=0
+bash scripts/dns-check.sh && dns_ok=1
+
 echo
 echo "=========================================="
-if [[ "$hub_up" == "1" ]]; then
+if [[ "$hub_up" == "1" && "$dns_ok" == "1" ]]; then
   echo "Done! Open your dashboard:"
+elif [[ "$dns_ok" != "1" ]]; then
+  echo "Installed, but this box is NOT answering DNS yet (see above). Your dashboard:"
 else
   echo "Started. The dashboard may need another minute — open:"
 fi

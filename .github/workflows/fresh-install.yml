@@ -1,0 +1,41 @@
+# A real fresh install of two boxes, driven at the terminal the way a person
+# would (scripts/test-terminal-setup): box A is a first box and adds a phone
+# and box B; box B joins A. Each runs install.sh from scratch inside its own
+# Docker engine, and both must end by answering DNS, checked by the installer
+# itself and across the mesh. The only test that runs install.sh end to end.
+# Needs the internet (images, public FIPS seeds), so it runs on pull requests
+# that touch what an install runs, and by hand.
+name: fresh install
+
+on:
+  pull_request:
+    paths:
+      - scripts/**
+      - hub/**
+      - nvpn/**
+      - unbound/**
+      - docker-compose.yml
+      - docker-compose.prebuilt.yml
+      - .github/workflows/fresh-install.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  two-boxes:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: expect
+        run: sudo apt-get update -q && sudo apt-get install -y -q expect
+      - name: install.sh matches the tree
+        run: scripts/make-installer.sh --check
+      - name: Two fresh boxes, set up at the terminal, both answer DNS
+        run: bash scripts/test-terminal-setup/run.sh "$PWD/scripts/install.sh"
+      - name: Session log
+        if: always()
+        run: cat scripts/test-terminal-setup/work/session.log || true

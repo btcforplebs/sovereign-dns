@@ -11,7 +11,7 @@ set -uo pipefail
 cd "$(dirname "$0")"
 [[ -f "${1:-}" ]] || { echo "usage: bash run.sh /path/to/install.sh"; exit 2; }
 command -v expect >/dev/null || { echo "needs expect"; exit 2; }
-DC=(docker compose -p tom-termsetup -f compose.yml)
+DC=(docker compose -p tom-termsetup -f boxes.yml)
 cleanup() { [[ "${KEEP:-0}" == 1 ]] || "${DC[@]}" down -v -t 2 >/dev/null 2>&1; }
 trap cleanup EXIT
 echo "disk before:"; df -h / | tail -1
@@ -28,6 +28,25 @@ phone=$("${DC[@]}" exec -T boxa sh -c "docker run --rm --entrypoint sh '$img' -c
 echo "phone link made (${#phone} chars)"
 expect drive.exp "$phone"; rc=$?
 echo "== drive exit $rc"
+# Across the mesh, the way a phone or the other box asks: each box looks up a
+# name and an ad domain at the other's mesh address.
+meship() { "${DC[@]}" exec -T "$1" sh -c 'cd /root/sovereign-dns && docker compose exec -T nvpn ip -4 -o addr show utun100' | awk '{print $4}' | cut -d/ -f1; }
+cross() { # cross <from box> <to ip>
+  local n ad
+  n=$("${DC[@]}" exec -T "$1" sh -c "cd /root/sovereign-dns && docker compose exec -T nvpn dig +short +time=3 +tries=2 @$2 example.com A" | grep -E '^[0-9.]+$' | head -1)
+  ad=$("${DC[@]}" exec -T "$1" sh -c "cd /root/sovereign-dns && docker compose exec -T nvpn dig +short +time=3 +tries=2 @$2 doubleclick.net A" | head -1)
+  if [[ -n "$n" && "$ad" == 0.0.0.0 ]]; then echo "ok    $1 -> $2 answers and blocks ads"; else echo "FAIL  $1 -> $2: example.com '$n', doubleclick.net '$ad'"; rc=1; fi
+}
+if [[ "$rc" == 0 ]]; then
+  ipa=$(meship boxa) ipb=$(meship boxb)
+  echo "mesh: A $ipa, B $ipb"
+  for _ in $(seq 1 20); do  # the two boxes' direct path can take a moment
+    "${DC[@]}" exec -T boxa sh -c "cd /root/sovereign-dns && docker compose exec -T nvpn dig +short +time=2 +tries=1 @$ipb example.com A" | grep -qE '^[0-9.]+$' && break
+    sleep 3
+  done
+  cross boxa "$ipb"
+  cross boxb "$ipa"
+fi
 for b in boxa boxb; do
   echo "== $b"; "${DC[@]}" exec -T "$b" sh -c 'cd /root/sovereign-dns && docker compose ps --format "{{.Name}} {{.Status}}" && docker compose exec -T nvpn nvpn status 2>&1 | grep -E "network:|network_dns|peers:"'
 done
