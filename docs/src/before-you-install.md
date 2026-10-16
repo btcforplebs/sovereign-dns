@@ -59,7 +59,7 @@ See [Your IP address: who sees what](your-ip.md) for the full picture.
 1. **You paste one line** into a terminal on the box. It downloads one
    file, `install.sh`, and runs it.
 2. **It checks Docker** is installed and running, and that the
-   addresses it needs on this computer (8080, 8081, 8082) are free.
+   addresses it needs on this computer (8080, 8082) are free.
 3. **It unpacks a `sovereign-dns` folder** in the folder you ran it from.
    Running it again later refreshes that folder and keeps your password,
    settings and devices.

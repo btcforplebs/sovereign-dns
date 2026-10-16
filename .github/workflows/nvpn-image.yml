@@ -210,7 +210,8 @@ jobs:
             done
           done
           cat docker-compose.prebuilt.yml
-          printf 'PIHOLE_PASSWORD=ci\nCOMPOSE_FILE=docker-compose.yml:docker-compose.prebuilt.yml\n' > .env
+          # docs is an opt-in profile; turn it on so its image is checked too.
+          printf 'PIHOLE_PASSWORD=ci\nCOMPOSE_FILE=docker-compose.yml:docker-compose.prebuilt.yml\nCOMPOSE_PROFILES=docs\n' > .env
 
           # What install.sh runs: check the merge, pull every image by
           # digest, then the plain `up -d --build` (COMPOSE_FILE from .env
@@ -240,7 +241,10 @@ jobs:
           done
           for _ in $(seq 1 30); do curl -fsS http://127.0.0.1:8080/ >/dev/null && break; sleep 2; done
           curl -fsS http://127.0.0.1:8080/ >/dev/null || { docker compose logs hub | tail -50; echo "hub does not answer" >&2; exit 1; }
-          curl -fsS http://127.0.0.1:8081/ | grep -q '<title>' || { docker compose logs docs | tail -20; echo "docs does not answer" >&2; exit 1; }
+          # Read the page first: under pipefail, grep -q quitting early makes curl
+          # fail with SIGPIPE and the pipeline fail on a healthy page.
+          docs_page=$(curl -fsS http://127.0.0.1:8081/ || true)
+          grep -q '<title>' <<<"$docs_page" || { docker compose logs docs | tail -20; echo "docs does not answer" >&2; exit 1; }
           echo "- fast path: pull $pulled s, pull to healthy stack in $((SECONDS - start)) s, nothing built" >> "$GITHUB_STEP_SUMMARY"
           docker compose down -v
 

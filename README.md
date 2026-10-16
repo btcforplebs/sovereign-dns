@@ -252,8 +252,11 @@ bash scripts/dns-lan.sh off     # stop (change your router back FIRST)
 - **See what's being blocked:** open the dashboard and click the ad-blocker
   (Pi-hole). You'll see every blocked ad and tracker, per device.
 - **A site is broken?** In Pi-hole, add it to the allow list.
-- **Read the guide:** a plain-language guide is built in at
-  **http://localhost:8081** on the box.
+- **Read the guide:** the dashboard's Docs card opens the plain-language
+  guide (on GitHub). To keep a copy on the box for reading offline, add
+  `COMPOSE_PROFILES=docs` to `sovereign-dns/.env` and run
+  `docker compose up -d` there; it opens at **http://localhost:8081** and
+  the Docs card links to it.
 
 ## If DNS stops working
 

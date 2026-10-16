@@ -447,7 +447,7 @@ bash ~/sovereign-dns/scripts/healthcheck.sh
 running."** Install or open Docker Desktop, wait until it says it's
 running, then run `bash install.sh` again.
 
-**"Port 8080 (or 8081, 8082) is already in use by another program on
+**"Port 8080 (or 8082) is already in use by another program on
 this computer."** Another app on the box is using the same address.
 Close it and run `bash install.sh` again. If you can't close it, change
 the matching `_PORT` line in the `sovereign-dns/.env` file to a free

@@ -63,12 +63,12 @@ it uses the data centre's IP address, not yours. The trade-offs:
   so open it from your own computer through SSH:
 
   ```bash
-  ssh -L 8080:localhost:8080 -L 8081:localhost:8081 -L 8082:localhost:8082 you@<your-vps-address>
+  ssh -L 8080:localhost:8080 -L 8082:localhost:8082 you@<your-vps-address>
   ```
 
   Leave that window open and visit `http://localhost:8080` on your own
-  computer. The other two numbers make the dashboard's links to the guide
-  (8081) and the VPN control panel (8082) work too. Don't use `hub-lan.sh on` on a VPS. That's for home
+  computer. The other number makes the dashboard's link to the VPN control
+  panel (8082) work too. Don't use `hub-lan.sh on` on a VPS. That's for home
   networks, and it refuses visitors from the internet anyway.
 - The box's VPN port, UDP 51820, is open to the internet. It's an
   encrypted listener that only accepts authenticated peers, not an admin
