@@ -259,6 +259,14 @@ func TestMeshPanelProxy(t *testing.T) {
 	}
 
 	session := cfg.auth.newSession()
+	form := panelReq(http.MethodPost, "/api/add_participant")
+	form.AddCookie(&http.Cookie{Name: sessionCookie, Value: session})
+	form.Header.Set("Origin", "http://10.44.12.7")
+	form.Header.Set("Sec-Fetch-Site", "same-site")
+	form.Header.Set("Sec-Fetch-Mode", "navigate")
+	if rec := serve(form); rec.Code != http.StatusForbidden || len(got) != 0 {
+		t.Fatalf("form post from Pi-hole's page on the mesh IP: %d, panel saw %d, want 403 and none", rec.Code, len(got))
+	}
 	r := panelReq(http.MethodPost, "/api/tick")
 	r.AddCookie(&http.Cookie{Name: sessionCookie, Value: session})
 	r.Header.Set("Origin", "http://10.44.12.7:8082")

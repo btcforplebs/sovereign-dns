@@ -88,6 +88,16 @@ func TestLANPanelProxy(t *testing.T) {
 	if rec := serve(h, script); rec.Code != http.StatusForbidden {
 		t.Fatalf("fetch from another port's page: %d, want 403", rec.Code)
 	}
+	// A form on another port of the same host (Pi-hole at :80) is a same-site
+	// navigation, so it passes crossPageFetch and carries the cookie.
+	form := panelReq(http.MethodPost, "/api/add_participant", "192.168.4.30")
+	form.AddCookie(&http.Cookie{Name: sessionCookie, Value: session})
+	form.Header.Set("Origin", "http://192.168.4.20")
+	form.Header.Set("Sec-Fetch-Site", "same-site")
+	form.Header.Set("Sec-Fetch-Mode", "navigate")
+	if rec := serve(h, form); rec.Code != http.StatusForbidden {
+		t.Fatalf("form post from another port's page: %d, want 403", rec.Code)
+	}
 	if len(got) != 0 {
 		t.Fatalf("the panel was reached %d times before a signed-in request", len(got))
 	}

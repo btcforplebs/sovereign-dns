@@ -224,7 +224,18 @@ func meshPanel(a *auth, panelAPI string) http.Handler {
 			http.Error(w, "the control panel is only opened to the mesh behind the hub password, and none is set", http.StatusForbidden)
 		})
 	}
-	return a.wrap(meshPanelProxy(panelAPI))
+	login := a.wrap(meshPanelProxy(panelAPI))
+	// A page on another port of the same host (Pi-hole at :80) is same-site,
+	// so the SameSite=Strict cookie rides along on its form posts. The panel's
+	// own origin check refuses those today; this is the hub's layer, as on its
+	// own writes (dns.go). The panel's pages post to their own origin.
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead && !sameOrigin(r) {
+			http.Error(w, "this change must come from the control panel's own page", http.StatusForbidden)
+			return
+		}
+		login.ServeHTTP(w, r)
+	})
 }
 
 // meshPanelProxy hands a signed-in mesh request to the control panel. A fresh
