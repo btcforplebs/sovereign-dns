@@ -259,6 +259,12 @@ if [[ "${SOVEREIGN_DNS_EXTRACT_ONLY:-0}" == "1" ]]; then
   exit 0
 fi
 
+# Under 1 GB of memory: say so, and on Linux offer a swap file
+# (scripts/lib/low-memory.sh). Never fails the install.
+# shellcheck source=scripts/lib/low-memory.sh
+source scripts/lib/low-memory.sh
+lm_low_memory_check || true
+
 # The dashboard opens at localhost, on this computer only. A box with no
 # screen (a Raspberry Pi set up over SSH) has nobody at that computer, so offer
 # to open it to the home network instead, behind a password

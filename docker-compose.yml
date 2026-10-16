@@ -63,7 +63,12 @@ services:
       dns-internal:
         ipv4_address: 172.28.53.10
     healthcheck:
-      test: ["CMD-SHELL", "nvpn status >/dev/null 2>&1"]
+      # `nvpn status` exits 0 even with the daemon stopped (it prints
+      # "daemon: stopped"), so the exit code alone called a dead daemon healthy.
+      # Also red when the daemon runs but never brought the tunnel up
+      # (0 peers, "no transport available"): the same interface check Pi-hole's
+      # healthcheck makes below.
+      test: ["CMD-SHELL", "nvpn status --discover-secs 0 2>/dev/null | grep -q '^daemon: running' && grep -q '${NVPN_TUN_IFACE:-utun100}' /proc/net/dev"]
       interval: 15s
       timeout: 10s
       retries: 5
