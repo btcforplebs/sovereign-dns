@@ -210,7 +210,8 @@ jobs:
             done
           done
           cat docker-compose.prebuilt.yml
-          printf 'PIHOLE_PASSWORD=ci\nCOMPOSE_FILE=docker-compose.yml:docker-compose.prebuilt.yml\n' > .env
+          # docs is an opt-in profile; turn it on so its image is checked too.
+          printf 'PIHOLE_PASSWORD=ci\nCOMPOSE_FILE=docker-compose.yml:docker-compose.prebuilt.yml\nCOMPOSE_PROFILES=docs\n' > .env
 
           # What install.sh runs: check the merge, pull every image by
           # digest, then the plain `up -d --build` (COMPOSE_FILE from .env
