@@ -19,12 +19,15 @@ mkdir -p work && cp "$1" work/install.sh
 "${DC[@]}" up -d >/dev/null || exit 1
 for b in boxa boxb; do "${DC[@]}" exec -T "$b" sh < box-prep.sh || exit 1; done
 # A phone's join link, made the way a computer makes one: a fresh nvpn identity
-# and `nvpn join-request --no-qr`, using the same nvpn image the boxes run.
+# and `nvpn join-request --no-qr`, using the same nvpn image the boxes run. On
+# Linux join-request asks the running daemon for the link, so start one (it
+# starts switched off, no tunnel) and do not wait for approval.
 "${DC[@]}" exec -T boxa sh -c 'mkdir -p /tmp/x && cd /tmp/x && tail -n +$(( $(awk "/^__PAYLOAD_BELOW__\$/{print NR;exit}" /work/install.sh)+1 )) /work/install.sh | base64 -d | tar -xf - docker-compose.prebuilt.yml' || exit 1
 img=$("${DC[@]}" exec -T boxa sh -c "awk '\$0 == \"  nvpn:\" { a = 1; next } a && /^    image: / { print \$2; exit }' /tmp/x/docker-compose.prebuilt.yml")
 echo "nvpn image: $img"
-phone=$("${DC[@]}" exec -T boxa sh -c "docker run --rm --entrypoint sh '$img' -c 'nvpn init --force >/dev/null 2>&1; nvpn join-request --no-qr 2>/dev/null' | grep -m1 -o 'nvpn://join-request/[A-Za-z0-9_-]*'")
-[[ "$phone" == nvpn://join-request/* ]] || { echo "could not make a phone join link"; exit 1; }
+phoneout=$("${DC[@]}" exec -T boxa sh -c "docker run --rm --cap-add NET_ADMIN --device /dev/net/tun --entrypoint sh '$img' -c 'nvpn init --force >/dev/null 2>&1; nvpn start --daemon 2>&1; for i in 1 2 3 4 5 6 7 8 9 10; do nvpn join-request --no-wait --no-qr 2>&1 && break; sleep 2; done'")
+phone=$(grep -m1 -o 'nvpn://join-request/[A-Za-z0-9_-]*' <<<"$phoneout")
+[[ "$phone" == nvpn://join-request/* ]] || { echo "could not make a phone join link:"; echo "$phoneout"; exit 1; }
 echo "phone link made (${#phone} chars)"
 expect drive.exp "$phone"; rc=$?
 echo "== drive exit $rc"
