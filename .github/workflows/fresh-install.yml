@@ -39,3 +39,24 @@ jobs:
       - name: Session log
         if: always()
         run: cat scripts/test-terminal-setup/work/session.log || true
+
+  # The installer on a Linux box without Docker: it asks, installs Docker the
+  # official way for the distro, and carries on (scripts/test-docker-install.sh).
+  # debian:12 on arm64 stands in for 64-bit Raspberry Pi OS.
+  docker-on-linux:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {image: "ubuntu:24.04", runner: ubuntu-24.04}
+          - {image: "debian:12", runner: ubuntu-24.04}
+          - {image: "linuxmintd/mint22-amd64", runner: ubuntu-24.04}
+          - {image: "debian:12", runner: ubuntu-24.04-arm}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Asks, installs Docker, carries on
+        run: bash scripts/test-docker-install.sh "${{ matrix.image }}" scripts/install.sh

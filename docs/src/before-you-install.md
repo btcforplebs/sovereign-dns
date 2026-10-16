@@ -45,8 +45,10 @@ See [Your IP address: who sees what](your-ip.md) for the full picture.
   downloads, which most Macs, Linux PCs and 64-bit Raspberry Pis get. If
   it has to build everything itself, allow 20 to 40 minutes on a
   Raspberry Pi.
-- **Docker**, the free program that runs the box's software. Install it
-  and open it once before you start
+- **Docker**, the free program that runs the box's software. On Linux
+  (Debian, Ubuntu, Linux Mint, Raspberry Pi OS) the installer offers to
+  install it for you and asks first. On a Mac or Windows PC, install
+  Docker Desktop and open it once before you start
   ([how to get Docker](https://docs.docker.com/get-docker/)).
 - **The Nostr VPN app** on each phone or laptop you want to protect. On a
   phone, it has to be a build with network DNS (see the note above). After you add a device, check that its lookups really
@@ -58,7 +60,8 @@ See [Your IP address: who sees what](your-ip.md) for the full picture.
 
 1. **You paste one line** into a terminal on the box. It downloads one
    file, `install.sh`, and runs it.
-2. **It checks Docker** is installed and running, and that the
+2. **It checks Docker** is installed and running (on Linux, if it is
+   missing, it asks whether to install it), and that the
    addresses it needs on this computer (8080, 8082) are free.
 3. **It unpacks a `sovereign-dns` folder** in the folder you ran it from.
    Running it again later refreshes that folder and keeps your password,
