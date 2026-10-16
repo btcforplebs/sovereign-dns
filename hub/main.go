@@ -262,7 +262,7 @@ func main() {
 		log.Printf("hub: control panel on the mesh (port %s, from the gate at %s), behind the hub password", meshPanelHubListen, gate)
 		panelServer := &http.Server{
 			Addr:              meshPanelHubListen,
-			Handler:           meshHandler(gate, cfg.auth.wrap(meshPanelProxy(cfg.panelAPI))),
+			Handler:           meshHandler(gate, meshPanel(cfg.auth, cfg.panelAPI)),
 			ReadHeaderTimeout: 10 * time.Second,
 		}
 		go func() { log.Fatal(panelServer.ListenAndServe()) }()

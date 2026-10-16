@@ -230,7 +230,7 @@ func TestMeshPanelProxy(t *testing.T) {
 	}))
 	t.Cleanup(panel.Close)
 	cfg := meshConfig(t)
-	h := meshHandler(testGate, cfg.auth.wrap(meshPanelProxy(panel.URL)))
+	h := meshHandler(testGate, meshPanel(cfg.auth, panel.URL))
 
 	serve := func(r *http.Request) *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()
@@ -276,6 +276,57 @@ func TestMeshPanelProxy(t *testing.T) {
 	for _, hd := range []string{"Cookie", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "Forwarded", "X-Real-Ip"} {
 		if v := p.Header.Get(hd); v != "" {
 			t.Errorf("panel got %s: %q", hd, v)
+		}
+	}
+}
+
+// With no hub password the panel port opens nothing, even signed out paths.
+func TestMeshPanelRefusesWithoutPassword(t *testing.T) {
+	reached := false
+	panel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { reached = true }))
+	t.Cleanup(panel.Close)
+	a, err := newAuth("127.0.0.1", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := meshHandler(testGate, meshPanel(a, panel.URL))
+	for _, method := range []string{http.MethodGet, http.MethodPost} {
+		r := meshReq(method, "/api/tick", "10.44.12.66", nil)
+		r.Host = "10.44.12.7:8082"
+		if rec := serve(h, r); rec.Code != http.StatusForbidden {
+			t.Errorf("%s with no password: %d, want 403", method, rec.Code)
+		}
+	}
+	if reached {
+		t.Fatal("the panel was reached with no hub password")
+	}
+}
+
+// Another page on the same mesh IP (Pi-hole on :80) is the same site, so it
+// gets the session cookie: its fetches are refused, its links are not.
+func TestMeshRefusesFetchesFromOtherPages(t *testing.T) {
+	h := meshMux(t)
+	cases := []struct {
+		site, mode string
+		refused    bool
+	}{
+		{"same-site", "cors", true},
+		{"same-site", "no-cors", true},
+		{"cross-site", "cors", true},
+		{"same-site", "navigate", false},
+		{"same-origin", "cors", false},
+		{"none", "navigate", false},
+		{"", "", false},
+	}
+	for _, c := range cases {
+		r := meshReq(http.MethodGet, "/api/status", "10.44.12.9", nil)
+		if c.site != "" {
+			r.Header.Set("Sec-Fetch-Site", c.site)
+			r.Header.Set("Sec-Fetch-Mode", c.mode)
+		}
+		rec := serve(h, r)
+		if got := rec.Code == http.StatusForbidden; got != c.refused {
+			t.Errorf("site %q mode %q: %d, refused=%t want %t", c.site, c.mode, rec.Code, got, c.refused)
 		}
 	}
 }
