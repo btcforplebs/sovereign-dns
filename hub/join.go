@@ -184,18 +184,17 @@ func (c config) serveAddDevice(w http.ResponseWriter, r *http.Request) {
 	// Decide from fresh state, never from what a page showed earlier.
 	p := c.buildPage(r.Context())
 	view.NetworkName = p.NetworkName
-	if blocked := addBlocked(p); blocked != "" {
-		view.Error = "Nothing was changed. " + blocked
+	already, err := checkAddDevice(p, j)
+	if err != nil {
+		view.Error = err.Error()
 		renderAdd(w, view, http.StatusConflict)
 		return
 	}
-	for _, d := range p.Devices {
-		if d.Npub == j.DeviceNpub {
-			// Say so: a silent bounce back looks the same as "nothing happened".
-			view.Joined = true
-			renderAdd(w, view, http.StatusOK)
-			return
-		}
+	if already {
+		// Say so: a silent bounce back looks the same as "nothing happened".
+		view.Joined = true
+		renderAdd(w, view, http.StatusOK)
+		return
 	}
 
 	// The review step. The page's Add button posts the same link back with
@@ -216,6 +215,21 @@ func (c config) serveAddDevice(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("hub: added device %s", shortNpub(j.DeviceNpub))
 	http.Redirect(w, r, view.Return, http.StatusSeeOther)
+}
+
+// checkAddDevice decides, from p, whether the device a join link names can be
+// added here. already: it is on the network, so there is nothing to do. The
+// dashboard and the terminal setup (termsetup.go) both ask it.
+func checkAddDevice(p page, j joinLink) (already bool, err error) {
+	if blocked := addBlocked(p); blocked != "" {
+		return false, errors.New("Nothing was changed. " + blocked)
+	}
+	for _, d := range p.Devices {
+		if d.Npub == j.DeviceNpub {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // addBlocked says why this box can't add a device right now, or "" when it can.

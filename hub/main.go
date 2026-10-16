@@ -227,6 +227,9 @@ func main() {
 			return
 		case "dns-lan-health":
 			os.Exit(dnsLANHealth())
+		case "setup":
+			// Device setup in the terminal (termsetup.go), run by install.sh.
+			os.Exit(runSetup(os.Args[2:]))
 		default:
 			log.Fatalf("hub: unknown command %q", os.Args[1])
 		}

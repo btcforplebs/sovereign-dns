@@ -176,43 +176,64 @@ func (c config) serveJoinFirstBox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	back := "/setup?step=3"
-	fail := func(status int, msg string) {
-		renderBoxResult(w, boxResultPage{Title: "This box didn't join", Error: msg, Return: back}, status)
-	}
-	admin, networkID, err := parseJoinCode(r.PostForm.Get("code"))
-	if err != nil {
-		fail(http.StatusBadRequest, err.Error())
+	if err := c.joinFirstBox(r.Context(), r.PostForm.Get("code")); err != nil {
+		var ae *actionError
+		status := http.StatusBadGateway
+		if errors.As(err, &ae) {
+			status = ae.status
+		}
+		renderBoxResult(w, boxResultPage{Title: "This box didn't join", Error: err.Error(), Return: back}, status)
 		return
 	}
+	http.Redirect(w, r, "/setup?step=4", http.StatusSeeOther)
+}
 
-	p := c.buildPage(r.Context())
+// actionError is a refusal or failure worded for the person at the box, with
+// the HTTP status the dashboard answers it with. The terminal setup
+// (termsetup.go) prints the same words.
+type actionError struct {
+	status int
+	msg    string
+}
+
+func (e *actionError) Error() string { return e.msg }
+
+func refuse(status int, msg string) error { return &actionError{status, msg} }
+
+// joinFirstBox is step 1 above, on the second box: the checks and the one
+// panel write behind both the setup page's Join button and the terminal
+// setup. It decides from fresh state, never from what a page showed.
+func (c config) joinFirstBox(ctx context.Context, rawCode string) error {
+	admin, networkID, err := parseJoinCode(rawCode)
+	if err != nil {
+		return refuse(http.StatusBadRequest, err.Error())
+	}
+
+	p := c.buildPage(ctx)
 	switch {
 	case p.network == nil && p.noNetwork == "":
-		fail(http.StatusConflict, "Nothing was changed. The control panel isn't answering, so this box can't join yet.")
-		return
+		return refuse(http.StatusConflict, "Nothing was changed. The control panel isn't answering, so this box can't join yet.")
 	case p.OwnNpub != "" && p.OwnNpub == admin:
-		fail(http.StatusBadRequest, "Nothing was changed. That is this box's own join code. Paste the code from your first box.")
-		return
+		return refuse(http.StatusBadRequest, "Nothing was changed. That is this box's own join code. Paste the code from your first box.")
 	case p.network != nil && !p.network.LocalIsAdmin:
-		fail(http.StatusConflict, "Nothing was changed. This box has already asked to join a network. Finish that on the first box, or reinstall this box to start over.")
-		return
+		return refuse(http.StatusConflict, "Nothing was changed. This box has already asked to join a network. Finish that on the first box, or reinstall this box to start over.")
 	case len(p.Devices) > 0 || p.PendingJoins > 0:
-		fail(http.StatusConflict, "Nothing was changed. Devices already use this box's own network, and joining another one would cut them off. This is a first box: add other devices to it instead.")
-		return
+		return refuse(http.StatusConflict, "Nothing was changed. Devices already use this box's own network, and joining another one would cut them off. This is a first box: add other devices to it instead.")
 	}
 
-	ctx := context.WithoutCancel(r.Context())
+	// Not tied to the caller: if the tab closes mid-request the panel may
+	// still switch, and the log must say what it answered.
+	ctx = context.WithoutCancel(ctx)
 	state, err := c.panelWrite(ctx, "/api/manual_add_network", map[string]any{"adminNpub": admin, "meshNetworkId": networkID})
 	if err == nil {
 		err = checkJoined(state, networkID)
 	}
 	if err != nil {
 		log.Printf("hub: joining network %s of %s failed: %s (panel: %v)", networkID, shortNpub(admin), plainPanelError(err), err)
-		fail(http.StatusBadGateway, "Couldn't join. "+plainPanelError(err))
-		return
+		return refuse(http.StatusBadGateway, "Couldn't join. "+plainPanelError(err))
 	}
 	log.Printf("hub: asked to join network %s of %s", networkID, shortNpub(admin))
-	http.Redirect(w, r, "/setup?step=4", http.StatusSeeOther)
+	return nil
 }
 
 // checkJoined: the panel's answer has to show the box running the first
@@ -232,35 +253,23 @@ func (c config) serveAddBox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	back := joinReturn(r.PostForm.Get("from"))
-	fail := func(status int, msg string) {
-		renderBoxResult(w, boxResultPage{Title: "The box wasn't added", Error: msg, Return: back}, status)
-	}
-	npub, err := parseBoxID(r.PostForm.Get("box"))
-	if err != nil {
-		fail(http.StatusBadRequest, err.Error())
-		return
+	fail := func(err error) {
+		var ae *actionError
+		status := http.StatusBadGateway
+		if errors.As(err, &ae) {
+			status = ae.status
+		}
+		renderBoxResult(w, boxResultPage{Title: "The box wasn't added", Error: err.Error(), Return: back}, status)
 	}
 	p := c.buildPage(r.Context())
-	if blocked := addBlocked(p); blocked != "" {
-		fail(http.StatusConflict, "Nothing was changed. "+blocked)
+	npub, asBackup, already, err := checkAddBox(p, r.PostForm.Get("box"))
+	if err != nil {
+		fail(err)
 		return
 	}
-	if p.OwnNpub != "" && npub == p.OwnNpub {
-		fail(http.StatusBadRequest, "Nothing was changed. That is this box's own ID. Paste the ID the new box shows.")
+	if already {
+		http.Redirect(w, r, back, http.StatusSeeOther)
 		return
-	}
-	asBackup := addsAsBackup(p.network, npub)
-	if asBackup && p.network.RemovedDevices == nil {
-		// The panel would take the add and drop dnsBackup unread, leaving the
-		// box a plain member that answers nothing: refuse instead.
-		fail(http.StatusConflict, "Nothing was changed. This box's VPN control panel is too old to add a box as a backup DNS box in one step. Update Sovereign-DNS on this box (run the install command again), then add the box.")
-		return
-	}
-	for _, d := range p.Devices {
-		if d.Npub == npub && (d.Role != "" || !asBackup) {
-			http.Redirect(w, r, back, http.StatusSeeOther)
-			return
-		}
 	}
 	name := cleanName(r.PostForm.Get("name"), 40)
 	if name == "" {
@@ -277,29 +286,64 @@ func (c config) serveAddBox(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	if err := c.addBox(r.Context(), p, npub, name, asBackup); err != nil {
+		fail(err)
+		return
+	}
+	http.Redirect(w, r, back, http.StatusSeeOther)
+}
 
-	// One write: the panel adds the box and makes it a backup in the same
-	// signed roster, so it is never a plain member in between.
+// checkAddBox reads a pasted or scanned box ID and decides, from p, whether
+// it can be added and whether as a backup DNS box. already: it is on the
+// network in the role it would get, so there is nothing to do.
+func checkAddBox(p page, raw string) (npub string, asBackup, already bool, err error) {
+	npub, err = parseBoxID(raw)
+	if err != nil {
+		return "", false, false, refuse(http.StatusBadRequest, err.Error())
+	}
+	if blocked := addBlocked(p); blocked != "" {
+		return "", false, false, refuse(http.StatusConflict, "Nothing was changed. "+blocked)
+	}
+	if p.OwnNpub != "" && npub == p.OwnNpub {
+		return "", false, false, refuse(http.StatusBadRequest, "Nothing was changed. That is this box's own ID. Paste the ID the new box shows.")
+	}
+	asBackup = addsAsBackup(p.network, npub)
+	if asBackup && p.network.RemovedDevices == nil {
+		// The panel would take the add and drop dnsBackup unread, leaving the
+		// box a plain member that answers nothing: refuse instead.
+		return "", false, false, refuse(http.StatusConflict, "Nothing was changed. This box's VPN control panel is too old to add a box as a backup DNS box in one step. Update Sovereign-DNS on this box (run the install command again), then add the box.")
+	}
+	for _, d := range p.Devices {
+		if d.Npub == npub && (d.Role != "" || !asBackup) {
+			return npub, asBackup, true, nil
+		}
+	}
+	return npub, asBackup, false, nil
+}
+
+// addBox is the approval itself, after the review: one write, so the panel
+// adds the box and makes it a backup in the same signed roster and it is
+// never a plain member in between.
+func (c config) addBox(ctx context.Context, p page, npub, name string, asBackup bool) error {
 	fields := map[string]any{"networkId": p.network.ID, "npub": npub, "alias": name}
 	if asBackup {
 		fields["dnsBackup"] = true
 	}
-	ctx := context.WithoutCancel(r.Context())
+	ctx = context.WithoutCancel(ctx)
 	state, err := c.panelWrite(ctx, "/api/add_participant", fields)
 	if err == nil {
 		err = checkBoxAdded(state, npub, asBackup)
 	}
 	if err != nil {
 		logAddFailure("box", shortNpub(npub), err)
-		fail(http.StatusBadGateway, "Couldn't add the box. "+plainPanelError(err))
-		return
+		return refuse(http.StatusBadGateway, "Couldn't add the box. "+plainPanelError(err))
 	}
 	if asBackup {
 		log.Printf("hub: added box %s as a backup DNS box", shortNpub(npub))
 	} else {
 		log.Printf("hub: added box %s", shortNpub(npub))
 	}
-	http.Redirect(w, r, back, http.StatusSeeOther)
+	return nil
 }
 
 // addsAsBackup: a box joins as a backup DNS box whenever the network has a

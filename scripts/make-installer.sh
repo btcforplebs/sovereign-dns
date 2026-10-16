@@ -284,6 +284,17 @@ if command -v curl >/dev/null 2>&1; then
   done
 fi
 
+# Device setup right here, so a box with no screen is ready without opening
+# anything (hub/termsetup.go). The same checks and steps as the dashboard's
+# setup, which stays the other way to do it. Only with a person at the
+# terminal: a scripted install (no terminal, or SOVEREIGN_DNS_SKIP_SETUP=1)
+# skips it, and on a box already set up (an update) it says so and asks
+# nothing. It never fails the install.
+if [[ "$hub_up" == "1" && -t 0 && -t 1 && "${SOVEREIGN_DNS_SKIP_SETUP:-0}" != "1" ]]; then
+  setup_url=$(bash scripts/hub-lan.sh setup-url 2>/dev/null || true)
+  docker compose exec -e SETUP_URL="$setup_url" hub /hub setup --if-new || true
+fi
+
 echo
 echo "=========================================="
 if [[ "$hub_up" == "1" ]]; then

@@ -139,13 +139,24 @@ Pi-hole page), and anyone who knows it can add a device.
 
 ## First box or another one?
 
-When the dashboard first opens, its setup asks **First box or another
-one?**
+Once the dashboard is up, the installer asks this right in the terminal, so
+a box with no screen is set up without opening anything:
 
-- **This is my first box:** it runs your private network. Your phones,
-  laptops and any other DNS box join it.
-- **I already have a box:** this one joins your first box's network as a
-  second DNS box. See [A second box](#a-second-box).
+- **1) This is my first box:** it runs your private network. Your phones,
+  laptops and any other DNS box join it. Paste each new device's join link
+  (below), check the device it names and type `y`; press Enter when you're
+  done. If the dashboard is open to your home network, it also shows a QR
+  code: open it with your phone's camera and add the phone from the phone
+  itself.
+- **2) I already have a box:** this one joins your first box's network as a
+  second DNS box. Paste the first box's join code; it prints this box's ID to
+  paste back there. See [A second box](#a-second-box).
+
+Press Enter to skip it and use the dashboard's setup instead, which asks the
+same question. Run it again any time from the `sovereign-dns` folder with
+`docker compose exec hub /hub setup`. A scripted install (no terminal, or
+`SOVEREIGN_DNS_SKIP_SETUP=1`) skips it, and running the installer again to
+update a box that's already set up asks nothing.
 
 ## Add your next device
 

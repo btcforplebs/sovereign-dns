@@ -8,6 +8,11 @@
 #   bash scripts/hub-lan.sh off    back to http://localhost:8080 on this box
 #                                  only, with no password (the default)
 #   bash scripts/hub-lan.sh url    print the addresses to open
+#   bash scripts/hub-lan.sh setup-url
+#                                  the add-a-device page at this box's home
+#                                  network address, or nothing when the
+#                                  dashboard is on this computer only (the
+#                                  installer's device setup shows it as a QR)
 #
 # --no-restart: only write .env (the installer starts the stack itself).
 # SOVEREIGN_DNS_HUB_PASSWORD: the password, for running without a terminal.
@@ -120,7 +125,13 @@ case "$mode" in
   url)
     print_urls
     ;;
+  setup-url)
+    if grep -q '^HUB_BIND=0.0.0.0$' .env; then
+      ip=$(lan_ip)
+      if [[ -n "$ip" ]]; then echo "http://${ip}:$(hub_port)/setup?step=3&kind=phone"; fi
+    fi
+    ;;
   *)
-    die "usage: bash scripts/hub-lan.sh on|off|url [--no-restart]"
+    die "usage: bash scripts/hub-lan.sh on|off|url|setup-url [--no-restart]"
     ;;
 esac
