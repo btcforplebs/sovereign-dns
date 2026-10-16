@@ -174,7 +174,7 @@ func TestAddDeviceReportsUnappliedImport(t *testing.T) {
 	f := &fakePanel{dropJoin: true}
 	cfg := panelConfig(t, f)
 	rec := postAdd(newMux(cfg), url.Values{"csrf": {cfg.csrfToken}, "request": {phoneLink(t)}, "confirm": {"yes"}}, nil)
-	if rec.Code != http.StatusBadGateway || !strings.Contains(rec.Body.String(), "doesn&#39;t list the device") {
+	if rec.Code != http.StatusBadGateway || !strings.Contains(rec.Body.String(), "isn&#39;t on the list afterwards") {
 		t.Fatalf("unapplied import: %d\n%s", rec.Code, rec.Body.String())
 	}
 }

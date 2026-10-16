@@ -71,6 +71,16 @@ const scanJS = `(function () {
 
   var JOIN = 'nvpn://join-request/';
   var DEVICE = 'nvpn://device/';
+  var BOXCODE = 'sdns://join/';
+  var codeRe = /^npub1[02-9ac-hj-np-z]{58}:[A-Za-z0-9_-]{1,64}$/;
+
+  // A first box's join code (boxCardHTML), from its QR code. Mirrors
+  // parseJoinCode in boxjoin.go; the server checks again.
+  function joinCode(v) {
+    var s = v.trim();
+    if (s.slice(0, BOXCODE.length).toLowerCase() === BOXCODE) s = s.slice(BOXCODE.length);
+    return codeRe.test(s) ? s : '';
+  }
   var npubRe = /^npub1[02-9ac-hj-np-z]{58}$/;
 
   // Mirrors parseBoxID in boxjoin.go; the server checks again.
@@ -99,8 +109,17 @@ const scanJS = `(function () {
   }
 
   // Sends what was read to the review page. False when it is neither kind.
+  // A button with data-fill only takes a first box's join code, and puts it
+  // in that field for the reader to check and send with Join.
   function route(raw, btn) {
     var v = String(raw || '').trim();
+    if (btn.dataset.fill) {
+      var code = joinCode(v);
+      var field = document.getElementById(btn.dataset.fill);
+      if (!code || !field) return false;
+      field.value = code;
+      return 'filled';
+    }
     var base = {csrf: btn.dataset.csrf || '', from: btn.dataset.from || ''};
     if (v.slice(0, JOIN.length).toLowerCase() === JOIN && v.length > JOIN.length) {
       base.request = v;
@@ -206,8 +225,17 @@ const scanJS = `(function () {
   }
 
   function found(value) {
-    if (route(value, btn)) {
+    var routed = route(value, btn);
+    if (routed === 'filled') {
+      say('Found the first box\'s join code. Check it below and press Join.');
+      return;
+    }
+    if (routed) {
       say('Found it. Opening the review…');
+      return;
+    }
+    if (btn.dataset.fill) {
+      say('That QR code isn\'t a first box\'s join code. Photograph the one under Add another DNS box on the first box.', true);
       return;
     }
     say('That QR code isn\'t a Nostr VPN join code. Photograph the one under Join Network in the app, or on the new box\'s setup page.', true);

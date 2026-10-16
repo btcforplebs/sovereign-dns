@@ -107,6 +107,12 @@ type fakePanel struct {
 	joinAdmin  string // that network's admin
 	admitted   bool   // the admin's roster has taken this box in
 	selfNpub   string // this box's own ID, when "npub1box" won't do
+	oldPanel   bool   // a panel from before add-as-backup: no removedDevices, dnsBackup ignored
+	dropBackup bool   // accept dnsBackup without making the box a backup
+	vpnOff     bool   // Disconnect was pressed in the panel
+	versions   [2]string
+	removed    []string // devices this admin removed
+	backups    map[string]bool
 	added      []string
 	writes     []*http.Request
 	bodies     []map[string]any
@@ -127,7 +133,7 @@ func (f *fakePanel) handler() http.Handler {
 			participants = append(participants, map[string]any{"npub": "npub1box", "alias": "self", "state": "offline"})
 		}
 		for _, npub := range f.added {
-			participants = append(participants, map[string]any{"npub": npub, "state": "offline"})
+			participants = append(participants, map[string]any{"npub": npub, "state": "offline", "servesNetworkDnsBackup": f.backups[npub]})
 		}
 		networks := []map[string]any{{
 			"id": "network-1", "name": "home", "networkId": "9683dbda",
@@ -135,6 +141,13 @@ func (f *fakePanel) handler() http.Handler {
 			"dnsOverride": f.override, "localIsDnsNode": !f.noNode,
 			"participants": participants,
 		}}
+		if !f.oldPanel {
+			removed := []map[string]any{}
+			for _, npub := range f.removed {
+				removed = append(removed, map[string]any{"npub": npub, "alias": "old " + npub[len(npub)-4:]})
+			}
+			networks[0]["removedDevices"] = removed
+		}
 		if f.decoyFirst {
 			networks = append([]map[string]any{{
 				"id": "network-0", "name": "old", "networkId": "11111111",
@@ -171,10 +184,13 @@ func (f *fakePanel) handler() http.Handler {
 			self = f.selfNpub
 		}
 		return map[string]any{
-			"daemonRunning": true,
-			"ownNpub":       self,
-			"networkId":     active,
-			"networks":      networks,
+			"daemonRunning":       true,
+			"ownNpub":             self,
+			"networkId":           active,
+			"networks":            networks,
+			"vpnEnabled":          !f.vpnOff,
+			"appVersion":          f.versions[0],
+			"daemonBinaryVersion": f.versions[1],
 		}
 	}
 	mux.HandleFunc("/api/tick", func(w http.ResponseWriter, r *http.Request) {
@@ -218,9 +234,29 @@ func (f *fakePanel) handler() http.Handler {
 		json.NewDecoder(r.Body).Decode(&body)
 		f.writes = append(f.writes, r)
 		f.bodies = append(f.bodies, body)
+		npub, _ := body["npub"].(string)
+		backup := body["dnsBackup"] == true && !f.oldPanel
+		if backup && f.noNode {
+			// What nvpn answers (AddParticipantAsDnsBackup), with nothing changed.
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": "this network has no DNS box yet, so there is nothing to back up; add the device, then make it the DNS box"})
+			return
+		}
 		if !f.dropBox {
-			npub, _ := body["npub"].(string)
 			f.added = append(f.added, npub)
+			var kept []string
+			for _, r := range f.removed {
+				if r != npub {
+					kept = append(kept, r)
+				}
+			}
+			f.removed = kept
+			if backup && !f.dropBackup {
+				if f.backups == nil {
+					f.backups = map[string]bool{}
+				}
+				f.backups[npub] = true
+			}
 		}
 		json.NewEncoder(w).Encode(state())
 	})

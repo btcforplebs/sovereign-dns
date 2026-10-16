@@ -60,11 +60,20 @@ func joinCode(npub, networkID string) string {
 	return npub + ":" + networkID
 }
 
-// parseJoinCode takes the code from joinCode. It also takes the two IDs
-// pasted with a space or a new line between them, which is how they look
-// when copied from `nvpn status` or the panel instead.
+// joinCodeQRPrefix marks the join code in the QR code the first box shows,
+// so a scanner can tell it from a device ID or a phone's join link.
+const joinCodeQRPrefix = "sdns://join/"
+
+// parseJoinCode takes the code from joinCode, or read from its QR code. It
+// also takes the two IDs pasted with a space or a new line between them,
+// which is how they look when copied from `nvpn status` or the panel instead.
 func parseJoinCode(raw string) (npub, networkID string, err error) {
-	fields := strings.FieldsFunc(strings.TrimSpace(raw), func(r rune) bool {
+	s := strings.TrimSpace(raw)
+	// Match and cut on the same bytes, as in parseJoinLink.
+	if n := len(joinCodeQRPrefix); len(s) > n && strings.ToLower(s[:n]) == joinCodeQRPrefix {
+		s = s[n:]
+	}
+	fields := strings.FieldsFunc(s, func(r rune) bool {
 		return r == ':' || r == ' ' || r == '\n' || r == '\r' || r == '\t'
 	})
 	if len(fields) != 2 {
@@ -198,8 +207,8 @@ func (c config) serveJoinFirstBox(w http.ResponseWriter, r *http.Request) {
 		err = checkJoined(state, networkID)
 	}
 	if err != nil {
-		log.Printf("hub: joining network %s of %s: %v", networkID, shortNpub(admin), err)
-		fail(http.StatusBadGateway, fmt.Sprintf("Couldn't join: %v", err))
+		log.Printf("hub: joining network %s of %s failed: %s (panel: %v)", networkID, shortNpub(admin), plainPanelError(err), err)
+		fail(http.StatusBadGateway, "Couldn't join. "+plainPanelError(err))
 		return
 	}
 	log.Printf("hub: asked to join network %s of %s", networkID, shortNpub(admin))
@@ -240,8 +249,15 @@ func (c config) serveAddBox(w http.ResponseWriter, r *http.Request) {
 		fail(http.StatusBadRequest, "Nothing was changed. That is this box's own ID. Paste the ID the new box shows.")
 		return
 	}
+	asBackup := addsAsBackup(p.network, npub)
+	if asBackup && p.network.RemovedDevices == nil {
+		// The panel would take the add and drop dnsBackup unread, leaving the
+		// box a plain member that answers nothing: refuse instead.
+		fail(http.StatusConflict, "Nothing was changed. This box's VPN control panel is too old to add a box as a backup DNS box in one step. Update Sovereign-DNS on this box (run the install command again), then add the box.")
+		return
+	}
 	for _, d := range p.Devices {
-		if d.Npub == npub {
+		if d.Npub == npub && (d.Role != "" || !asBackup) {
 			http.Redirect(w, r, back, http.StatusSeeOther)
 			return
 		}
@@ -257,34 +273,61 @@ func (c config) serveAddBox(w http.ResponseWriter, r *http.Request) {
 	if r.PostForm.Get("confirm") != "yes" {
 		renderBoxReview(w, boxReviewPage{
 			Box: npub, Name: name, NetworkName: p.NetworkName, CSRF: c.csrfToken,
-			From: r.PostForm.Get("from"), Return: back,
+			From: r.PostForm.Get("from"), Return: back, AsBackup: asBackup,
 		})
 		return
 	}
 
+	// One write: the panel adds the box and makes it a backup in the same
+	// signed roster, so it is never a plain member in between.
+	fields := map[string]any{"networkId": p.network.ID, "npub": npub, "alias": name}
+	if asBackup {
+		fields["dnsBackup"] = true
+	}
 	ctx := context.WithoutCancel(r.Context())
-	state, err := c.panelWrite(ctx, "/api/add_participant", map[string]any{"networkId": p.network.ID, "npub": npub, "alias": name})
-	if err == nil && !listsParticipant(state, npub) {
-		err = errors.New("the control panel accepted the ID but doesn't list the box")
+	state, err := c.panelWrite(ctx, "/api/add_participant", fields)
+	if err == nil {
+		err = checkBoxAdded(state, npub, asBackup)
 	}
 	if err != nil {
-		log.Printf("hub: adding box %s: %v", shortNpub(npub), err)
-		fail(http.StatusBadGateway, fmt.Sprintf("Couldn't add the box: %v", err))
+		logAddFailure("box", shortNpub(npub), err)
+		fail(http.StatusBadGateway, "Couldn't add the box. "+plainPanelError(err))
 		return
 	}
-	log.Printf("hub: added box %s", shortNpub(npub))
+	if asBackup {
+		log.Printf("hub: added box %s as a backup DNS box", shortNpub(npub))
+	} else {
+		log.Printf("hub: added box %s", shortNpub(npub))
+	}
 	http.Redirect(w, r, back, http.StatusSeeOther)
 }
 
-func listsParticipant(state tick, npub string) bool {
+// addsAsBackup: a box joins as a backup DNS box whenever the network has a
+// DNS box for it to back up, which is every network this stack sets up. With
+// none (network DNS never turned on), nvpn refuses a backup, so it joins as
+// a plain member.
+func addsAsBackup(net *tickNetwork, npub string) bool {
+	return net != nil && net.DNSNodeNpub != "" && net.DNSNodeNpub != npub
+}
+
+var errBoxNotBackup = errors.New("the control panel added the box but didn't make it a backup DNS box")
+
+// checkBoxAdded reads the panel's answer: the box has to be listed, and when
+// it was added as a backup, listed as one. An answer that says otherwise is
+// a failure, not a success.
+func checkBoxAdded(state tick, npub string, asBackup bool) error {
 	for _, n := range state.Networks {
 		for _, p := range n.Participants {
-			if p.Npub == npub {
-				return true
+			if p.Npub != npub {
+				continue
 			}
+			if asBackup && !p.ServesDNSBackup {
+				return errBoxNotBackup
+			}
+			return nil
 		}
 	}
-	return false
+	return errors.New("the control panel accepted the ID but doesn't list the box")
 }
 
 // panelWrite posts one action to the control panel and decodes the state it
@@ -337,6 +380,7 @@ type boxReviewPage struct {
 	CSRF        string
 	From        string
 	Return      string
+	AsBackup    bool // it joins as a backup DNS box
 }
 
 func renderBoxReview(w http.ResponseWriter, v boxReviewPage) {
@@ -377,7 +421,7 @@ var boxReviewTmpl = template.Must(template.New("boxreview").Parse(`<!doctype htm
 <main>
   <p class="brand">Sovereign-DNS · add a box</p>
   <h1>Add this box{{if .NetworkName}} to {{.NetworkName}}{{end}}?</h1>
-  <p class="lede">It joins your mesh as another DNS box. Only add a box you set up yourself.</p>
+  <p class="lede">{{if .AsBackup}}It joins your mesh as a backup DNS box: when this box is off, asleep or updating, it answers instead.{{else}}It joins your mesh as another device. This network has no DNS box yet, so it isn't made a backup.{{end}} Only add a box you set up yourself.</p>
   <form method="post" action="/devices/add-box">
     <div class="card">
       <span class="label">Box ID</span>
@@ -434,11 +478,12 @@ var boxResultTmpl = template.Must(template.New("box").Parse(`<!doctype html>
 const boxCardHTML = `{{define "boxcard"}}
 <ol class="todo box-steps">
   <li>Install Sovereign-DNS on the other machine with the same one-line command, open its setup, and pick <em>I already have a box</em>.</li>
-  <li>Paste this join code into it:
+  <li>On the other box press <strong>Scan the first box's code</strong> and take a photo of this QR code, or paste the join code under it:
+    <div class="qr" data-qr="sdns://join/{{.JoinCode}}" hidden aria-label="This box's join code as a QR code" role="img"></div>
     <pre class="copy" id="join-code">{{.JoinCode}}</pre>
     <button class="btn copybtn" type="button" data-copy="join-code" hidden>Copy</button>
   </li>
-  <li>It then shows a QR code with its own ID. Press <strong>Scan QR code</strong> and take a photo of it (on a computer, pick a photo or screenshot of it). Or paste the ID it shows instead. Either way you see the box's ID and press Add: that is the approval, and nothing joins until you do.
+  <li>It then shows a QR code with its own ID. Press <strong>Scan QR code</strong> here and take a photo of it (on a computer, pick a photo or screenshot of it). Or paste the ID it shows instead. Either way you see the box's ID and press Add: that is the approval, and nothing joins until you do. {{if .HasDNSBox}}That one Add also makes it a backup DNS box, so it answers when this box is off.{{end}}
     <div class="add-actions" style="margin-bottom:10px">
       <button class="btn primary add-scan" type="button" data-scan data-csrf="{{.CSRF}}" data-from="{{.AddFrom}}" hidden>Scan QR code</button>
     </div>
@@ -453,4 +498,72 @@ const boxCardHTML = `{{define "boxcard"}}
 <p class="add-note">The join code is not a password. It only tells the new box which network to ask for, and on its own it lets nobody in.</p>
 {{template "copyjs"}}
 <script src="/assets/scan.js"></script>
+{{template "qrjs"}}
+{{end}}{{define "qrjs"}}
+<script src="/assets/qrcode.js"></script>
+<script>
+document.querySelectorAll('[data-qr]').forEach(function (el) {
+  if (typeof qrcode !== 'function' || el.firstChild) return;
+  var q = qrcode(0, 'M');
+  q.addData(el.dataset.qr);
+  q.make();
+  el.innerHTML = q.createSvgTag({cellSize: 5, margin: 20, scalable: true});
+  el.hidden = false;
+});
+</script>
 {{end}}`
+
+// serveReAdd puts back a device this box removed, from the dashboard's
+// Removed devices list. Only a device on that list: this is not a way to add
+// an ID nobody reviewed. backup=yes re-adds it as a backup DNS box, in one
+// roster as for a new box.
+func (c config) serveReAdd(w http.ResponseWriter, r *http.Request) {
+	if !c.formGuard(w, r) {
+		return
+	}
+	back := "/dashboard#removed"
+	fail := func(status int, msg string) {
+		renderBoxResult(w, boxResultPage{Title: "The device wasn't re-added", Error: msg, Return: back}, status)
+	}
+	npub, err := parseBoxID(r.PostForm.Get("npub"))
+	if err != nil {
+		fail(http.StatusBadRequest, err.Error())
+		return
+	}
+	p := c.buildPage(r.Context())
+	if blocked := addBlocked(p); blocked != "" {
+		fail(http.StatusConflict, "Nothing was changed. "+blocked)
+		return
+	}
+	var removed *tickRemoved
+	for i := range p.Removed {
+		if p.Removed[i].Npub == npub {
+			removed = &p.Removed[i]
+		}
+	}
+	if removed == nil {
+		fail(http.StatusConflict, "Nothing was changed. That device isn't on this box's list of removed devices any more. Reload the dashboard.")
+		return
+	}
+	asBackup := r.PostForm.Get("backup") == "yes"
+	if asBackup && !addsAsBackup(p.network, npub) {
+		fail(http.StatusConflict, "Nothing was changed. This network has no DNS box yet, so the device can't come back as its backup. Re-add it as a plain device instead.")
+		return
+	}
+	fields := map[string]any{"networkId": p.network.ID, "npub": npub, "alias": removed.Alias}
+	if asBackup {
+		fields["dnsBackup"] = true
+	}
+	ctx := context.WithoutCancel(r.Context())
+	state, err := c.panelWrite(ctx, "/api/add_participant", fields)
+	if err == nil {
+		err = checkBoxAdded(state, npub, asBackup)
+	}
+	if err != nil {
+		logAddFailure("removed device", shortNpub(npub), err)
+		fail(http.StatusBadGateway, "Couldn't re-add the device. "+plainPanelError(err))
+		return
+	}
+	log.Printf("hub: re-added %s%s", shortNpub(npub), map[bool]string{true: " as a backup DNS box"}[asBackup])
+	http.Redirect(w, r, back, http.StatusSeeOther)
+}

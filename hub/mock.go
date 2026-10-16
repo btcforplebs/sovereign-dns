@@ -10,6 +10,7 @@ type mock struct {
 	tick                                 tick
 	tickErr                              error
 	panelUp, piholeUp, docsUp, unboundUp bool
+	hadBackup                            bool // the network had a backup DNS box before this state
 }
 
 const mockNpub = "npub176fy8k3q2t0m9h7z4w5r6e8d0c2v4b6n8m0k2j4h6g8f0d2s4a6p8o0i2u4y6"
@@ -20,6 +21,7 @@ func mockState(name string) mock {
 		OwnNpub:       mockNpub,
 		NetworkID:     "9683dbda",
 		TunnelIP:      "10.44.5.1/16",
+		VPNEnabled:    true,
 	}
 	base.Networks = append(base.Networks, tickNetwork{ID: "network-1", Name: "home", NetworkID: "9683dbda", LocalIsAdmin: true,
 		DNSNodeNpub: mockNpub, DNSOverride: true, LocalIsDNSNode: true})
@@ -79,6 +81,29 @@ func mockState(name string) mock {
 	case "covered":
 		m := up
 		addDevice("laptop", "10.44.5.138/16", true, "online", "connected")
+		return m
+	case "boxes":
+		// A first box with a second box as its backup, a phone, and one
+		// device removed by mistake.
+		m := up
+		m.tick.AppVersion, m.tick.DaemonVersion = "4.1.18+0c1f0d94a6f7", "4.1.18+0c1f0d94a6f7"
+		addDevice("phone", "10.44.5.138/16", true, "online", "connected")
+		addDevice("pi", "10.44.5.77/16", true, "online", "connected")
+		net.Participants[len(net.Participants)-1].ServesDNSBackup = true
+		removed := []tickRemoved{{Npub: "npub1laptop00000000000000000000000000000000000000000000000000000", Alias: "old-laptop"}}
+		net.RemovedDevices = &removed
+		return m
+	case "alerts":
+		// Everything that raises a dashboard alert at once: the VPN paused on
+		// the DNS box, the last backup gone, and two different builds.
+		m := up
+		m.tick.AppVersion, m.tick.DaemonVersion = "4.1.18+0c1f0d94a6f7", "4.1.18+b61c1b8e3c7e"
+		addDevice("phone", "10.44.5.138/16", false, "offline", "VPN paused on the DNS box")
+		removed := []tickRemoved{{Npub: "npub1pi000000000000000000000000000000000000000000000000000000000", Alias: "pi"}}
+		net.RemovedDevices = &removed
+		m.hadBackup = true
+		m.tick.VPNEnabled = false
+		m.tick.VPNStatus = "VPN off"
 		return m
 	default:
 		return up

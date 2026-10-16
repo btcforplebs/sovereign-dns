@@ -403,14 +403,18 @@ const wizardHTML = `<!doctype html>
   {{else}}
   <div class="card">
     <ol class="todo">
-      <li>On your <strong>first</strong> box, open setup (or its dashboard), go to <em>Add your next device</em> and pick <em>Another DNS box</em>. It shows a join code.</li>
-      <li>Paste that code here:</li>
+      <li>On your <strong>first</strong> box, open setup (or its dashboard), go to <em>Add your next device</em> and pick <em>Another DNS box</em>. It shows a QR code and a join code.</li>
+      <li>Press <strong>Scan the first box's code</strong> and take a photo of that QR code (on a computer, pick a photo or screenshot of it). Or paste the join code here. Then press Join.</li>
     </ol>
+    <div class="add-actions" style="margin-bottom:10px">
+      <button class="btn add-scan" type="button" data-scan data-fill="join-code-in" hidden>Scan the first box's code</button>
+    </div>
     <form class="add-form" method="post" action="/setup/join">
       <input type="hidden" name="csrf" value="{{.CSRF}}">
-      <textarea name="code" rows="2" spellcheck="false" autocomplete="off" placeholder="npub1…:a0454be9" required aria-label="The first box's join code"></textarea>
+      <textarea id="join-code-in" name="code" rows="2" spellcheck="false" autocomplete="off" placeholder="npub1…:a0454be9" required aria-label="The first box's join code"></textarea>
       <div class="add-actions"><button class="btn primary" type="submit">Join</button></div>
     </form>
+    <script src="/assets/scan.js"></script>
     <p class="fine" style="color:var(--dim);font-size:14px;margin:14px 0 0">
       The code is not a password: on its own it lets nobody in. It only tells this box which network to ask for. The first box still has to add this one.
     </p>
@@ -425,7 +429,11 @@ const wizardHTML = `<!doctype html>
   <div class="verdict ok">
     <strong>You're set. This box is on {{if .NetworkName}}{{.NetworkName}}{{else}}your first box's network{{end}}.</strong>
     <p>The first box added it, and both now see each other.</p>
-    <p class="fine">To have this box answer when the first one is off, make it the network's backup DNS box on the first box. That switch comes with the backup-DNS update; until then the first box answers on its own.</p>
+    {{if .OwnBackup}}
+    <p class="fine">It is the network's backup DNS box: when the first box is off, asleep or updating, devices ask this one instead.</p>
+    {{else}}
+    <p class="fine">It isn't a backup DNS box yet, so it doesn't answer when the first box is off. On the first box, under <em>Add another DNS box</em>, scan or paste this box's ID again and press Add: that makes it the backup.</p>
+    {{end}}
     <p><a class="big" href="/dashboard">Go to the dashboard →</a></p>
   </div>
   {{else if .Member}}

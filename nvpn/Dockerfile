@@ -1,10 +1,14 @@
 ARG BUILDER_IMAGE=rust:1.93.1-bookworm@sha256:7c4ae649a84014c467d79319bbf17ce2632ae8b8be123ac2fb2ea5be46823f31
 ARG WEB_BUILDER_IMAGE=node:24.21.0-bookworm@sha256:3d27e5c11e5786e309ec3e03f93ae536eb36e6e5eb3714d5eb3300a36157add0
 ARG RUNTIME_IMAGE=debian:bookworm-20261005-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587
+# Declared before the first FROM so the source stage, which checks this
+# commit out, and the builder stage, which stamps it into the versions, share
+# one default. Each stage re-declares it bare to read it.
+ARG NVPN_COMMIT=276b295a24f279c3ab7a4796856674708beb24c4
 
 FROM alpine/git:v2.54.0@sha256:ce84fd6a057b4dc5cf5009da2dd832f1c6d096c1984bf50496cf3c256402264d AS source
 ARG NVPN_REPO=https://github.com/btcforplebs/nostr-vpn.git
-ARG NVPN_COMMIT=b61c1b8e3c7e254904c9d8c81e8fcab75e31a299
+ARG NVPN_COMMIT
 WORKDIR /src
 # Fetch exactly one commit by SHA, then prove that is what was checked out.
 # A branch name would let two installs build different code.
@@ -40,9 +44,14 @@ WORKDIR /app
 COPY --from=source /src/nostr-vpn ./nostr-vpn
 
 WORKDIR /app/nostr-vpn
+# NVPN_BUILD_COMMIT puts the commit the source stage checked out into both
+# binaries' versions ("4.1.18+<commit>"), so the hub can tell a control panel
+# and a daemon built from different commits apart (hub/alerts.go).
+ARG NVPN_COMMIT
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/app/nostr-vpn/target \
+    NVPN_BUILD_COMMIT=${NVPN_COMMIT} \
     cargo build --release --locked -p nvpn -p nostr-vpn-web \
     && cp target/release/nvpn /tmp/nvpn \
     && cp target/release/nostr-vpn-web /tmp/nvpn-web

@@ -47,11 +47,12 @@ type config struct {
 	piholeWebURL string // what the browser should open, filled with the mesh IP
 	docsURL      string // what the browser should open
 	envSettings  []setting
-	mock         string // HUB_MOCK: render a canned state instead of probing (screenshots, demos)
-	checkName    string // unique name a device can look up to prove it resolves through Pi-hole
-	csrfToken    string // per process; every form that changes something must echo it
-	auth         *auth  // login for home-network access (auth.go); nil or no password: none
-	mesh         bool   // HUB_MESH=on: the hub also answers the mesh, through the gate (mesh.go)
+	mock         string        // HUB_MOCK: render a canned state instead of probing (screenshots, demos)
+	checkName    string        // unique name a device can look up to prove it resolves through Pi-hole
+	csrfToken    string        // per process; every form that changes something must echo it
+	auth         *auth         // login for home-network access (auth.go); nil or no password: none
+	mesh         bool          // HUB_MESH=on: the hub also answers the mesh, through the gate (mesh.go)
+	backups      *backupMemory // which networks have had a backup DNS box (alerts.go)
 }
 
 type setting struct {
@@ -70,6 +71,15 @@ type tick struct {
 	TunnelIP      string        `json:"tunnelIp"`
 	MagicDNS      string        `json:"magicDnsSuffix"`
 	Networks      []tickNetwork `json:"networks"`
+	// VPNEnabled is false once someone presses Disconnect in the control
+	// panel: the daemon keeps running, but this box stops carrying the mesh.
+	VPNEnabled bool   `json:"vpnEnabled"`
+	VPNStatus  string `json:"vpnStatus"`
+	// The panel's own build and the daemon's, from the state file the daemon
+	// writes. Both carry "+<commit>" on images built with NVPN_BUILD_COMMIT
+	// (nvpn/Dockerfile), so two images of the same release still differ.
+	AppVersion    string `json:"appVersion"`
+	DaemonVersion string `json:"daemonBinaryVersion"`
 }
 
 type tickNetwork struct {
@@ -86,6 +96,15 @@ type tickNetwork struct {
 		Npub string `json:"npub"`
 	} `json:"inboundJoinRequests"`
 	Participants []tickParticipant `json:"participants"`
+	// Devices this admin removed. Nil when the panel predates the list (it
+	// sends none at all), which is also how the hub knows the panel can't add
+	// a box as a backup in one step (boxjoin.go): both came in one build.
+	RemovedDevices *[]tickRemoved `json:"removedDevices"`
+}
+
+type tickRemoved struct {
+	Npub  string `json:"npub"`
+	Alias string `json:"alias"`
 }
 
 type tickParticipant struct {
@@ -103,6 +122,9 @@ type tickParticipant struct {
 	DirectProbePending bool   `json:"fipsDirectProbePending"`
 	TransportType      string `json:"fipsTransportType"`
 	StatusText         string `json:"statusText"`
+	// Its part in the network's DNS: the DNS box, or one of its backups.
+	ServesDNS       bool `json:"servesNetworkDns"`
+	ServesDNSBackup bool `json:"servesNetworkDnsBackup"`
 }
 
 type tile struct {
@@ -117,6 +139,7 @@ type device struct {
 	TunnelIP string
 	Carrying bool
 	Detail   string
+	Role     string // "DNS box", "backup DNS box", or ""
 }
 
 type page struct {
@@ -157,6 +180,16 @@ type page struct {
 	Member    bool
 	Admitted  bool
 	AdminNpub string
+	OwnBackup bool // the first box's roster makes this box a backup DNS box
+
+	// Things that need the reader now (alerts.go), worst first.
+	Alerts []alert
+	// Devices removed from this network, each with a Re-add button.
+	Removed []tickRemoved
+	// Backups: how many devices on the network are backup DNS boxes.
+	Backups int
+	// HasDNSBox: the network has a DNS box, so a box can join as its backup.
+	HasDNSBox bool
 
 	// Request-scoped, never part of /api/status: the form token, and which
 	// confirmation (if any) the dashboard is asking for.
@@ -267,6 +300,7 @@ func newMux(cfg config) http.Handler {
 	mux.HandleFunc("/dns", cfg.serveDNS(tmpl))
 	mux.HandleFunc("/devices/add", cfg.serveAddDevice)
 	mux.HandleFunc("/devices/add-box", cfg.serveAddBox)
+	mux.HandleFunc("/devices/readd", cfg.serveReAdd)
 	mux.HandleFunc("/setup/join", cfg.serveJoinFirstBox)
 	mux.HandleFunc("/assets/scan.js", serveScript("scan.js", scanJS))
 	mux.HandleFunc("/assets/jsqr.js", serveScript("jsqr.js", jsQRSource))
@@ -321,6 +355,7 @@ func loadConfig() config {
 	piholePort := env("PIHOLE_WEB_PORT", "80")
 	return config{
 		mock:        env("HUB_MOCK", ""),
+		backups:     &backupMemory{},
 		checkName:   newCheckName(),
 		csrfToken:   newCSRFToken(),
 		listen:      env("HUB_LISTEN", ":8080"),
@@ -363,6 +398,9 @@ func (c config) buildPage(ctx context.Context) page {
 	if c.mock != "" {
 		m := mockState(c.mock)
 		state, tickErr = m.tick, m.tickErr
+		if m.hadBackup && len(state.Networks) > 0 {
+			c.backups.note(state.Networks[0].NetworkID, 1)
+		}
 		panelUp, piholeUp, docsUp, unboundUp = m.panelUp, m.piholeUp, m.docsUp, m.unboundUp
 	} else {
 		wg.Add(5)
@@ -447,8 +485,19 @@ func (c config) buildPage(ctx context.Context) page {
 				for _, participant := range net.Participants {
 					if participant.Npub != "" && participant.Npub == state.OwnNpub {
 						p.Admitted = participant.RosterAccepted
+						p.OwnBackup = participant.ServesDNSBackup
 					}
 				}
+			}
+		}
+
+		p.HasDNSBox = tickErr == nil && matched && net.DNSNodeNpub != ""
+		if tickErr == nil && matched && net.LocalIsAdmin && net.RemovedDevices != nil {
+			p.Removed = *net.RemovedDevices
+		}
+		for _, participant := range net.Participants {
+			if participant.ServesDNSBackup {
+				p.Backups++
 			}
 		}
 
@@ -483,6 +532,7 @@ func (c config) buildPage(ctx context.Context) page {
 				TunnelIP: strings.SplitN(participant.TunnelIP, "/", 2)[0],
 				Carrying: isCarrying,
 				Detail:   detail,
+				Role:     dnsRole(participant),
 			})
 		}
 		total := len(p.Devices)
@@ -504,6 +554,9 @@ func (c config) buildPage(ctx context.Context) page {
 	}
 
 	p.DNS = buildDNSControl(p)
+	if tickErr == nil {
+		p.Alerts = buildAlerts(p, state, c.backups)
+	}
 
 	// Only offer links that actually go somewhere: a launch card for a service
 	// that is down is worse than no card, because the user blames themselves
@@ -518,6 +571,16 @@ func (c config) buildPage(ctx context.Context) page {
 		p.MeshURL = "http://" + net.JoinHostPort(meshIP, strings.TrimPrefix(meshGateListen, ":"))
 	}
 	return p
+}
+
+func dnsRole(participant tickParticipant) string {
+	switch {
+	case participant.ServesDNS:
+		return "DNS box"
+	case participant.ServesDNSBackup:
+		return "backup DNS box"
+	}
+	return ""
 }
 
 // newCheckName is a name nobody else will ever look up, so finding it in
