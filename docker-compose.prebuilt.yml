@@ -19,6 +19,3 @@ services:
   unbound:
     build: !reset null
     image: ghcr.io/btcforplebs/sovereign-dns-unbound:unbound-ctx-6147cb02a8b7@sha256:c80514a51167af7b95e87e5f40310861aa87c79fdf857f0769c3a61cd32066bf
-  docs:
-    build: !reset null
-    image: ghcr.io/btcforplebs/sovereign-dns-docs:docs-ctx-5599c3ccdae7@sha256:fe4b3b1784b7810a2d46bfddeb318017e99c850574ad186ac0b9897bfb52e675
