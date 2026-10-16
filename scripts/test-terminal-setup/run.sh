@@ -24,6 +24,13 @@ for b in boxa boxb; do "${DC[@]}" exec -T "$b" sh < box-prep.sh || exit 1; done
 # starts switched off, no tunnel) and do not wait for approval.
 "${DC[@]}" exec -T boxa sh -c 'mkdir -p /tmp/x && cd /tmp/x && tail -n +$(( $(awk "/^__PAYLOAD_BELOW__\$/{print NR;exit}" /work/install.sh)+1 )) /work/install.sh | base64 -d | tar -xf - docker-compose.prebuilt.yml' || exit 1
 img=$("${DC[@]}" exec -T boxa sh -c "awk '\$0 == \"  nvpn:\" { a = 1; next } a && /^    image: / { print \$2; exit }' /tmp/x/docker-compose.prebuilt.yml")
+if [[ -z "$img" ]]; then
+  # A PR that changes nvpn/ has no published image to pin yet (it is pinned
+  # after the merge), so the installer builds nvpn from source. This step only
+  # needs *an* nvpn to make a phone's join link, so use main's pinned one.
+  img=$(curl -fsS https://raw.githubusercontent.com/btcforplebs/sovereign-dns/main/docker-compose.prebuilt.yml | awk '$0 == "  nvpn:" { a = 1; next } a && /^    image: / { print $2; exit }')
+  echo "no nvpn image pinned in this tree; using main's for the phone link"
+fi
 echo "nvpn image: $img"
 phoneout=$("${DC[@]}" exec -T boxa sh -c "docker run --rm --cap-add NET_ADMIN --device /dev/net/tun --entrypoint sh '$img' -c 'nvpn init --force >/dev/null 2>&1; nvpn start --daemon 2>&1; for i in 1 2 3 4 5 6 7 8 9 10; do nvpn join-request --no-wait --no-qr 2>&1 && break; sleep 2; done'")
 phone=$(grep -m1 -o 'nvpn://join-request/[A-Za-z0-9_-]*' <<<"$phoneout")

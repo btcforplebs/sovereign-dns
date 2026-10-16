@@ -31,6 +31,7 @@ on:
       - hub/**
       - docs/**
       - scripts/lib/prebuilt-images.sh
+      - scripts/test-daemon-recovery.sh
       - docker-compose.yml
       - docker-compose.prebuilt.yml
       - .github/workflows/nvpn-image.yml
@@ -246,6 +247,9 @@ jobs:
           docs_page=$(curl -fsS http://127.0.0.1:8081/ || true)
           grep -q '<title>' <<<"$docs_page" || { docker compose logs docs | tail -20; echo "docs does not answer" >&2; exit 1; }
           echo "- fast path: pull $pulled s, pull to healthy stack in $((SECONDS - start)) s, nothing built" >> "$GITHUB_STEP_SUMMARY"
+          # The same stack, with its daemon killed: the box must bring it back
+          # by itself (what a 512 MB VPS needed after the kernel killed it).
+          bash scripts/test-daemon-recovery.sh || { docker compose logs nvpn | tail -60; exit 1; }
           docker compose down -v
 
   publish:

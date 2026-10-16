@@ -122,4 +122,50 @@ nvpn start --daemon --connect || {
 
 echo "sovereign-dns: daemon started; following ${DAEMON_LOG}"
 touch "$DAEMON_LOG"
-exec tail -F "$DAEMON_LOG"
+
+# The daemon forks away from this script, so nothing here noticed when it died:
+# the kernel's out-of-memory killer took it on a 512 MB box, `tail` kept the
+# container "running", and Pi-hole and the hub gate, which share this
+# container's network namespace, stayed broken until someone restarted it by
+# hand. So this script now watches the daemon and starts it again in place.
+# In place, not by exiting: a restarted container gets a new network namespace
+# and leaves Pi-hole attached to the dead one (see Pi-hole's healthcheck in
+# docker-compose.yml), while a daemon restarted inside this container brings
+# the tunnel back into the namespace they already share. Only when it will not
+# stay up does the script exit, and the restart policy takes over. The
+# container healthcheck reads the same line, so a daemon that is down shows
+# as unhealthy meanwhile.
+daemon_running() {
+  local out
+  out=$(nvpn status --discover-secs 0 2>/dev/null || true)
+  grep -q '^daemon: running' <<<"$out"
+}
+
+tail -F "$DAEMON_LOG" &
+TAIL_PID=$!
+trap 'kill "$TAIL_PID" 2>/dev/null; exit 0' TERM INT
+
+down=0
+attempts=0
+while :; do
+  sleep 5 & wait $! || true
+  kill -0 "$TAIL_PID" 2>/dev/null || { echo "sovereign-dns: log follower died, exiting" >&2; exit 1; }
+  if daemon_running; then
+    down=0
+    attempts=0
+    continue
+  fi
+  down=$((down + 1))
+  # Two checks in a row (about 10 s), so a status call that merely raced a
+  # daemon restart does not trigger one.
+  [[ "$down" -ge 2 ]] || continue
+  down=0
+  attempts=$((attempts + 1))
+  if [[ "$attempts" -gt 5 ]]; then
+    echo "sovereign-dns: daemon will not stay up after 5 restarts, exiting so the container restarts" >&2
+    exit 1
+  fi
+  echo "sovereign-dns: daemon is not running (probably killed, often by the kernel out of memory); starting it again (attempt ${attempts} of 5)"
+  rm -f "${CONFIG_DIR}/daemon.pid"
+  nvpn start --daemon --connect || echo "sovereign-dns: daemon start failed, will retry" >&2
+done

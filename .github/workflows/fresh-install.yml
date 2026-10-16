@@ -34,6 +34,10 @@ jobs:
         run: sudo apt-get update -q && sudo apt-get install -y -q expect
       - name: install.sh matches the tree
         run: scripts/make-installer.sh --check
+      - name: Low-memory swap offer (no Docker, fake meminfo)
+        run: bash scripts/test-low-memory.sh
+      - name: Low-memory swap offer (no Docker, fake meminfo)
+        run: bash scripts/test-low-memory.sh
       - name: Two fresh boxes, set up at the terminal, both answer DNS
         run: bash scripts/test-terminal-setup/run.sh "$PWD/scripts/install.sh"
       - name: Session log
