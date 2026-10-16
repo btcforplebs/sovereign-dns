@@ -64,8 +64,10 @@ card, not 32 GB) and prices checked on 2026-10-15 are in
 
 ## Install
 
-Install [Docker](https://docs.docker.com/get-docker/) first and open it once.
-Then open a terminal on the box and paste this one line:
+On a Mac or Windows PC, install [Docker](https://docs.docker.com/get-docker/)
+first and open it once. On Linux (Debian, Ubuntu, Linux Mint, Raspberry Pi
+OS) the installer offers to install Docker for you and asks first. Open a
+terminal on the box and paste this one line:
 
 ```bash
 rm -f install.sh && curl -fsSLO https://raw.githubusercontent.com/btcforplebs/sovereign-dns/main/scripts/install.sh && bash install.sh

@@ -91,7 +91,80 @@ set -euo pipefail
 
 die() { printf '\n%s\n' "$*" >&2; exit 1; }
 
-command -v docker >/dev/null 2>&1 || die "Docker isn't installed. Get it first: https://docs.docker.com/get-docker/"
+# Linux only: offer to install Docker Engine when it is missing, the way
+# Docker documents it for the Debian family (Debian, Ubuntu, Linux Mint,
+# Raspberry Pi OS and their relatives): Docker's own apt repository, signed
+# by Docker's key. Never without asking: Enter or y installs, anything else
+# (or no answer at all, as in a script) stops with the download link. macOS
+# and Windows get Docker Desktop's download link instead.
+docker_link="https://docs.docker.com/get-docker/"
+install_docker_linux() {
+  [[ -r /etc/os-release ]] || return 1
+  local ID="" ID_LIKE="" VERSION_CODENAME="" UBUNTU_CODENAME="" DEBIAN_CODENAME=""
+  # shellcheck disable=SC1091
+  . /etc/os-release
+  local repo codename
+  case " $ID $ID_LIKE " in
+    *" raspbian "*) repo=raspbian codename=$VERSION_CODENAME ;;   # Raspberry Pi OS, 32-bit
+    *" ubuntu "*)   repo=ubuntu codename=${UBUNTU_CODENAME:-$VERSION_CODENAME} ;;  # Ubuntu, Mint, Pop!_OS
+    *" debian "*)   repo=debian codename=${DEBIAN_CODENAME:-$VERSION_CODENAME} ;;  # Debian, Pi OS 64-bit, LMDE
+    *) echo "This installer can set up Docker on Debian, Ubuntu, Linux Mint and Raspberry Pi OS; this looks like '${ID:-unknown}'."; return 1 ;;
+  esac
+  [[ -n "$codename" ]] || { echo "Couldn't tell which release of ${ID} this is."; return 1; }
+  local sudo=""
+  if [[ $(id -u) -ne 0 ]]; then
+    command -v sudo >/dev/null 2>&1 || { echo "Installing Docker needs sudo, which isn't here."; return 1; }
+    sudo=sudo
+    echo "Installing needs your computer password (sudo)."
+  fi
+  echo "Installing Docker from Docker's own repository (download.docker.com/linux/$repo, $codename)..."
+  $sudo apt-get update -q &&
+  $sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -q ca-certificates curl &&
+  $sudo install -m 0755 -d /etc/apt/keyrings &&
+  $sudo curl -fsSL "https://download.docker.com/linux/$repo/gpg" -o /etc/apt/keyrings/docker.asc &&
+  $sudo chmod a+r /etc/apt/keyrings/docker.asc &&
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/$repo $codename stable" |
+    $sudo tee /etc/apt/sources.list.d/docker.list >/dev/null &&
+  $sudo apt-get update -q &&
+  $sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -q docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin ||
+    { echo "Installing Docker failed (see above)."; return 1; }
+  if [[ -d /run/systemd/system ]]; then
+    $sudo systemctl enable --now docker >/dev/null 2>&1 || true
+  else
+    $sudo service docker start >/dev/null 2>&1 || true
+  fi
+  # So this user can run docker without sudo, from the next login on. This
+  # run carries on in the group straight away (below).
+  if [[ -n "$sudo" ]]; then
+    $sudo usermod -aG docker "$(id -un)" && echo "Added $(id -un) to the docker group."
+  fi
+  echo "Docker is installed."
+}
+
+if ! command -v docker >/dev/null 2>&1; then
+  if [[ "$(uname -s)" != Linux ]]; then
+    die "Docker isn't installed. Get Docker Desktop first: $docker_link
+Then run this script again."
+  fi
+  printf '\nDocker isn'"'"'t installed, and this box needs it. Install it now? [Y/n] '
+  answer=""
+  read -r answer || answer=no
+  case "$answer" in
+    ""|[Yy]|[Yy][Ee][Ss]) install_docker_linux || die "Docker isn't installed. Install it yourself: $docker_link
+Then run this script again." ;;
+    *) die "Docker isn't installed. Install it, then run this script again: $docker_link" ;;
+  esac
+fi
+# Just installed, this user is in the docker group but this shell is not yet.
+# Carry on inside the group rather than asking for a log out and back in.
+# (Not `docker info | grep`: under pipefail that pipeline has docker's status.)
+docker_err=$(docker info 2>&1 >/dev/null || true)
+if [[ "$(uname -s)" == Linux && $(id -u) -ne 0 ]] && grep -qi 'permission denied' <<<"$docker_err" &&
+   id -nG "$(id -un)" 2>/dev/null | tr ' ' '\n' | grep -qx docker &&
+   ! id -nG | tr ' ' '\n' | grep -qx docker && [[ -z "${SOVEREIGN_DNS_IN_DOCKER_GROUP:-}" ]]; then
+  self="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+  exec sg docker -c "SOVEREIGN_DNS_IN_DOCKER_GROUP=1 $(printf '%q ' bash "$self" "$@")"
+fi
 docker info >/dev/null 2>&1 || die "Docker is installed but not running.
 Open Docker Desktop (or start the docker service), wait until it says it's running, then run this script again."
 docker compose version >/dev/null 2>&1 || die "This Docker is missing the 'compose' plugin.

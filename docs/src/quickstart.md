@@ -35,17 +35,14 @@ have to change anything on your router.
   **Battery → Options**).
 - **An internet connection.** The first run downloads and builds all of
   the software.
-- **Docker**, the free program that runs the box's software.
-  *Placeholder: the installer will soon set Docker up for you. Until
-  then, install [Docker Desktop](https://docs.docker.com/get-docker/)
-  first and open it once, so it's running.*
+- **Docker**, the free program that runs the box's software. On Linux
+  (Debian, Ubuntu, Linux Mint, Raspberry Pi OS) you can skip this: if
+  Docker is missing, the installer asks "Install it now? [Y/n]" and sets
+  it up, asking for your computer password. On a Mac or Windows PC,
+  install [Docker Desktop](https://docs.docker.com/get-docker/) first and
+  open it once, so it's running.
 - **Windows:** *placeholder, the Windows steps are still being decided.*
 
-<!-- MAINTAINERS: when install.sh sources scripts/lib/ (installer piece 1:
-     installs Docker, turns on autostart), replace the Docker bullet with
-     "The administrator password for that computer; the installer may ask
-     for it while it sets up Docker", and drop the Docker entries under
-     "If something goes wrong". -->
 
 ## Step 1: Open a terminal
 
@@ -444,7 +441,8 @@ bash ~/sovereign-dns/scripts/healthcheck.sh
 ```
 
 **"Docker isn't installed"** or **"Docker is installed but not
-running."** Install or open Docker Desktop, wait until it says it's
+running."** On Linux, run `bash install.sh` again and answer Y when it
+offers to install Docker. Otherwise install or open Docker Desktop, wait until it says it's
 running, then run `bash install.sh` again.
 
 **"Port 8080 (or 8082) is already in use by another program on
