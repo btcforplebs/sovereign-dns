@@ -40,10 +40,10 @@ read. In short:
   online straight away.
 - **No open ports.** The box connects out, and your devices find it through
   the private network.
-- **Undoing it** takes a few steps, and the first ones matter: change your
-  router back if you use whole-house DNS, and turn network DNS off on the
-  dashboard, *before* you remove the box. See
-  [How to undo it](docs/src/before-you-install.md#how-to-undo-it).
+- **Undoing it** is one line too, and it goes in the safe order: network
+  DNS off first, so your devices aren't left without DNS. If you use
+  whole-house DNS, change your router back before you run it. See
+  [How to undo it](#how-to-undo-it).
 
 ## Where to run it
 
@@ -250,6 +250,32 @@ bash scripts/dns-lan.sh off     # stop (change your router back FIRST)
   `bash scripts/healthcheck.sh`. It tells you what's down and how to fix it.
 
 More in [Before you install](docs/src/before-you-install.md#if-dns-stops-working).
+
+## How to undo it
+
+If you use whole-house DNS, change your router's DNS setting back first.
+Then, in a terminal on the box, in the folder you ran the installer from
+(usually your home folder), paste this one line:
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/btcforplebs/sovereign-dns/main/scripts/uninstall.sh && bash uninstall.sh
+```
+
+It says what it will do and asks once before changing anything. In order:
+
+1. Turns **network DNS off** when this box answers DNS for your devices and
+   no backup box will, so they go back to their normal DNS.
+2. Turns **whole-house DNS off**, if it was on.
+3. Prints this box's **device ID**. On a second box, remove that device on
+   your first box's dashboard. On your first box, the network goes with it:
+   leave it in the Nostr VPN app on each phone or laptop.
+4. Stops the box and deletes its data and images
+   (`docker compose down -v --rmi all`). That can't be undone.
+5. Deletes the `sovereign-dns` folder.
+
+`bash uninstall.sh --yes` does the same without asking. Docker stays
+installed. The step-by-step version by hand is in
+[Before you install](docs/src/before-you-install.md#how-to-undo-it).
 
 ## Good to know
 
