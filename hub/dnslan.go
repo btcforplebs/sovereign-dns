@@ -10,8 +10,8 @@ package main
 // turns it on), takes the queries on the box's home-network address, and hands
 // each one to Pi-hole at nvpn's dns-internal address (172.28.53.10). Pi-hole
 // listens there only because of FTLCONF_misc_dnsmasq_lines "interface=eth0" in
-// docker-compose.yml; its own interface setting binds the mesh tunnel and
-// loopback alone. Pi-hole still decides everything: what is blocked,
+// docker-compose.yml, next to the mesh tunnel's line (and loopback, which
+// dnsmasq adds itself). Pi-hole still decides everything: what is blocked,
 // what Unbound is asked, what is logged.
 //
 // Two things a plain port forward would get wrong:

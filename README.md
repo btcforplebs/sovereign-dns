@@ -139,13 +139,24 @@ Pi-hole page), and anyone who knows it can add a device.
 
 ## First box or another one?
 
-When the dashboard first opens, its setup asks **First box or another
-one?**
+Once the dashboard is up, the installer asks this right in the terminal, so
+a box with no screen is set up without opening anything:
 
-- **This is my first box:** it runs your private network. Your phones,
-  laptops and any other DNS box join it.
-- **I already have a box:** this one joins your first box's network as a
-  second DNS box. See [A second box](#a-second-box).
+- **1) This is my first box:** it runs your private network. Your phones,
+  laptops and any other DNS box join it. Paste each new device's join link
+  (below), check the device it names and type `y`; press Enter when you're
+  done. If the dashboard is open to your home network, it also shows a QR
+  code: open it with your phone's camera and add the phone from the phone
+  itself.
+- **2) I already have a box:** this one joins your first box's network as a
+  second DNS box. Paste the first box's join code; it prints this box's ID to
+  paste back there. See [A second box](#a-second-box).
+
+Press Enter to skip it and use the dashboard's setup instead, which asks the
+same question. Run it again any time from the `sovereign-dns` folder with
+`docker compose exec hub /hub setup`. A scripted install (no terminal, or
+`SOVEREIGN_DNS_SKIP_SETUP=1`) skips it, and running the installer again to
+update a box that's already set up asks nothing.
 
 ## Add your next device
 
@@ -378,9 +389,11 @@ The Pi-hole admin UI is also served on the mesh at
 ### Design notes
 
 - **Pi-hole shares the nvpn container's network namespace** and binds *only*
-  the mesh tunnel interface (`FTLCONF_dns_listeningMode=BIND` on `utun100`).
-  nvpn's own DNS stubs live on 127.0.0.1, so the two never collide — the same
-  pattern nostr-vpn's own network-DNS e2e uses.
+  the mesh tunnel interface (`utun100`) and nvpn's dns-internal address, one
+  address at a time (dnsmasq `bind-dynamic`, with `FTLCONF_dns_listeningMode`
+  set to `NONE`). nvpn's own DNS stubs live on 127.0.0.1, so the two never
+  collide, and Pi-hole follows the mesh address when it changes, as it does
+  when a second box joins the first one.
 - **The DNS device exempts itself** from the override (nvpn does this in
   core), so this container keeps its own resolver and no forwarding loop is
   possible.

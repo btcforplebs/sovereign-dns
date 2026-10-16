@@ -202,6 +202,27 @@ read it.** The computer is downloading the parts and, if needed, building the
 encrypted network software from its source code. Leave the window open and
 let it finish. Later runs take seconds, because the result is kept.
 
+Just before it finishes, once the dashboard is up, it asks:
+
+```text
+Set up your devices now?
+  1) This is my first box. Phones, laptops and any other DNS box join it.
+  2) I already have a box. This one joins it as a second DNS box.
+Type 1 or 2, or press Enter to skip:
+```
+
+This is the setup guide's question, asked in the terminal so a box with no
+screen can be set up straight away. Type **1** on your first box: it shows
+how a phone makes its join link (Step 6 below), and then takes each link you
+paste, shows the device it names, and adds it when you type `y`. Press Enter
+on an empty line when you're done. If you opened the dashboard to your home
+network, it also prints a QR code: point your phone's camera at it to open
+this box's *Add a device* page on the phone, sign in, and paste the phone's
+link there. Type **2** on a second box: paste your first box's join code, and
+it prints this box's ID to paste back on the first box. Or press Enter to skip
+and use the dashboard instead (Step 5). You can run it later from the
+`sovereign-dns` folder with `docker compose exec hub /hub setup`.
+
 When it's done, you'll see a box like this:
 
 ```text

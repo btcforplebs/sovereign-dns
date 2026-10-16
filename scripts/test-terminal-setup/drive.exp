@@ -1,0 +1,58 @@
+#!/usr/bin/expect -f
+# Drives both throwaway installs the way a person at each terminal would.
+# argv: phone join link. Writes everything it sees to work/session.log.
+set phone [lindex $argv 0]
+log_file -noappend work/session.log
+set timeout 1500
+proc fail {msg} { send_user "\nDRIVE FAILED: $msg\n"; exit 1 }
+set dc {docker compose -p tom-termsetup -f boxes.yml exec -it}
+
+# ---- Box A: a first box, opened to its home network, adds a phone ----
+eval spawn $dc boxa bash -lc {"cd /root && bash /work/install.sh"}
+set a $spawn_id
+expect -i $a "Pi-hole admin dashboard" { send -i $a "pihole-pass-a1\r" } timeout { fail "A: no Pi-hole password prompt" }
+expect -i $a "home network?" { send -i $a "y\r" } timeout { fail "A: no home-network question" }
+expect -i $a "at least 8 characters" { send -i $a "dash-pass-a1\r" } timeout { fail "A: no dashboard password prompt" }
+expect -i $a "Type it again" { send -i $a "dash-pass-a1\r" }
+expect -i $a "Type 1 or 2, or press Enter to skip" { send -i $a "1\r" } timeout { fail "A: setup never asked first box or another" } eof { fail "A: installer ended without asking" }
+expect -i $a -re {paste this join code:\s+(npub1[a-z0-9]+:[A-Za-z0-9_-]+)} { set code $expect_out(1,string) } timeout { fail "A: no join code" }
+expect -i $a "Paste a join link" { send -i $a "$phone\r" }
+expect -i $a "Add it to" { send -i $a "y\r" } timeout { fail "A: no review of the phone" }
+expect -i $a -re {Added [^\r\n]+\.} {} -re {Couldn't add[^\r\n]*} { fail "A: $expect_out(0,string)" } timeout { fail "A: phone not added" }
+expect -i $a "Paste a join link" { send -i $a "\r" }
+expect -i $a "Device setup done" {} timeout { fail "A: no summary" }
+expect -i $a -re {This box answers DNS on the VPN at [0-9.]+} {} -re {This box is NOT answering DNS[^\r\n]*} { fail "A: $expect_out(0,string)" } timeout { fail "A: no DNS check" }
+expect -i $a "Done! Open your dashboard" {} timeout { fail "A: no final banner" }
+expect -i $a eof
+send_user "\nA_JOIN_CODE=$code\n"
+
+# ---- Box B: another box, joins A with its code, waits to be added ----
+eval spawn $dc boxb bash -lc {"cd /root && bash /work/install.sh"}
+set b $spawn_id
+expect -i $b "Pi-hole admin dashboard" { send -i $b "pihole-pass-b1\r" } timeout { fail "B: no Pi-hole password prompt" }
+expect -i $b "home network?" { send -i $b "n\r" } timeout { fail "B: no home-network question" }
+expect -i $b "Type 1 or 2, or press Enter to skip" { send -i $b "2\r" } timeout { fail "B: setup never asked" } eof { fail "B: installer ended without asking" }
+expect -i $b "join code, or press Enter" { send -i $b "$code\r" }
+expect -i $b -re {paste this ID\s*\r?\n[^\r\n]*\r?\n\s+(npub1[a-z0-9]+)} { set bid $expect_out(1,string) } -re {Couldn't join[^\r\n]*|Nothing was changed[^\r\n]*} { fail "B: $expect_out(0,string)" } timeout { fail "B: no ID shown" }
+expect -i $b "Waiting for your first box" {} timeout { fail "B: not waiting" }
+send_user "\nB_ID=$bid\n"
+
+# ---- Back on A, by hand: add B while B waits ----
+eval spawn $dc boxa bash -lc {"cd /root/sovereign-dns && docker compose exec hub /hub setup"}
+set a2 $spawn_id
+expect -i $a2 "Paste a join link" { send -i $a2 "$bid\r" } timeout { fail "A2: no paste prompt" }
+expect -i $a2 "backup DNS box" {} timeout { fail "A2: not offered as a backup DNS box" }
+expect -i $a2 "Add it to" { send -i $a2 "y\r" }
+expect -i $a2 "Added the box." {} -re {Couldn't add[^\r\n]*} { fail "A2: $expect_out(0,string)" } timeout { fail "A2: box not added" }
+expect -i $a2 "Paste a join link" { send -i $a2 "\r" }
+expect -i $a2 eof
+
+# ---- B notices on its own ----
+set timeout 600
+expect -i $b "You're set" {} "Still waiting" { fail "B: never admitted" } timeout { fail "B: no answer" }
+# The bug this catches: B joined A, got a new mesh address, and its Pi-hole
+# kept listening on the old one. B's installer must say so, and must not.
+expect -i $b -re {This box answers DNS on the VPN at [0-9.]+} {} -re {This box is NOT answering DNS[^\r\n]*} { fail "B: $expect_out(0,string)" } timeout { fail "B: no DNS check" }
+expect -i $b "Done! Open your dashboard" {} timeout { fail "B: no final banner" }
+expect -i $b eof
+send_user "\nDRIVE OK\n"

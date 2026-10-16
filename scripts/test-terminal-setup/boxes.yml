@@ -1,0 +1,15 @@
+# Two throwaway "computers" for a real fresh install of install.sh, each with
+# its own Docker engine (docker-in-docker), so nothing touches the live stack.
+services:
+  boxa:
+    image: docker:27-dind
+    privileged: true
+    hostname: boxa
+    environment: {DOCKER_TLS_CERTDIR: ""}
+    volumes: ["./work:/work"]
+  boxb:
+    image: docker:27-dind
+    privileged: true
+    hostname: boxb
+    environment: {DOCKER_TLS_CERTDIR: ""}
+    volumes: ["./work:/work"]

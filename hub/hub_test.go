@@ -116,6 +116,7 @@ type fakePanel struct {
 	added      []string
 	writes     []*http.Request
 	bodies     []map[string]any
+	qrTexts    []string // what /api/qr_matrix was asked to draw
 }
 
 func (f *fakePanel) handler() http.Handler {
@@ -259,6 +260,13 @@ func (f *fakePanel) handler() http.Handler {
 			}
 		}
 		json.NewEncoder(w).Encode(state())
+	})
+	mux.HandleFunc("/api/qr_matrix", func(w http.ResponseWriter, r *http.Request) {
+		// A 2x2 stand-in: what matters is that the text asked for is recorded.
+		var body map[string]string
+		json.NewDecoder(r.Body).Decode(&body)
+		f.qrTexts = append(f.qrTexts, body["text"])
+		json.NewEncoder(w).Encode(map[string]any{"width": 2, "cells": []bool{true, false, false, true}})
 	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {}) // health, Pi-hole login
 	return mux

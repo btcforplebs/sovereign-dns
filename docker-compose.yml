@@ -110,8 +110,8 @@ services:
   # Pi-hole shares the nvpn container's network namespace so it can bind the
   # mesh tunnel interface (utun100) directly: DNS queries arriving at this
   # device's mesh IP hit Pi-hole, while nvpn's own stubs keep 127.0.0.1.
-  # listeningMode=BIND is what keeps the two from colliding — same pattern the
-  # nostr-vpn repo's own network-DNS e2e uses (dnsmasq --bind-interfaces).
+  # Binding per address (dnsmasq bind-dynamic, below) is what keeps the two
+  # from colliding, and it follows the mesh address when it changes.
   pihole:
     # Pinned by digest (the tag is for people; Docker uses only the digest).
     # Bump both together: scripts/check-pins.sh fails on an unpinned image.
@@ -128,16 +128,25 @@ services:
       FTLCONF_webserver_api_password: ${PIHOLE_PASSWORD:?set PIHOLE_PASSWORD in .env}
       # Upstream is Unbound only — fully recursive, no Google/Cloudflare.
       FTLCONF_dns_upstreams: 172.28.53.11#53
-      # Bind only the mesh tunnel interface; 127.0.0.1:53 stays free for nvpn.
       FTLCONF_dns_interface: ${NVPN_TUN_IFACE:-utun100}
-      FTLCONF_dns_listeningMode: BIND
-      # Also answer on nvpn's dns-internal address (172.28.53.10, eth0 in this
-      # namespace). dns-lan below forwards the home network's queries there.
-      # That address is not published: the internet cannot reach it, but on
-      # Linux the host itself can, and so can a home-network machine that
-      # adds a route to 172.28.53.0/24 through the host, with no sender
-      # check there. scripts/check-pins.sh allows exactly this line.
-      FTLCONF_misc_dnsmasq_lines: "interface=eth0"
+      # NONE: FTL writes no listening config; the three dnsmasq lines below
+      # are all of it. Not BIND: BIND binds the addresses an interface has
+      # when Pi-hole starts and never looks again. A second box starts on its
+      # own network, and joining the first box gives the tunnel a new address,
+      # so Pi-hole listened on an address the box no longer had: the admin
+      # page answered on the mesh (the web server listens everywhere) and
+      # every lookup timed out, with no error anywhere. bind-dynamic binds
+      # each address as it appears and drops it as it goes, still only on
+      # these interfaces, so 127.0.0.1:53 stays free for nvpn. (dnsmasq dies
+      # if bind-interfaces, which BIND writes, and bind-dynamic are both set.)
+      FTLCONF_dns_listeningMode: NONE
+      # The mesh tunnel, and nvpn's dns-internal address (172.28.53.10, eth0
+      # in this namespace), which dns-lan below forwards the home network's
+      # queries to. That address is not published: the internet cannot reach
+      # it, but on Linux the host itself can, and so can a home-network
+      # machine that adds a route to 172.28.53.0/24 through the host, with no
+      # sender check there. scripts/check-pins.sh allows exactly these lines.
+      FTLCONF_misc_dnsmasq_lines: "interface=${NVPN_TUN_IFACE:-utun100};interface=eth0;bind-dynamic"
       FTLCONF_dns_dnssec: "true"
       # Per-client rate limit, raised from FTL's 1000 a minute. Every device on
       # the mesh is one client, and the busiest one already peaks near 833 a

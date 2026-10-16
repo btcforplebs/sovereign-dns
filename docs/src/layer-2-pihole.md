@@ -18,8 +18,9 @@ blocked, and the query log shows Unbound as the only upstream.
 
 - Pi-hole shares the `nvpn` container's network namespace
   (`network_mode: service:nvpn`) so it can bind the mesh tunnel interface
-  directly. `FTLCONF_dns_listeningMode=BIND` on `utun100` is what keeps it
-  from colliding with nvpn's own DNS stubs on `127.0.0.1` — the same
-  pattern the nostr-vpn repo's own network-DNS e2e test uses.
+  directly. It binds `utun100` and `eth0` one address at a time (dnsmasq
+  `bind-dynamic`; `FTLCONF_dns_listeningMode=NONE` so FTL adds nothing of
+  its own), which keeps it from colliding with nvpn's own DNS stubs on
+  `127.0.0.1` and lets it follow the mesh address when that changes.
 - Admin UI is reachable at `http://<mesh-ip>/admin`, password set via
   `PIHOLE_PASSWORD` in `.env`.
