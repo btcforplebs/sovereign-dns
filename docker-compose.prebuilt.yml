@@ -34,6 +34,3 @@ services:
   dns-lan:
     build: !reset null
     image: ghcr.io/btcforplebs/sovereign-dns-hub:hub-ctx-9566a5e20aa7@sha256:c9865421d9f019d05f425580e503e58f9912d8520b902530be5a10fa1daf8fb0
-  docs:
-    build: !reset null
-    image: ghcr.io/btcforplebs/sovereign-dns-docs:docs-ctx-63c7e56d4df7@sha256:ca1310653554cea45f5d6568a5353957950c0c51de5923df7684545ba49a35aa
