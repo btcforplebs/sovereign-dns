@@ -303,7 +303,7 @@ func TestAddBoxRefusals(t *testing.T) {
 	f := &fakePanel{dropBox: true}
 	cfg := panelConfig(t, f)
 	rec := postTo(newMux(cfg), "/devices/add-box", url.Values{"csrf": {cfg.csrfToken}, "box": {secondBoxNpub}, "confirm": {"yes"}}, nil)
-	if rec.Code != http.StatusBadGateway || !strings.Contains(rec.Body.String(), "doesn&#39;t list the box") {
+	if rec.Code != http.StatusBadGateway || !strings.Contains(rec.Body.String(), "isn&#39;t on the list afterwards") {
 		t.Fatalf("unapplied add: %d\n%s", rec.Code, rec.Body.String())
 	}
 }

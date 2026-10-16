@@ -57,6 +57,13 @@ const pageHTML = `<!doctype html>
   .dev:first-child { border-top: 0; }
   .dev .meta { color: var(--dim); font-size: 13px; }
   footer { color: var(--dim); font-size: 12px; margin-top: 44px; }
+  .alert { border-left: 3px solid var(--warn); padding: 10px 14px; background: #1f1a10;
+           border-radius: 0 8px 8px 0; margin-bottom: 12px; }
+  .alert.down { border-left-color: var(--down); background: #1d1416; }
+  .role { display: inline-block; margin-left: 6px; font-size: 12px; font-weight: 600;
+          color: var(--accent); border: 1px solid currentColor; border-radius: 999px; padding: 0 8px; }
+  .dev form.inline { display: inline; }
+  .dev .btn { padding: 6px 12px; font-size: 13px; }
 
   .dns-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
   .dns-row .what { flex: 1 1 260px; }
@@ -91,6 +98,9 @@ const pageHTML = `<!doctype html>
   <p class="lede">No third-party resolver, no exposed ports, fails closed if this box goes down.</p>
 
   {{if .Error}}<div class="err">{{.Error}}</div>{{end}}
+  {{range .Alerts}}
+  <div class="alert {{.Level}}" role="alert"><strong>{{.Title}}</strong> {{.Detail}}</div>
+  {{end}}
 
   <h2>Status</h2>
   <div class="grid">
@@ -147,10 +157,11 @@ const pageHTML = `<!doctype html>
     {{if eq .ConfirmingDNS "off"}}
     <section class="confirm" role="alert" aria-labelledby="confirm-title">
       <h3 id="confirm-title">Turn off DNS for the whole mesh?</h3>
-      <p>Every device on the mesh goes back to its own resolver, usually the
+      <p>Every device on the mesh{{if .Devices}} ({{len .Devices}} besides this box){{end}} goes back to its own resolver, usually the
         router's or the ISP's, including this computer if it's a mesh member.
-        Blocklists stop applying and lookups are no longer private. You can turn
-        it back on here.</p>
+        Blocklists stop applying and lookups are no longer private.{{if .Backups}}
+        Backup DNS boxes stop answering for the mesh too: this switch is for the
+        whole network, not just this box.{{end}} You can turn it back on here.</p>
       <div class="actions">
         <a class="btn" href="/dashboard#dns" autofocus>Keep it on</a>
         <form class="inline" method="post" action="/dns">
@@ -240,7 +251,7 @@ const pageHTML = `<!doctype html>
   <div class="card">
     {{range .Devices}}
     <div class="dev">
-      <span>{{if .Alias}}{{.Alias}}{{else}}(unnamed){{end}} <span class="meta">{{.TunnelIP}}</span></span>
+      <span>{{if .Alias}}{{.Alias}}{{else}}(unnamed){{end}}{{if .Role}}<span class="role">{{.Role}}</span>{{end}} <span class="meta">{{.TunnelIP}}</span></span>
       <span class="meta">{{.Detail}}</span>
     </div>
     {{end}}
@@ -248,6 +259,37 @@ const pageHTML = `<!doctype html>
   <p class="detail" style="color:var(--dim);font-size:13px">
     Approved is not the same as covered: a device only resolves through this
     stack once it has a working path to it.
+  </p>
+  {{end}}
+
+  {{if .Removed}}
+  <h2 id="removed">Removed devices</h2>
+  <div class="card">
+    {{$csrf := .CSRF}}{{$backupOK := .HasDNSBox}}
+    {{range .Removed}}
+    <div class="dev">
+      <span>{{if .Alias}}{{.Alias}}{{else}}(unnamed){{end}} <span class="meta"><code>{{printf "%.18s" .Npub}}…</code></span></span>
+      <span>
+        <form class="inline" method="post" action="/devices/readd">
+          <input type="hidden" name="csrf" value="{{$csrf}}">
+          <input type="hidden" name="npub" value="{{.Npub}}">
+          <button class="btn" type="submit">Re-add</button>
+        </form>
+        {{if $backupOK}}
+        <form class="inline" method="post" action="/devices/readd">
+          <input type="hidden" name="csrf" value="{{$csrf}}">
+          <input type="hidden" name="npub" value="{{.Npub}}">
+          <input type="hidden" name="backup" value="yes">
+          <button class="btn" type="submit">Re-add as backup DNS box</button>
+        </form>
+        {{end}}
+      </span>
+    </div>
+    {{end}}
+  </div>
+  <p class="detail" style="color:var(--dim);font-size:13px">
+    Removed on this box, so they can't come back on their own. Re-add one only
+    if you removed it by mistake: it is back on the mesh straight away.
   </p>
   {{end}}
 

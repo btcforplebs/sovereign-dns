@@ -209,8 +209,8 @@ func (c config) serveAddDevice(w http.ResponseWriter, r *http.Request) {
 	// panel may still add the device, and the log must say what it answered.
 	ctx := context.WithoutCancel(r.Context())
 	if err := c.importJoinRequest(ctx, link, j.DeviceNpub); err != nil {
-		log.Printf("hub: adding device %s: %v", shortNpub(j.DeviceNpub), err)
-		view.Error = fmt.Sprintf("Couldn't add the device: %v", err)
+		logAddFailure("device", shortNpub(j.DeviceNpub), err)
+		view.Error = "Couldn't add the device. " + plainPanelError(err)
 		renderAdd(w, view, http.StatusBadGateway)
 		return
 	}
