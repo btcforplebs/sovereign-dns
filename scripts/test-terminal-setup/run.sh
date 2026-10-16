@@ -50,6 +50,13 @@ if [[ "$rc" == 0 ]]; then
   cross boxa "$ipb"
   cross boxb "$ipa"
 fi
+# The docs container is opt-in (the docs profile): a default install runs
+# without it.
+for b in boxa boxb; do
+  if "${DC[@]}" exec -T "$b" docker ps -a --format '{{.Names}}' | grep -qx sovereign-dns-docs; then
+    echo "FAIL  $b runs the docs container, which is opt-in"; rc=1
+  fi
+done
 for b in boxa boxb; do
   echo "== $b"; "${DC[@]}" exec -T "$b" sh -c 'cd /root/sovereign-dns && docker compose ps --format "{{.Name}} {{.Status}}" && docker compose exec -T nvpn nvpn status 2>&1 | grep -E "network:|network_dns|peers:"'
 done

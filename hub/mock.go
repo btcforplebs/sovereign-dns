@@ -32,7 +32,7 @@ func mockState(name string) mock {
 			TunnelIP: ip, Reachable: reachable, State: state, StatusText: status})
 	}
 
-	up := mock{tick: base, panelUp: true, piholeUp: true, docsUp: true, unboundUp: true}
+	up := mock{tick: base, panelUp: true, piholeUp: true, unboundUp: true} // docs: opt-in, off by default
 
 	switch name {
 	case "fresh":

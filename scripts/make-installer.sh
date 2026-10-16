@@ -101,7 +101,7 @@ Update Docker Desktop (or install docker-compose-plugin), then run this script a
 # one, say so now in plain language instead of failing mid-build. A previous
 # sovereign-dns install holding them is fine — compose reuses its containers.
 if command -v nc >/dev/null 2>&1 && ! docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^sovereign-dns-'; then
-  for port in 8080 8081 8082; do
+  for port in 8080 8082; do  # 8081 too only with the opt-in docs profile
     if nc -z 127.0.0.1 "$port" >/dev/null 2>&1; then
       die "Port $port is already in use by another program on this computer.
 Close whatever is using it (or run this script once, then edit the *_PORT values in sovereign-dns/.env) and try again."
@@ -321,7 +321,7 @@ if grep -q '^HUB_BIND=0.0.0.0$' .env; then
 fi
 echo "Everything lives there: what's running, this device's ID, the invite"
 echo "command for adding your phone or laptop, the VPN control panel, the"
-echo "Pi-hole ad-block dashboard, and the docs."
+echo "Pi-hole ad-block dashboard, and a link to the guide."
 echo
 echo "If something shows as down, run:  bash sovereign-dns/scripts/healthcheck.sh"
 echo "=========================================="

@@ -332,11 +332,16 @@ services:
       start_period: 10s
 
   # Self-hosted docs site (mdBook) — explains the whole stack in plain
-  # language plus the technical detail behind each layer. Runs standalone;
-  # no dependency on the other services, so it's up even before you've
-  # joined the mesh. Loopback only, like the hub and the web UI: nothing on
-  # the LAN needs it, and scripts/check-pins.sh allows no other publish.
+  # language plus the technical detail behind each layer. Off by default:
+  # the dashboard links to the same guide on GitHub instead, so a normal
+  # install downloads and runs one container fewer. For a box that has to
+  # read them offline, add docs to COMPOSE_PROFILES in .env (for example
+  # COMPOSE_PROFILES=docs) and run docker compose up -d; the dashboard then
+  # links here. Runs standalone, no dependency on the other services.
+  # Loopback only, like the hub and the web UI: nothing on the LAN needs it,
+  # and scripts/check-pins.sh allows no other publish.
   docs:
+    profiles: [docs]
     build:
       context: ./docs
     container_name: sovereign-dns-docs

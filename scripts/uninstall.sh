@@ -146,7 +146,7 @@ Remove it on your first box: dashboard (http://localhost:8080), Devices, remove.
 fi
 
 echo "Stopping the box and deleting its data and images..."
-docker compose --profile dns-lan down -v --rmi all --remove-orphans
+docker compose --profile dns-lan --profile docs down -v --rmi all --remove-orphans
 
 cd /
 rm -rf "$dir"

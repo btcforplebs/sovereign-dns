@@ -352,8 +352,8 @@ func (c config) viewer(p *page, r *http.Request) {
 		p.PanelOnMesh = true
 	}
 	// The docs' own port is on the box's loopback; from elsewhere, read them
-	// through the hub (docsProxy).
-	if p.Remote && p.DocsURL != "" {
+	// through the hub (docsProxy). The online guide needs no help.
+	if p.Remote && p.DocsURL != "" && p.DocsURL != onlineGuideURL {
 		p.DocsURL = "/docs/"
 	}
 }
@@ -366,6 +366,10 @@ func (c config) viewer(p *page, r *http.Request) {
 func (c config) hostAllowed(host string) bool {
 	return loopbackHost(host) || c.auth.enabled()
 }
+
+// onlineGuideURL is the guide the dashboard links to when the box does not
+// run its own docs container: the same pages, rendered by GitHub.
+const onlineGuideURL = "https://github.com/btcforplebs/sovereign-dns/blob/main/docs/src/README.md"
 
 func loadConfig() config {
 	webPort := env("WEB_UI_PORT", "8082")
@@ -459,8 +463,12 @@ func (c config) buildPage(ctx context.Context) page {
 		boolTile("Control panel", panelUp, "up", "down"),
 		boolTile("Pi-hole", piholeUp, "filtering", "unreachable"),
 		boolTile("Unbound", unboundUp, "resolving, no forwarders", "unreachable"),
-		boolTile("Docs", docsUp, "up", "down"),
 	)
+	// Only when the opt-in docs container runs: a box without it is not
+	// missing anything, so a red "down" tile would be a false alarm.
+	if docsUp {
+		p.Tiles = append(p.Tiles, boolTile("Docs", docsUp, "up", "down"))
+	}
 
 	p.OwnNpub = state.OwnNpub
 	p.NetworkID = state.NetworkID
@@ -579,8 +587,12 @@ func (c config) buildPage(ctx context.Context) page {
 	// Only offer links that actually go somewhere: a launch card for a service
 	// that is down is worse than no card, because the user blames themselves
 	// for the dead page.
+	// The docs container is opt-in (the docs profile in docker-compose.yml),
+	// for reading offline. Without it, the same guide is on GitHub.
 	if docsUp {
 		p.DocsURL = c.docsURL
+	} else {
+		p.DocsURL = onlineGuideURL
 	}
 	if meshIP := strings.SplitN(state.TunnelIP, "/", 2)[0]; meshIP != "" && piholeUp {
 		p.PiholeURL = fmt.Sprintf("http://%s/admin", meshIP)
