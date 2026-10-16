@@ -9,14 +9,20 @@ normally nothing to fix. If you're running Pi-hole standalone outside this
 compose file and hit a bind error, either disable systemd-resolved's stub
 listener or bind explicitly to the mesh interface.
 
-## Pi-hole BIND mode needs the tunnel interface to exist first
+## Pi-hole must follow the mesh address
 
-Pi-hole's `FTLCONF_dns_listeningMode=BIND` on `utun100` requires that
-interface to exist, which only happens once the `nvpn` daemon has meshed.
-On first boot, FTL may retry/restart a few times until the interface
-appears. The healthcheck + `restart: unless-stopped` should ride through
-this automatically — if Pi-hole stays unhealthy for more than a minute or
-two, check `docker compose logs nvpn` to confirm it actually meshed.
+A box's mesh address changes when it joins another box's network: a second
+box starts on a network of its own, and being added to the first box's
+network gives its tunnel a new address. Pi-hole used to run in
+`FTLCONF_dns_listeningMode=BIND`, which binds the addresses an interface has
+when Pi-hole starts and never looks again. Such a box installed with no
+errors, its admin page answered on the mesh (the web server listens on every
+address), and every DNS lookup timed out. The stack now sets the listening
+mode to `NONE` and gives dnsmasq `bind-dynamic`, which binds each address as
+it appears. (`BIND` and `bind-dynamic` together stop dnsmasq from starting.)
+The installer ends by asking the box for a name and an ad domain at its mesh
+address and says plainly whether it answers; run that check any time with
+`bash scripts/dns-check.sh`.
 
 ## Linux crash-repair is intentionally skipped
 

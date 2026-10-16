@@ -506,7 +506,7 @@ fi
 pihole_env=$(awk '/^  pihole:[[:space:]]*$/ { inp = 1; next }
                   inp && /^  [^[:space:]#]/ { inp = 0 }
                   inp' "$loaded")
-for want in 'FTLCONF_dns_listeningMode BIND' 'FTLCONF_ntp_ipv4_active false' 'FTLCONF_ntp_ipv6_active false' 'FTLCONF_ntp_sync_active false' 'FTLCONF_dns_rateLimit_count 5000' 'FTLCONF_dns_rateLimit_interval 60'; do
+for want in 'FTLCONF_dns_listeningMode NONE' 'FTLCONF_ntp_ipv4_active false' 'FTLCONF_ntp_ipv6_active false' 'FTLCONF_ntp_sync_active false' 'FTLCONF_dns_rateLimit_count 5000' 'FTLCONF_dns_rateLimit_interval 60'; do
   read -r key val <<<"$want"
   grep -Eq "^[[:space:]]*(-[[:space:]]*)?${key}[[:space:]]*[:=][[:space:]]*[\"']?${val}[\"']?[[:space:]]*(#.*)?$" <<<"$pihole_env" \
     || fail "pihole must set $key to a literal $val in the compose files the installer loads"
@@ -705,12 +705,18 @@ if [[ -n "$dnslan_blk" ]]; then
   grep -Eq '^    entrypoint:' <<<"$dnslan_blk" && fail "dns-lan must not set entrypoint: the forwarder is /hub dns-lan"
 fi
 
-# Required, not just allowed: Pi-hole's one extra dnsmasq line adds nvpn's
-# dns-internal interface (for dns-lan) and nothing else. dnsmasq lines can open
-# any listener or move any upstream.
+# Required, not just allowed: with listeningMode NONE these dnsmasq lines are
+# Pi-hole's whole listening config: the mesh tunnel, nvpn's dns-internal
+# interface (for dns-lan), bound per address and following address changes,
+# and nothing else. dnsmasq lines can open any listener or move any upstream.
+pihole_lines_ok='^interface=(\$\{NVPN_TUN_IFACE:-utun100\}|[A-Za-z0-9_.-]+);interface=eth0;bind-dynamic$'
+n=0
 while IFS= read -r v; do
-  [[ "$v" == "interface=eth0" ]] || fail "pihole FTLCONF_misc_dnsmasq_lines must be exactly \"interface=eth0\", not '$v'"
+  n=$((n + 1))
+  [[ "$v" =~ $pihole_lines_ok ]] && [[ "$v" != "interface=eth0;"* ]] \
+    || fail "pihole FTLCONF_misc_dnsmasq_lines must be exactly \"interface=<tunnel>;interface=eth0;bind-dynamic\", not '$v'"
 done < <(sed -nE "s/^[[:space:]]*(-[[:space:]]*)?[\"']?FTLCONF_misc_dnsmasq_lines[\"']?[[:space:]]*[:=][[:space:]]*//p" "$loaded" | sed -E "s/^[\"']//; s/[\"'][[:space:]]*$//")
+(( n > 0 )) || fail "pihole must set FTLCONF_misc_dnsmasq_lines: with listeningMode NONE they are its only listening config"
 
 # Required, not just allowed: pihole serves the mesh only from inside nvpn's netns.
 surface /dev/stdin <"$loaded" | grep -Fqx "pihole	network_mode	service:nvpn" \

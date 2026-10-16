@@ -389,9 +389,11 @@ The Pi-hole admin UI is also served on the mesh at
 ### Design notes
 
 - **Pi-hole shares the nvpn container's network namespace** and binds *only*
-  the mesh tunnel interface (`FTLCONF_dns_listeningMode=BIND` on `utun100`).
-  nvpn's own DNS stubs live on 127.0.0.1, so the two never collide — the same
-  pattern nostr-vpn's own network-DNS e2e uses.
+  the mesh tunnel interface (`utun100`) and nvpn's dns-internal address, one
+  address at a time (dnsmasq `bind-dynamic`, with `FTLCONF_dns_listeningMode`
+  set to `NONE`). nvpn's own DNS stubs live on 127.0.0.1, so the two never
+  collide, and Pi-hole follows the mesh address when it changes, as it does
+  when a second box joins the first one.
 - **The DNS device exempts itself** from the override (nvpn does this in
   core), so this container keeps its own resolver and no forwarding loop is
   possible.
