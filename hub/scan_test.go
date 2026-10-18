@@ -36,6 +36,7 @@ func TestScriptsAreServed(t *testing.T) {
 			t.Errorf("%s: %d %v (%d bytes)", path, rec.Code, h, rec.Body.Len())
 		}
 		r := httptest.NewRequest(http.MethodPost, path, nil)
+		r.Host = "localhost:8080"
 		w := httptest.NewRecorder()
 		mux.ServeHTTP(w, r)
 		if w.Code != http.StatusMethodNotAllowed {

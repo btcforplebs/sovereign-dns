@@ -93,6 +93,7 @@ set match [lindex $argv 0]
 spawn {*}[lrange $argv 1 end]
 expect {
   "Pi-hole admin dashboard" { send "pihole-pw\r"; exp_continue }
+  "Type it again" { send "pihole-pw\r"; exp_continue }
   -exact {[Y/n] } { send "y\r"; exp_continue }
   $match { send "\004"; exp_continue }
   eof
@@ -109,6 +110,7 @@ EOF
      env DISPLAY= WAYLAND_DISPLAY= SSH_CONNECTION=1 bash "$root/scripts/install.sh" >/dev/null 2>&1)
   check "Ctrl-D at the installer's dashboard password exits 0" test "$?" = 0
   check "  ...and still starts the stack" ran "compose up -d --build"
+  check "  ...and the Pi-hole password is stored quoted, after being asked twice" env_has "$tmp/e" "PIHOLE_PASSWORD='pihole-pw'"
   check "  ...on this computer only" env_has "$tmp/e" "HUB_BIND=127.0.0.1"
 
   # The [Y/n] question itself: answer with Ctrl-D instead of y.

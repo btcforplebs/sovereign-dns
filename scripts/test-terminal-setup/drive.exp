@@ -11,6 +11,7 @@ set dc {docker compose -p tom-termsetup -f boxes.yml exec -it}
 eval spawn $dc boxa bash -lc {"cd /root && bash /work/install.sh"}
 set a $spawn_id
 expect -i $a "Pi-hole admin dashboard" { send -i $a "pihole-pass-a1\r" } timeout { fail "A: no Pi-hole password prompt" }
+expect -i $a "Type it again" { send -i $a "pihole-pass-a1\r" } timeout { fail "A: no Pi-hole password confirmation" }
 expect -i $a "home network?" { send -i $a "y\r" } timeout { fail "A: no home-network question" }
 expect -i $a "at least 8 characters" { send -i $a "dash-pass-a1\r" } timeout { fail "A: no dashboard password prompt" }
 expect -i $a "Type it again" { send -i $a "dash-pass-a1\r" }
@@ -30,6 +31,7 @@ send_user "\nA_JOIN_CODE=$code\n"
 eval spawn $dc boxb bash -lc {"cd /root && bash /work/install.sh"}
 set b $spawn_id
 expect -i $b "Pi-hole admin dashboard" { send -i $b "pihole-pass-b1\r" } timeout { fail "B: no Pi-hole password prompt" }
+expect -i $b "Type it again" { send -i $b "pihole-pass-b1\r" } timeout { fail "B: no Pi-hole password confirmation" }
 expect -i $b "home network?" { send -i $b "n\r" } timeout { fail "B: no home-network question" }
 expect -i $b "Type 1 or 2, or press Enter to skip" { send -i $b "2\r" } timeout { fail "B: setup never asked" } eof { fail "B: installer ended without asking" }
 expect -i $b "join code, or press Enter" { send -i $b "$code\r" }

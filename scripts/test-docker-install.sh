@@ -9,6 +9,8 @@
 #   - pressing Enter installs Docker from Docker's repository, adds the user
 #     to the docker group, and carries on in this same run to the password
 #     prompt, where the test stops (no answer).
+#   - a copy whose pinned apt-key fingerprint is wrong (as if the key served
+#     were not Docker's) installs nothing and removes the key it downloaded.
 # Needs Docker on the machine running the test, and the internet.
 set -uo pipefail
 img=${1:?usage: test-docker-install.sh <image> <install.sh>}
@@ -30,6 +32,15 @@ echo "--- answered n (exit $rc)"; echo "$out" | tail -4
 grep -q 'Install it now? \[Y/n\]' <<<"$out" || fail "no question was asked"
 grep -q 'https://docs.docker.com/get-docker/' <<<"$out" || fail "answering n gave no download link"
 as_user sh -c 'command -v docker' >/dev/null && fail "answering n installed docker anyway"
+
+# The key check can fail: with the fingerprint changed, the key Docker serves
+# no longer matches, and nothing is installed.
+as_user sh -c 'sed "s/^docker_key_fingerprint=\"[0-9A-F]*\"/docker_key_fingerprint=\"0000000000000000000000000000000000000000\"/" /opt/install.sh > /tmp/bad.sh && grep -c "^docker_key_fingerprint=\"0000" /tmp/bad.sh' | grep -qx 1 || fail "could not make the wrong-fingerprint copy"
+out=$(printf '\n' | as_user bash /tmp/bad.sh 2>&1); rc=$?
+echo "--- wrong key fingerprint (exit $rc)"; echo "$out" | tail -3
+grep -q "is not Docker's published one" <<<"$out" || fail "a key with the wrong fingerprint was accepted"
+as_user sh -c 'command -v docker' >/dev/null && fail "docker was installed from a key that failed the check"
+as_user sh -c 'test ! -e /etc/apt/keyrings/docker.asc' || fail "the rejected key was left in /etc/apt/keyrings"
 
 out=$(printf '\n' | as_user bash /opt/install.sh 2>&1); rc=$?
 echo "--- pressed Enter (exit $rc)"; echo "$out" | grep -vE '^(Get|Hit|Ign|Reading|Building|Selecting|Preparing|Unpacking|Setting up|Processing|Fetched|\(Reading)' | tail -12

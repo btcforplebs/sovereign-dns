@@ -98,6 +98,16 @@ die() { printf '\n%s\n' "$*" >&2; exit 1; }
 # (or no answer at all, as in a script) stops with the download link. macOS
 # and Windows get Docker Desktop's download link instead.
 docker_link="https://docs.docker.com/get-docker/"
+# Docker's apt signing key, as Docker publishes it
+# (https://docs.docker.com/engine/install/ubuntu/). The file fetched over TLS
+# is trusted by apt for every package on the box, so it is checked against this
+# before apt is told to use it: it must hold exactly this one key.
+docker_key_fingerprint="9DC858229FC7DD38854AE2D88D81803C0EBFCD88"
+docker_key_is_docker_s() {
+  local got
+  got=$(gpg --show-keys --with-colons "$1" 2>/dev/null | awk -F: '$1 == "pub" { want = 1; next } $1 == "fpr" && want { print $10; want = 0 }')
+  [[ "$got" == "$docker_key_fingerprint" ]]
+}
 install_docker_linux() {
   [[ -r /etc/os-release ]] || return 1
   local ID="" ID_LIKE="" VERSION_CODENAME="" UBUNTU_CODENAME="" DEBIAN_CODENAME=""
@@ -118,11 +128,18 @@ install_docker_linux() {
     echo "Installing needs your computer password (sudo)."
   fi
   echo "Installing Docker from Docker's own repository (download.docker.com/linux/$repo, $codename)..."
-  $sudo apt-get update -q &&
-  $sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -q ca-certificates curl &&
-  $sudo install -m 0755 -d /etc/apt/keyrings &&
-  $sudo curl -fsSL "https://download.docker.com/linux/$repo/gpg" -o /etc/apt/keyrings/docker.asc &&
-  $sudo chmod a+r /etc/apt/keyrings/docker.asc &&
+  {
+    $sudo apt-get update -q &&
+    $sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -q ca-certificates curl gnupg &&
+    $sudo install -m 0755 -d /etc/apt/keyrings &&
+    $sudo curl -fsSL "https://download.docker.com/linux/$repo/gpg" -o /etc/apt/keyrings/docker.asc
+  } || { echo "Installing Docker failed (see above)."; return 1; }
+  $sudo chmod a+r /etc/apt/keyrings/docker.asc
+  if ! docker_key_is_docker_s /etc/apt/keyrings/docker.asc; then
+    $sudo rm -f /etc/apt/keyrings/docker.asc
+    echo "The key downloaded from download.docker.com is not Docker's published one ($docker_key_fingerprint), so nothing was installed."
+    return 1
+  fi
   echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/$repo $codename stable" |
     $sudo tee /etc/apt/sources.list.d/docker.list >/dev/null &&
   $sudo apt-get update -q &&
@@ -211,11 +228,31 @@ cd sovereign-dns
 
 if [[ ! -f .env ]]; then
   echo
-  echo "Pick a password for your Pi-hole admin dashboard (typing is hidden):"
-  read -rs PIHOLE_PASSWORD
-  echo
+  # Asked twice at a terminal, like the dashboard password
+  # (scripts/lib/hub-password.sh), and
+  # written in single quotes: compose reads an unquoted .env value for $, #
+  # and spaces, so a password with one would be stored as something else.
+  # Single quotes are literal to compose, except a single quote itself, and a
+  # line break would end the line, so those two are refused.
+  while :; do
+    echo "Pick a password for your Pi-hole admin dashboard (typing is hidden):"
+    read -rs PIHOLE_PASSWORD || { echo; die "No password was entered, so nothing was set up. Paste the install line again."; }
+    echo
+    PIHOLE_PASSWORD2=$PIHOLE_PASSWORD
+    # Asking twice guards a person's typing; a script that pipes the password
+    # in has nobody to ask.
+    if [[ -t 0 ]]; then
+      echo "Type it again:"
+      read -rs PIHOLE_PASSWORD2 || { echo; die "No password was entered, so nothing was set up. Paste the install line again."; }
+      echo
+    fi
+    if [[ "$PIHOLE_PASSWORD" != "$PIHOLE_PASSWORD2" ]]; then echo "Those didn't match. Try again."; continue; fi
+    if [[ -z "$PIHOLE_PASSWORD" ]]; then echo "The password can't be empty. Try again."; continue; fi
+    if [[ "$PIHOLE_PASSWORD" == *"'"* ]]; then echo "Please pick one without a ' (single quote) in it."; continue; fi
+    break
+  done
   (umask 077; cat > .env) << ENV
-PIHOLE_PASSWORD=${PIHOLE_PASSWORD}
+PIHOLE_PASSWORD='${PIHOLE_PASSWORD}'
 TZ=UTC
 PIHOLE_WEB_PORT=80
 HUB_PORT=8080

@@ -33,7 +33,9 @@ func deadConfig(t *testing.T) config {
 func get(t *testing.T, mux http.Handler, path string) *httptest.ResponseRecorder {
 	t.Helper()
 	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+	r := httptest.NewRequest(http.MethodGet, path, nil)
+	r.Host = "localhost:8080" // an unlocked hub answers only to a loopback name
+	mux.ServeHTTP(rec, r)
 	return rec
 }
 

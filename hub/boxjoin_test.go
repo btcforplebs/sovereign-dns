@@ -31,6 +31,7 @@ func postTo(mux http.Handler, path string, form url.Values, mutate func(*http.Re
 func getWithRole(t *testing.T, mux http.Handler, path, role string) string {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, path, nil)
+	req.Host = "localhost:8080"
 	if role != "" {
 		req.AddCookie(&http.Cookie{Name: roleCookie, Value: role})
 	}

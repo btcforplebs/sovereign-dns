@@ -25,15 +25,3 @@ services:
   unbound:
     build: !reset null
     image: ghcr.io/btcforplebs/sovereign-dns-unbound:unbound-ctx-6147cb02a8b7@sha256:c80514a51167af7b95e87e5f40310861aa87c79fdf857f0769c3a61cd32066bf
-  hub:
-    build: !reset null
-    image: ghcr.io/btcforplebs/sovereign-dns-hub:hub-ctx-2518b6142b9c@sha256:46b121585ff64ef1cf29b6553a87aa7f6fd8a87f07bc0e08e31904303e461d11
-  hub-mesh:
-    build: !reset null
-    image: ghcr.io/btcforplebs/sovereign-dns-hub:hub-ctx-2518b6142b9c@sha256:46b121585ff64ef1cf29b6553a87aa7f6fd8a87f07bc0e08e31904303e461d11
-  dns-lan:
-    build: !reset null
-    image: ghcr.io/btcforplebs/sovereign-dns-hub:hub-ctx-2518b6142b9c@sha256:46b121585ff64ef1cf29b6553a87aa7f6fd8a87f07bc0e08e31904303e461d11
-  docs:
-    build: !reset null
-    image: ghcr.io/btcforplebs/sovereign-dns-docs:docs-ctx-d41516d9953d@sha256:82144e53c6afb8bee8a8bcd35aa7f0c51b4611a0243bf5dc8974f8441d81f3d1
