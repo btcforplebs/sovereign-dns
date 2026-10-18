@@ -113,5 +113,7 @@ for _ in $(seq 1 40); do
 done
 [[ -n "$ans" ]] && ok "  and it resolves a real name ($ans)" || bad "  but a real name does not resolve within two minutes"
 
+# Informational: whether the box had to nudge Pi-hole to listen again this time.
+echo "nudges by the box: $(docker logs "$NVPN" 2>&1 | grep -c 'nudging Pi-hole')"
 ((fail == 0)) && echo "daemon recovery: pass" || echo "daemon recovery: FAIL"
 exit "$fail"
