@@ -249,3 +249,22 @@ func TestFailureTableIsBounded(t *testing.T) {
 		t.Fatalf("after pruning, %d addresses tracked; want 2 (the live lockout and the new one)", n)
 	}
 }
+
+// An unlocked hub answers only to a loopback name, reads included: a
+// DNS-rebinding page arrives under its own name and must not read the status
+// or the dashboard (which carries the form token).
+func TestUnlockedHubReadsNeedLoopbackHost(t *testing.T) {
+	cfg := deadConfig(t)
+	h := newMux(cfg)
+	for _, path := range []string{"/api/status", "/dashboard", "/", "/setup"} {
+		for host, want := range map[string]bool{"localhost:8080": true, "127.0.0.1:8080": true, "evil.example:8080": false, "192.168.4.20:8080": false} {
+			r := httptest.NewRequest(http.MethodGet, path, nil)
+			r.Host = host
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, r)
+			if got := rec.Code != http.StatusForbidden; got != want {
+				t.Errorf("GET %s as Host %q: status %d, served=%v want %v", path, host, rec.Code, got, want)
+			}
+		}
+	}
+}

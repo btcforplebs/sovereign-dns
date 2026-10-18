@@ -354,7 +354,23 @@ func newMux(cfg config) http.Handler {
 			log.Printf("hub: rendering page: %v", err)
 		}
 	})
-	return cfg.auth.wrap(mux)
+	return cfg.hostGuard(cfg.auth.wrap(mux))
+}
+
+// hostGuard turns away a request for any page or API under a name this box
+// does not answer to. hostAllowed already guards the routes that change
+// things; reads need it too: a DNS-rebinding page that reaches an unlocked hub
+// could otherwise read /api/status and the dashboard, which hold the box's
+// device names and the form token. With a login, hostAllowed is always true
+// and the session cookie is the guard.
+func (c config) hostGuard(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !c.hostAllowed(r.Host) {
+			http.Error(w, "this page is only served at localhost", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // viewer fills in what depends on who is looking rather than on the box.

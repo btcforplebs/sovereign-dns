@@ -165,8 +165,8 @@ The installer asks you for one thing:
 Pick a password for your Pi-hole admin dashboard (typing is hidden):
 ```
 
-Type a password and press <kbd>Return</kbd>. **Nothing appears on screen
-while you type.** No dots, no stars. That's normal. Write the password
+Type a password and press <kbd>Return</kbd>, then type it again to be sure
+it is what you meant. **Nothing appears on screen while you type.** No dots, no stars. That's normal. Write the password
 down: you'll use it to open the ad-blocking dashboard later.
 
 The installer only asks this the first time. If you run it again later,

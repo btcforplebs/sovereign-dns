@@ -25,14 +25,20 @@ func TestDocsOffLinksOnlineGuide(t *testing.T) {
 func TestDocsOnLinksLocalCopy(t *testing.T) {
 	docs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	defer docs.Close()
-	cfg := deadConfig(t)
+	// Signed in from the home network: not the box itself, so the box's docs
+	// come through the hub (docsProxy). (An unlocked hub answers only to a
+	// loopback name, so a remote viewer always has a login.)
+	cfg := lanConfig(t)
 	cfg.docsAddr = strings.TrimPrefix(docs.URL, "http://")
-	body := get(t, newMux(cfg), "/dashboard").Body.String()
+	h := newMux(cfg)
+	r := req(http.MethodGet, "/dashboard", "192.168.4.30", nil)
+	r.AddCookie(signIn(t, h))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+	body := rec.Body.String()
 	if strings.Contains(body, onlineGuideURL) {
 		t.Fatalf("links the online guide while the box serves its own docs:\n%s", body)
 	}
-	// A test request is not from the box itself, so the box's docs come
-	// through the hub (docsProxy).
 	if !strings.Contains(body, `href="/docs/"`) {
 		t.Fatalf("no link to the box's own docs through the hub:\n%s", body)
 	}
