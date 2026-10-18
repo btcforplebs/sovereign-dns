@@ -1,17 +1,30 @@
 # Releasing
 
-Checklist for publishing a release of `install.sh`. Nothing enforces these
-steps: the pre-commit hook is opt-in and there is no CI, so they are on the
-person who tags the release.
+Releases are cut by pushing a `vX.Y.Z` tag. `.github/workflows/release.yml`
+then runs `scripts/release-assets.sh`, which refuses unless the tag is the
+commit checked out and `install.sh` is byte for byte what that tree builds
+(`make-installer.sh --check`, pins included). It signs `install.sh` and
+`install.sh.sha256`, and publishes both with notes carrying the hash and the
+check a user runs. Nothing is edited by hand.
 
-- [ ] `scripts/make-installer.sh --check` passes **at the tagged commit**
-      (`git checkout <tag>` in a clean clone, then run it). It proves that
-      `install.sh` is byte for byte what the tree builds, that
-      `install.sh.sha256` is its hash, and that the pins pass.
-- [ ] Publish `scripts/install.sh` and `scripts/install.sh.sha256` side by
-      side, from that same commit.
-- [ ] Fetch both from the published URL with `curl` and run
-      `shasum -a 256 -c install.sh.sha256` on what came back.
+- [ ] `scripts/check-pins.sh --verify-remote` passes on `main`, and the last
+      push to `main` published any image it needed (below).
+- [ ] `git tag vX.Y.Z <commit on main>` and `git push origin vX.Y.Z`. Watch
+      Actions → **release**. If it refuses, nothing was published; fix on
+      `main` and use a new tag.
+- [ ] Fetch both files from the release with the line in the notes and see
+      `install.sh: OK`; `gh attestation verify install.sh --repo
+      btcforplebs/sovereign-dns` passes.
+- [ ] Then a second PR changes the README's "first release has not been
+      published" sentence and its example tag. That changes the next
+      `install.sh`, never the tagged one.
+
+Repository settings, once (Settings → Releases and Rules; not code):
+
+- [ ] Immutable releases on: a published release's files and tag cannot be
+      changed or deleted.
+- [ ] A tag ruleset on `v*`: no deleting, no moving, no creating except by
+      the maintainers.
 
 ## The ready-made images
 
