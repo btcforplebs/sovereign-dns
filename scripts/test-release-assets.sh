@@ -51,6 +51,10 @@ cp "$work/install.orig" scripts/install.sh
 printf '%064d  install.sh\n' 0 > scripts/install.sh.sha256
 check "refuses a stale hash file" refuses scripts/release-assets.sh v9.9.9 "$work/out-s"
 git checkout -q scripts/install.sh.sha256
+# An installer and hash that agree with each other but are older than the tree.
+printf '\nstale\n' >> README.md
+check "refuses an installer older than the tree" refuses scripts/release-assets.sh v9.9.9 "$work/out-o"
+git checkout -q README.md
 unset SOVEREIGN_DNS_RELEASE_DRY
 check "refuses when the tag does not exist" refuses scripts/release-assets.sh v9.9.9 "$work/out-n"
 git -c tag.gpgSign=false tag v9.9.8 HEAD~1 || { echo 'FAIL  could not create the test tag'; exit 1; }
