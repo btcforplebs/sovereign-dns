@@ -6,7 +6,7 @@ ARG RUNTIME_IMAGE=debian:bookworm-20261005-slim@sha256:7c7b2c966bc9ee8cedfeef67e
 # one default. Each stage re-declares it bare to read it.
 ARG NVPN_COMMIT=0c491f3cf896da1c7b74ddb65d090080b8972f14
 
-FROM alpine/git:v2.54.0@sha256:ce84fd6a057b4dc5cf5009da2dd832f1c6d096c1984bf50496cf3c256402264d AS source
+FROM alpine/git:v2.54.0@sha256:03228d7ded483b0b3e55e1de7fa660d70d3e1bb432fa7021d29e192640de11aa AS source
 ARG NVPN_REPO=https://github.com/btcforplebs/nostr-vpn.git
 ARG NVPN_COMMIT
 WORKDIR /src
