@@ -89,6 +89,17 @@ it in place of `vX.Y.Z`:
 rm -f install.sh install.sh.sha256 && curl -fsSLO https://github.com/btcforplebs/sovereign-dns/releases/download/vX.Y.Z/install.sh && curl -fsSLO https://github.com/btcforplebs/sovereign-dns/releases/download/vX.Y.Z/install.sh.sha256 && shasum -a 256 -c install.sh.sha256 && bash install.sh
 ```
 
+The hash file comes from the same place as the installer, so it catches a
+broken download, not a swapped release. To check that the files were built by
+this repository's release workflow, run the steps one at a time instead (needs
+the [GitHub CLI](https://cli.github.com)): the two `curl` downloads above, then
+
+```bash
+gh attestation verify install.sh --repo btcforplebs/sovereign-dns
+```
+
+and only when that succeeds, `bash install.sh`.
+
 If the check prints anything but `install.sh: OK`, nothing runs. The hash is
 also in that release's notes. On Linux, `sha256sum -c` does the same as
 `shasum -a 256 -c`. The first release has not been published yet; until it is,

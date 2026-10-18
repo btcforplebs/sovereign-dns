@@ -1,6 +1,7 @@
 # Publishes install.sh and its hash when a version tag is pushed, after
-# checking that install.sh is what the tagged tree builds. Pull requests run
-# the same checks (no release, no signing) so this file cannot rot unseen.
+# checking that install.sh is what the tagged tree builds and that the tag is
+# on main. Pull requests run only the read-only `check` job: code a pull
+# request edits never runs with a token that can release or sign.
 #
 # Settings that make a release trustworthy live in the repository, not here:
 # immutable releases, and a ruleset protecting v* tags from being moved or
@@ -20,7 +21,23 @@ permissions:
   contents: read
 
 jobs:
-  assets:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: The refusals and the verify line
+        run: bash scripts/test-release-assets.sh
+      - name: Pins still point at their digests
+        run: scripts/check-pins.sh --verify-remote
+
+  release:
+    if: github.event_name == 'push'
+    needs: check
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -31,22 +48,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: The refusals and the verify line
-        run: bash scripts/test-release-assets.sh
-      - name: Pins still point at their digests
-        run: scripts/check-pins.sh --verify-remote
+          fetch-depth: 0   # the tag must be shown to be on main
       - name: Build the release files, or refuse
-        if: github.event_name == 'push'
         run: scripts/release-assets.sh "$GITHUB_REF_NAME" "$RUNNER_TEMP/release"
       - name: Sign the files
-        if: github.event_name == 'push'
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
             ${{ runner.temp }}/release/install.sh
             ${{ runner.temp }}/release/install.sh.sha256
       - name: Publish
-        if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

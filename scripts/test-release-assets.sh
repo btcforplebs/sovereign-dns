@@ -21,6 +21,9 @@ git clone -q --local "$repo" "$work/clone" || exit 1
 cd "$work/clone" || exit 1
 [[ -f scripts/release-assets.sh ]] || { echo "FAIL  scripts/release-assets.sh is missing"; exit 1; }
 export SOVEREIGN_DNS_RELEASE_DRY=1
+# A stand-in origin whose main is the commit under test.
+git init -q --bare "$work/origin.git" && git remote set-url origin "$work/origin.git" \
+  && git push -q origin HEAD:refs/heads/main || { echo 'FAIL  could not set up a stand-in origin'; exit 1; }
 
 # A tag name that is not vX.Y.Z is refused (a branch name, a typo, a prerelease).
 for t in main v1 1.2.3 v1.2.3-rc1 v1.2.3.4 "v1.2.3 "; do
@@ -61,6 +64,8 @@ git -c tag.gpgSign=false tag v9.9.8 HEAD || { echo 'FAIL  could not create the t
 git -c user.name=t -c user.email=t@example.com -c commit.gpgsign=false commit -q --allow-empty -m "after the tag" --no-verify || { echo 'FAIL  could not make a later commit'; exit 1; }
 check "refuses when the tag is not HEAD" refuses scripts/release-assets.sh v9.9.8 "$work/out-h"
 git -c tag.gpgSign=false tag v9.9.9 HEAD || { echo 'FAIL  could not create the test tag'; exit 1; }
+check "refuses a tag that is HEAD but not on main" refuses scripts/release-assets.sh v9.9.9 "$work/out-m"
+git push -q origin HEAD:refs/heads/main || { echo 'FAIL  could not move the stand-in main'; exit 1; }
 check "accepts when the tag is HEAD" scripts/release-assets.sh v9.9.9 "$work/out-ok"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"

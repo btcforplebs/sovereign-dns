@@ -6,13 +6,13 @@
 #
 # Refuses unless:
 #   - the tag is exactly vX.Y.Z (no branch names, no prerelease suffix);
-#   - the tag exists and points at the commit checked out (a release is a
-#     commit nobody can move later);
+#   - the tag exists, points at the commit checked out, and that commit is on
+#     origin's main (needs full history, not a depth-1 checkout);
 #   - scripts/install.sh is byte for byte what this tree builds, its .sha256
 #     is its hash, and the pins pass (make-installer.sh --check).
 # Writes install.sh, install.sh.sha256 and notes.md (the hash and the check a
 # user runs) to <out-dir>, then verifies the pair the way a user will.
-# SOVEREIGN_DNS_RELEASE_DRY=1 skips the tag-points-at-HEAD test, for the
+# SOVEREIGN_DNS_RELEASE_DRY=1 skips the tag and main tests, for the
 # test and for a look before tagging.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -29,6 +29,11 @@ if [[ "${SOVEREIGN_DNS_RELEASE_DRY:-}" != "1" ]]; then
     || die "tag $tag does not exist"
   [[ "$(git rev-parse "refs/tags/$tag^{commit}")" == "$(git rev-parse HEAD)" ]] \
     || die "tag $tag is not the commit checked out; release from the tag itself"
+  # Self-consistency (--check below) is not review: a tag on an unmerged
+  # branch with a doctored file would pass it. Only commits on main release.
+  git fetch -q origin main || die "cannot fetch main to check the tag is on it"
+  git merge-base --is-ancestor HEAD refs/remotes/origin/main \
+    || die "tag $tag is not on main; release only from main"
 fi
 
 scripts/make-installer.sh --check >&2 || die "install.sh is not what this tree builds, or its pins fail"
