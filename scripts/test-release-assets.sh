@@ -22,7 +22,8 @@ cd "$work/clone" || exit 1
 [[ -f scripts/release-assets.sh ]] || { echo "FAIL  scripts/release-assets.sh is missing"; exit 1; }
 export SOVEREIGN_DNS_RELEASE_DRY=1
 # A stand-in origin whose main is the commit under test.
-git init -q --bare "$work/origin.git" && git remote set-url origin "$work/origin.git" \
+git init -q --bare "$work/origin.git" && git -C "$work/origin.git" config receive.shallowUpdate true \
+  && git remote set-url origin "$work/origin.git" \
   && git push -q origin HEAD:refs/heads/main || { echo 'FAIL  could not set up a stand-in origin'; exit 1; }
 
 # A tag name that is not vX.Y.Z is refused (a branch name, a typo, a prerelease).
