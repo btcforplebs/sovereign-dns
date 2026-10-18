@@ -141,6 +141,31 @@ daemon_running() {
   grep -q '^daemon: running' <<<"$out"
 }
 
+# Pi-hole shares this network namespace and listens on the tunnel's address.
+# When the tunnel comes back after the daemon died, Pi-hole has sometimes
+# logged "listening on <tunnel address>" without ever opening the socket
+# (measured in CI: connection refused for minutes, until some later network
+# change made it look again), so DNS stayed dead on a box whose daemon had
+# recovered. A harmless address added to and removed from the tunnel is a
+# network change Pi-hole acts on. Only when the tunnel address refuses DNS, at
+# most every 30 seconds, and only once the daemon is running.
+TUN_IFACE="${NVPN_TUN_IFACE:-utun100}"
+last_nudge=0
+refused=0
+tunnel_refuses_dns() {
+  local ip out
+  ip=$(ip -4 -o addr show dev "$TUN_IFACE" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1)
+  [[ -n "$ip" ]] || return 1
+  out=$(dig +time=2 +tries=1 +short "@$ip" doubleclick.net A 2>&1 || true)
+  grep -qi 'connection refused' <<<"$out"
+}
+nudge_listeners() {
+  echo "sovereign-dns: nothing answers DNS on the tunnel address; nudging Pi-hole to listen again"
+  ip addr add 169.254.255.253/32 dev "$TUN_IFACE" scope link 2>/dev/null || true
+  sleep 1
+  ip addr del 169.254.255.253/32 dev "$TUN_IFACE" 2>/dev/null || true
+}
+
 tail -F "$DAEMON_LOG" &
 TAIL_PID=$!
 trap 'kill "$TAIL_PID" 2>/dev/null; exit 0' TERM INT
@@ -153,6 +178,16 @@ while :; do
   if daemon_running; then
     down=0
     attempts=0
+    if tunnel_refuses_dns; then
+      refused=$((refused + 1))
+      if [[ "$refused" -ge 2 && $((SECONDS - last_nudge)) -ge 30 ]]; then
+        nudge_listeners
+        last_nudge=$SECONDS
+        refused=0
+      fi
+    else
+      refused=0
+    fi
     continue
   fi
   down=$((down + 1))

@@ -16,12 +16,6 @@
 # Otherwise, and when SOVEREIGN_DNS_BUILD_FROM_SOURCE=1, it builds them from
 # source as before. Delete this file to make every install build from source.
 services:
-  nvpn:
-    build: !reset null
-    image: ghcr.io/btcforplebs/sovereign-dns-nvpn:nvpn-0c491f3cf896-ctx-f39d8f0ddf61@sha256:d687bb4fa9b063ef6d3087c52e3870931d7dafc7e76630f926c64ebdda4fcc78
-  web:
-    build: !reset null
-    image: ghcr.io/btcforplebs/sovereign-dns-nvpn:nvpn-0c491f3cf896-ctx-f39d8f0ddf61@sha256:d687bb4fa9b063ef6d3087c52e3870931d7dafc7e76630f926c64ebdda4fcc78
   unbound:
     build: !reset null
     image: ghcr.io/btcforplebs/sovereign-dns-unbound:unbound-ctx-6147cb02a8b7@sha256:c80514a51167af7b95e87e5f40310861aa87c79fdf857f0769c3a61cd32066bf

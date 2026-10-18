@@ -23,6 +23,26 @@ bad() { printf 'FAIL  %s\n' "$1"; fail=1; }
 status() { docker exec "$NVPN" nvpn status --discover-secs 0 2>&1 | grep '^daemon:' || true; }
 pid_of() { sed -n 's/^daemon: running (pid \([0-9]*\)).*/\1/p' <<<"$1"; }
 
+# Does Pi-hole answer on the tunnel address? An ad domain is blocked by Pi-hole
+# itself (0.0.0.0, nobody else asked), so only a Pi-hole bound to the current
+# tunnel can say it. The loopback address is nvpn's own stub and would answer
+# with Pi-hole broken.
+tunnel_ip() { docker exec "$NVPN" ip -4 -o addr show utun100 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1; }
+pihole_blocks() { # pihole_blocks <label> <tries>: ok/bad, with what is listening on :53 when it fails
+  local ip="" ad="" i
+  for i in $(seq 1 "$2"); do
+    ip=$(tunnel_ip)
+    [[ -n "$ip" ]] && ad=$(docker exec "$NVPN" dig +short +time=3 +tries=1 "@$ip" doubleclick.net A 2>/dev/null | head -1)
+    [[ "$ad" == 0.0.0.0 ]] && { ok "$1: Pi-hole answers on the tunnel address $ip and blocks ads"; return 0; }
+    sleep 3
+  done
+  bad "$1: Pi-hole does not answer on the tunnel address '$ip' (doubleclick.net gave '$ad')"
+  echo "--- listeners on :53 in the shared namespace"; docker exec "$NVPN" sh -c 'ss -lunp 2>/dev/null | grep ":53 " || netstat -lun 2>/dev/null | grep ":53 "' | head -8
+  echo "--- addresses"; docker exec "$NVPN" ip -4 -o addr 2>&1 | head -8
+  echo "--- pihole log"; docker logs --tail 12 "$PIHOLE" 2>&1
+  return 1
+}
+
 before=$(status)
 pid=$(pid_of "$before")
 [[ -n "$pid" ]] || { echo "the daemon is not running before the test starts: '$before'"; exit 2; }
@@ -48,6 +68,7 @@ for _ in $(seq 1 30); do
   [[ -n "$pid" ]] && break
   sleep 2
 done
+pihole_blocks "after a plain stop, once the box restarted the daemon" 20
 if [[ -n "$pid" ]]; then
   docker exec "$NVPN" kill -9 "$pid"
   echo "killed daemon pid $pid with SIGKILL"
@@ -81,16 +102,18 @@ for _ in $(seq 1 20); do
 done
 docker exec "$NVPN" ip -o link show utun100 >/dev/null 2>&1 \
   && ok "the tunnel interface utun100 is back" || bad "no utun100 after recovery"
-# Pi-hole listens on the tunnel address, so ask it there (the loopback address
-# is nvpn's own stub and would answer even with Pi-hole broken).
-ans=""
-for _ in $(seq 1 20); do
-  ip=$(docker exec "$NVPN" ip -4 -o addr show utun100 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1)
-  [[ -n "$ip" ]] && ans=$(docker exec "$NVPN" dig +short +time=3 +tries=1 "@$ip" example.com A 2>/dev/null | grep -E '^[0-9.]+$' | head -1)
+# Pi-hole on the tunnel address again, then a real name too (Unbound recurses
+# from the root, slow on a cold runner, so a longer window and a separate check).
+pihole_blocks "after the kill" 20
+ip=$(tunnel_ip); ans=""
+for _ in $(seq 1 40); do
+  ans=$(docker exec "$NVPN" dig +short +time=3 +tries=1 "@$ip" example.com A 2>/dev/null | grep -E '^[0-9.]+$' | head -1)
   [[ -n "$ans" ]] && break
   sleep 3
 done
-[[ -n "$ans" ]] && ok "Pi-hole answers DNS on the tunnel address $ip ($ans)" || bad "Pi-hole does not answer DNS on the tunnel address after recovery"
+[[ -n "$ans" ]] && ok "  and it resolves a real name ($ans)" || bad "  but a real name does not resolve within two minutes"
 
+# Informational: whether the box had to nudge Pi-hole to listen again this time.
+echo "nudges by the box: $(docker logs "$NVPN" 2>&1 | grep -c 'nudging Pi-hole')"
 ((fail == 0)) && echo "daemon recovery: pass" || echo "daemon recovery: FAIL"
 exit "$fail"
