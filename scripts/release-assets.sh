@@ -31,6 +31,9 @@ if [[ "${SOVEREIGN_DNS_RELEASE_DRY:-}" != "1" ]]; then
     || die "tag $tag is not the commit checked out; release from the tag itself"
   # Self-consistency (--check below) is not review: a tag on an unmerged
   # branch with a doctored file would pass it. Only commits on main release.
+  # Anonymous fetch (the workflow checks out without credentials): works only
+  # while the repository is public. If it goes private, this refuses every
+  # release with "cannot fetch main" until the checkout passes a token.
   git fetch -q origin main || die "cannot fetch main to check the tag is on it"
   git merge-base --is-ancestor HEAD refs/remotes/origin/main \
     || die "tag $tag is not on main; release only from main"
