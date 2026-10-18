@@ -16,6 +16,31 @@ DAEMON_LOG="${CONFIG_DIR}/daemon.log"
 # that collision.
 rm -f "${CONFIG_DIR}/daemon.pid"
 
+# This container's own lookups (the daemon resolves relay names such as
+# fips1.iris.to) go to the box's own Unbound first, then to Docker's resolver,
+# which forwards to whatever the machine uses (the router). Before, only
+# Docker's resolver was listed, so a box's own DNS depended on the router, and
+# on a home network the router often points at a Pi-hole, this box's or
+# another's. Unbound is a recursive resolver with no forwarders, so it needs
+# nobody. Written on every start: Docker rebuilds this file with the container.
+# Pi-hole shares this network namespace but not this file, and forwards only
+# to Unbound anyway (docker-compose.yml). Phones and laptops are unaffected:
+# they use the box through the VPN, not this file.
+OWN_UNBOUND="${NVPN_OWN_RESOLVER:-172.28.53.11}"
+if [[ -w /etc/resolv.conf ]] && ! grep -q "^nameserver ${OWN_UNBOUND}\$" /etc/resolv.conf; then
+  # Keep Docker's other lines (search, ndots) and add the timeouts to its
+  # options line, so a refused or silent Unbound gives way to the next one fast.
+  awk -v ub="$OWN_UNBOUND" '
+    BEGIN { print "nameserver " ub }
+    /^options/ { print $0 " timeout:2 attempts:1"; seen = 1; next }
+    { print }
+    END { if (!seen) print "options timeout:2 attempts:1" }
+  ' /etc/resolv.conf > /tmp/resolv.conf.new \
+    && cat /tmp/resolv.conf.new > /etc/resolv.conf \
+    || echo "sovereign-dns: could not put Unbound first in /etc/resolv.conf; lookups keep using Docker's resolver" >&2
+  rm -f /tmp/resolv.conf.new
+fi
+
 FRESH_INIT=0
 if [[ ! -f "$CONFIG_FILE" ]]; then
   echo "sovereign-dns: no config found, creating a fresh NostrVPN identity"

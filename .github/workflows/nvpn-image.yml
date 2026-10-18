@@ -32,6 +32,7 @@ on:
       - docs/**
       - scripts/lib/prebuilt-images.sh
       - scripts/test-daemon-recovery.sh
+      - scripts/test-own-resolver.sh
       - docker-compose.yml
       - docker-compose.prebuilt.yml
       - .github/workflows/nvpn-image.yml
@@ -250,6 +251,8 @@ jobs:
           # The same stack, with its daemon killed: the box must bring it back
           # by itself (what a 512 MB VPS needed after the kernel killed it).
           bash scripts/test-daemon-recovery.sh || { docker compose logs nvpn | tail -60; exit 1; }
+          # And its own lookups: Unbound first, the router only as a fallback.
+          bash scripts/test-own-resolver.sh || { docker compose logs unbound | tail -30; exit 1; }
           docker compose down -v
 
   publish:

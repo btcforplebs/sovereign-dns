@@ -73,4 +73,13 @@ else
   echo "   Home-network DNS is off (devices reach this box through the VPN app)."
   echo "   To serve the home network too: bash scripts/dns-lan.sh on"
 fi
+# The box's own lookups (nvpn's, which shares a namespace with Pi-hole): its
+# own Unbound first. Information only, since the box answers others without it;
+# a box that has not been updated yet keeps Docker's resolver alone.
+if [[ "$(in_nvpn sh -c "grep -m1 '^nameserver' /etc/resolv.conf" | awk '{ print $2 }')" == "172.28.53.11" ]]; then
+  echo "✅ The box looks names up through its own Unbound first."
+else
+  echo "   The box still looks names up through Docker's resolver (your router) only."
+  echo "   Update to put its own Unbound first: run the install line again."
+fi
 exit "$rc"
