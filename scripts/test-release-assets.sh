@@ -57,7 +57,8 @@ check "refuses an installer older than the tree" refuses scripts/release-assets.
 git checkout -q README.md
 unset SOVEREIGN_DNS_RELEASE_DRY
 check "refuses when the tag does not exist" refuses scripts/release-assets.sh v9.9.9 "$work/out-n"
-git -c tag.gpgSign=false tag v9.9.8 HEAD~1 || { echo 'FAIL  could not create the test tag'; exit 1; }
+git -c tag.gpgSign=false tag v9.9.8 HEAD || { echo 'FAIL  could not create the test tag'; exit 1; }
+git -c user.name=t -c user.email=t@example.com -c commit.gpgsign=false commit -q --allow-empty -m "after the tag" --no-verify || { echo 'FAIL  could not make a later commit'; exit 1; }
 check "refuses when the tag is not HEAD" refuses scripts/release-assets.sh v9.9.8 "$work/out-h"
 git -c tag.gpgSign=false tag v9.9.9 HEAD || { echo 'FAIL  could not create the test tag'; exit 1; }
 check "accepts when the tag is HEAD" scripts/release-assets.sh v9.9.9 "$work/out-ok"
