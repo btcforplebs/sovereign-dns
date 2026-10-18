@@ -77,6 +77,23 @@ The `rm -f` clears out an `install.sh` left from an earlier install (even
 one that `sudo` made), so the fresh copy can always be saved. Paste the same
 line again later to update the box.
 
+### Check it before you run it
+
+Each release publishes `install.sh` with its SHA-256 hash and a signature.
+To run exactly a released version and have your computer check it first, take
+the tag of the latest release from the
+[Releases page](https://github.com/btcforplebs/sovereign-dns/releases) and put
+it in place of `vX.Y.Z`:
+
+```bash
+rm -f install.sh install.sh.sha256 && curl -fsSLO https://github.com/btcforplebs/sovereign-dns/releases/download/vX.Y.Z/install.sh && curl -fsSLO https://github.com/btcforplebs/sovereign-dns/releases/download/vX.Y.Z/install.sh.sha256 && shasum -a 256 -c install.sh.sha256 && bash install.sh
+```
+
+If the check prints anything but `install.sh: OK`, nothing runs. The hash is
+also in that release's notes. On Linux, `sha256sum -c` does the same as
+`shasum -a 256 -c`. The first release has not been published yet; until it is,
+use the line above.
+
 It will ask you to pick a password (for the ad-blocking dashboard), then set
 everything up. When a ready-made copy of the encrypted network software exists
 for your box (most Macs, Linux PCs and 64-bit Raspberry Pis), it downloads that
