@@ -82,15 +82,33 @@ done
 docker exec "$NVPN" ip -o link show utun100 >/dev/null 2>&1 \
   && ok "the tunnel interface utun100 is back" || bad "no utun100 after recovery"
 # Pi-hole listens on the tunnel address, so ask it there (the loopback address
-# is nvpn's own stub and would answer even with Pi-hole broken).
-ans=""
+# is nvpn's own stub and would answer even with Pi-hole broken). Two questions,
+# because they fail for different reasons: an ad domain is blocked by Pi-hole
+# itself (it answers 0.0.0.0 without asking anyone, so only a Pi-hole bound to
+# the new tunnel can say it), while a real name also needs Unbound to recurse
+# from the root, which is slow on a cold runner.
+ip="" ad=""
 for _ in $(seq 1 20); do
   ip=$(docker exec "$NVPN" ip -4 -o addr show utun100 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1)
-  [[ -n "$ip" ]] && ans=$(docker exec "$NVPN" dig +short +time=3 +tries=1 "@$ip" example.com A 2>/dev/null | grep -E '^[0-9.]+$' | head -1)
+  [[ -n "$ip" ]] && ad=$(docker exec "$NVPN" dig +short +time=3 +tries=1 "@$ip" doubleclick.net A 2>/dev/null | head -1)
+  [[ "$ad" == 0.0.0.0 ]] && break
+  sleep 3
+done
+[[ "$ad" == 0.0.0.0 ]] && ok "Pi-hole answers on the tunnel address $ip and blocks ads" || bad "Pi-hole does not answer on the tunnel address '$ip' after recovery (doubleclick.net gave '$ad')"
+ans=""
+for _ in $(seq 1 40); do
+  ans=$(docker exec "$NVPN" dig +short +time=3 +tries=1 "@$ip" example.com A 2>/dev/null | grep -E '^[0-9.]+$' | head -1)
   [[ -n "$ans" ]] && break
   sleep 3
 done
-[[ -n "$ans" ]] && ok "Pi-hole answers DNS on the tunnel address $ip ($ans)" || bad "Pi-hole does not answer DNS on the tunnel address after recovery"
+[[ -n "$ans" ]] && ok "  and resolves a real name ($ans)" || bad "  but a real name does not resolve within two minutes"
+if ((fail != 0)); then
+  echo "--- diagnostics"
+  docker exec "$NVPN" ip -4 -o addr show utun100 2>&1 | head -3
+  docker exec "$NVPN" dig +time=3 +tries=1 "@$ip" example.com A 2>&1 | head -12
+  docker exec "$NVPN" dig +time=3 +tries=1 @172.28.53.11 example.com A 2>&1 | head -8
+  docker logs --tail 25 "$PIHOLE" 2>&1
+fi
 
 ((fail == 0)) && echo "daemon recovery: pass" || echo "daemon recovery: FAIL"
 exit "$fail"
