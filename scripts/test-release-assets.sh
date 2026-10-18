@@ -53,9 +53,9 @@ check "refuses a stale hash file" refuses scripts/release-assets.sh v9.9.9 "$wor
 git checkout -q scripts/install.sh.sha256
 unset SOVEREIGN_DNS_RELEASE_DRY
 check "refuses when the tag does not exist" refuses scripts/release-assets.sh v9.9.9 "$work/out-n"
-git tag v9.9.8 HEAD~1 2>/dev/null
+git -c tag.gpgSign=false tag v9.9.8 HEAD~1 || { echo 'FAIL  could not create the test tag'; exit 1; }
 check "refuses when the tag is not HEAD" refuses scripts/release-assets.sh v9.9.8 "$work/out-h"
-git tag v9.9.9 HEAD
+git -c tag.gpgSign=false tag v9.9.9 HEAD || { echo 'FAIL  could not create the test tag'; exit 1; }
 check "accepts when the tag is HEAD" scripts/release-assets.sh v9.9.9 "$work/out-ok"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
