@@ -10,6 +10,10 @@
 #                                      guard), or if install.sh.sha256 is
 #                                      not its hash
 set -euo pipefail
+# One collation for every sort and comm below. uutils sort (Ubuntu 26.04) orders
+# by locale while uutils comm checks byte order, so --check failed on a clean
+# tree ("comm: input is not in sorted order"). C makes both agree everywhere.
+export LC_ALL=C
 cd "$(dirname "$0")/.."
 
 OUT="scripts/install.sh"
